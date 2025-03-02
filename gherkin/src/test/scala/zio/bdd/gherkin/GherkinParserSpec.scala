@@ -1,7 +1,6 @@
 package zio.bdd.gherkin
 
 import zio.*
-import zio.bdd.core.{Feature, ScenarioMetadata}
 import zio.test.*
 import zio.test.Assertion.*
 
@@ -112,6 +111,40 @@ object GherkinParserSpec extends ZIOSpecDefault {
             "name"     -> "Bob",
             "password" -> "wrong",
             "result"   -> "fails"
+          )
+        )
+      }
+    },
+    test("parse scenario outline with typed placeholders ({name:String})") {
+      val content = """
+                      |Feature: User Validation
+                      |  Scenario Outline: Validate reset emails
+                      |    Given a user exists with name {name:String}
+                      |    When the user requests a password reset
+                      |    Then an email should be sent to {email:String}
+                      |  Examples:
+                      |    | name  | email             |
+                      |    | Alice | alice@example.com |
+                      |    | Bob   | bob@example.com   |
+                """.stripMargin
+      checkParse(content) { feature =>
+        val scenario = feature.scenarios.head
+        assertTrue(
+          feature.name == "User Validation",
+          scenario.name == "Validate reset emails",
+          scenario.steps == List(
+            "a user exists with name {name:String}",
+            "the user requests a password reset",
+            "an email should be sent to {email:String}"
+          ),
+          scenario.examples.length == 2,
+          scenario.examples(0).data == Map(
+            "name"  -> "Alice",
+            "email" -> "alice@example.com"
+          ),
+          scenario.examples(1).data == Map(
+            "name"  -> "Bob",
+            "email" -> "bob@example.com"
           )
         )
       }

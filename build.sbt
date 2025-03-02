@@ -10,19 +10,19 @@ lazy val commonDependencies = Seq(
 )
 
 lazy val root = (project in file("."))
-  .aggregate(core, gherkin, reporters, example)
+  .aggregate(core, gherkin, example)
   .settings(
     name := "zio-bdd"
   )
 
 lazy val core = (project in file("core"))
+  .dependsOn(gherkin)
   .settings(
     name := "core",
     libraryDependencies ++= commonDependencies
   )
 
 lazy val gherkin = (project in file("gherkin"))
-  .dependsOn(core)
   .settings(
     name := "gherkin",
     libraryDependencies ++= commonDependencies ++ Seq(
@@ -30,15 +30,14 @@ lazy val gherkin = (project in file("gherkin"))
     )
   )
 
-lazy val reporters = (project in file("reporters"))
-  .dependsOn(core)
-  .settings(
-    name := "reporters",
-    libraryDependencies ++= commonDependencies
-  )
+//lazy val reporters = (project in file("reporters"))
+//  .settings(
+//    name := "reporters",
+//    libraryDependencies ++= commonDependencies
+//  )
 
 lazy val example = (project in file("example"))
-  .dependsOn(core, gherkin, reporters)
+  .dependsOn(core)
   .settings(
     name := "example",
     libraryDependencies ++= commonDependencies,
