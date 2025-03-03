@@ -19,50 +19,51 @@ trait Reporter {
 }
 
 object ConsoleReporter extends Reporter {
-  private val Green = "\u001b[32m"
-  private val Red = "\u001b[31m"
-  private val Yellow = "\u001b[33m"
-  private val Blue = "\u001b[34m"
-  private val Reset = "\u001b[0m"
+  // Lighter ANSI colors
+  private val LightGreen  = "\u001b[92m" // Bright green for passed
+  private val LightRed    = "\u001b[91m" // Bright red for failed
+  private val LightBlue   = "\u001b[94m" // Bright blue for features and steps
+  private val LightYellow = "\u001b[93m" // Bright yellow for scenarios and logs
+  private val Reset       = "\u001b[0m"
 
   def startFeature(feature: String): ZIO[Any, Nothing, Unit] =
-    Console.printLine(s"${Blue}✨ Feature: $feature ✨${Reset}").orDie *>
-      ZIO.logInfo(s"Starting feature: $feature")
+    Console.printLine(s"${LightBlue}* Feature: $feature${Reset}").orDie
 
   def endFeature(feature: String, results: List[List[StepResult]]): ZIO[Any, Nothing, Unit] = {
     val passed = results.flatten.count(_.succeeded)
     val failed = results.flatten.length - passed
     Console
       .printLine(
-        s"${Blue}✨ Finished Feature: $feature - ${Green}$passed passed${Reset}, ${Red}$failed failed${Reset} ✨${Reset}"
+        s"${LightBlue}* Finished Feature: $feature - ${LightGreen}$passed passed${Reset}, ${LightRed}$failed failed${Reset}"
       )
-      .orDie *>
-      ZIO.logInfo(s"Finished feature: $feature with $passed passed, $failed failed")
+      .orDie
   }
 
   def startScenario(scenario: String): ZIO[Any, Nothing, Unit] =
-    Console.printLine(s"${Yellow}🌟 Scenario: $scenario 🌟${Reset}").orDie *>
-      ZIO.logInfo(s"Starting scenario: $scenario")
+    Console.printLine(s"${LightYellow}  ◉ Scenario: $scenario${Reset}").orDie
 
   def endScenario(scenario: String, results: List[StepResult]): ZIO[Any, Nothing, Unit] = {
     val passed = results.count(_.succeeded)
     val failed = results.length - passed
     Console
-      .printLine(s"${Yellow}🌟 Results: ${Green}$passed passed${Reset}, ${Red}$failed failed${Reset} 🌟${Reset}")
-      .orDie *>
-      ZIO.logInfo(s"Finished scenario: $scenario with $passed passed, $failed failed")
+      .printLine(s"${LightYellow}  ◉ Results: ${LightGreen}$passed passed${Reset}, ${LightRed}$failed failed${Reset}")
+      .orDie
   }
 
   def startStep(step: String): ZIO[Any, Nothing, Unit] =
-    Console.printLine(s"${Blue}➡️ Step: $step${Reset}").orDie *>
-      ZIO.logInfo(s"Starting step: $step")
+    Console.printLine(s"${LightBlue}    ├─◑ $step${Reset}").orDie
 
   def endStep(step: String, result: StepResult): ZIO[Any, Nothing, Unit] = {
-    val status = if (result.succeeded) s"${Green}PASSED${Reset}" else s"${Red}FAILED${Reset}"
-    val errorMsg = result.error.map(e => s" - ${Red}Error: $e${Reset}").getOrElse("")
-    val logs = result.logs.map { case (msg, time) => s"${Yellow}[$time] $msg${Reset}" }.mkString("\n  ")
-    Console.printLine(s"${Blue}[$status] $step$errorMsg${Reset}\n  $logs").orDie *>
-      ZIO.logInfo(s"Finished step: $step with status $status")
+    val status   = if (result.succeeded) s"${LightGreen}PASSED${Reset}" else s"${LightRed}FAILED${Reset}"
+    val errorMsg = result.error.map(e => s" - ${LightRed}Error: $e${Reset}").getOrElse("")
+    val logs = if (result.logs.nonEmpty) {
+      result.logs.map { case (msg, time) => s"${LightYellow}      ╰─ [$time] $msg${Reset}" }.mkString("\n")
+    } else {
+      "" // No logs, no extra lines
+    }
+    Console
+      .printLine(s"${LightBlue}    ├─◑ [$status] $step$errorMsg${Reset}" + (if (logs.nonEmpty) s"\n$logs" else ""))
+      .orDie
   }
 }
 
@@ -81,9 +82,9 @@ object FileReporter extends Reporter {
     val content = results.zipWithIndex.flatMap { case (scenarioResults, idx) =>
       val scenarioHeader = s"Scenario $idx:\n"
       scenarioResults.map { result =>
-        val status = if (result.succeeded) "PASSED" else "FAILED"
+        val status   = if (result.succeeded) "PASSED" else "FAILED"
         val errorMsg = result.error.map(e => s" - Error: $e").getOrElse("")
-        val logs = result.logs.map { case (msg, time) => s"[$time] $msg" }.mkString("\n  ")
+        val logs     = result.logs.map { case (msg, time) => s"[$time] $msg" }.mkString("\n  ")
         s"[$status] ${result.step}$errorMsg\n  $logs"
       }.mkString(scenarioHeader, "\n", "\n")
     }.mkString("\n")

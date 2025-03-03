@@ -19,7 +19,9 @@ lazy val core = (project in file("core"))
   .dependsOn(gherkin)
   .settings(
     name := "core",
-    libraryDependencies ++= commonDependencies
+    libraryDependencies ++= commonDependencies,
+    libraryDependencies += "org.scala-sbt" % "test-interface" % "1.0" % "provided",
+    Test / testFrameworks := Seq(new TestFramework("zio.bdd.core.ZIOBDDFramework"))
   )
 
 lazy val gherkin = (project in file("gherkin"))
@@ -30,34 +32,11 @@ lazy val gherkin = (project in file("gherkin"))
     )
   )
 
-//lazy val reporters = (project in file("reporters"))
-//  .settings(
-//    name := "reporters",
-//    libraryDependencies ++= commonDependencies
-//  )
-
 lazy val example = (project in file("example"))
   .dependsOn(core)
   .settings(
     name := "example",
     libraryDependencies ++= commonDependencies,
-//    Test / test := Def.task {
-//      Unsafe.unsafe { implicit unsafe =>
-//        val runtime = Runtime.default
-//        val env = ZLayer.succeed(new UserSteps.UserRepo {
-//          def createUser(name: String) = ZIO.succeed(UserSteps.User(name, s"$name@example.com".toLowerCase))
-//        }) ++ ZLayer.succeed(new UserSteps.EmailService {
-//          private var emails: List[String] = Nil
-//          def sendResetEmail(email: String) = ZIO.succeed { emails = email :: emails }
-//          def getSentEmails = ZIO.succeed(emails)
-//        }) ++ ZLayer.succeed(ZIO.logLevel(LogLevel.Info)) ++ LogCollector.live ++ ZLayer.succeed(ConsoleReporter) ++ ZLayer.succeed(FileReporter)
-//
-//        val exitCode = runtime.unsafe.run(
-//          TestRunner.runTests(UserSteps, new File("example/src/test/resources/features"), (parallelism in Test).value)
-//            .provideLayer(env)
-//        ).getOrThrowFiberFailure()
-//
-//        if (exitCode.isFailure) throw new RuntimeException("Tests failed")
-//      }
-//    }.value
+    Test / testFrameworks := Seq(new TestFramework("zio.bdd.core.ZIOBDDFramework")),
+    Test / resourceDirectory := baseDirectory.value / "example" / "src" / "test" / "resources" / "features"
   )

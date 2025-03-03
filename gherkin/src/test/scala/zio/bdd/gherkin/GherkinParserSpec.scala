@@ -295,7 +295,6 @@ object GherkinParserSpec extends ZIOSpecDefault {
     }
   )
 
-  // Helper method to check parsing with improved error handling
   private def checkParse(content: String)(assertion: Feature => TestResult): ZIO[Any, Throwable, TestResult] =
     GherkinParser
       .parseFeature(content)
