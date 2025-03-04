@@ -74,9 +74,14 @@ jobs:
       - name: Export GPG Key to secRing
         run: gpg --batch --yes --pinentry-mode loopback --passphrase "${{ secrets.PGP_PASSPHRASE }}" --export-secret-keys > ~/.gnupg/secring.gpg
 
-      - name: Set Git Identity (Optional)
+      - name: Configure sbt-pgp
         run: |
-          git config --global user.email "zainalpour@gmail.com"
+          mkdir -p ~/.sbt/1.0
+          echo 'Global / useGpgPinentry := false' > ~/.sbt/1.0/global.sbt
+
+      - name: Set Git Identity
+        run: |
+          git config --global user.email "zainalpour@yahoo.com"
           git config --global user.name "Mohsen Zainalpour"
 
       - name: Publish to Sonatype
@@ -85,7 +90,10 @@ jobs:
           SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
           PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
         run: |
+          KEY_ID=$(gpg --list-secret-keys --keyid-format LONG | grep 'sec' | awk '{print $2}' | cut -d'/' -f2)
+          echo "Using GPG Key: $KEY_ID"
           sbt --warn \
+            -Dgpg.keyId=$KEY_ID \
             -Dpgp.passphrase="${{ secrets.PGP_PASSPHRASE }}" \
             publishSigned \
             sonatypeBundleRelease
