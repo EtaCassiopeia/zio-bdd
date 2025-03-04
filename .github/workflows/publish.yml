@@ -99,11 +99,8 @@ jobs:
           echo "Using GPG Key: $KEY_ID"
           sbt -Dsbt.global.base=/tmp/.sbt \
               -Dsbt.ivy.home=/tmp/.ivy2 \
-              -Dgpg.key=$KEY_ID \
-              -Dpgp.passphrase="${{ secrets.PGP_PASSPHRASE }}" \
-              "set pgpPassphrase := Some(Array('${{ secrets.PGP_PASSPHRASE }}'.toCharArray))" \
-              "set pgpSecretRing := new File(\"${HOME}/.gnupg/secring.gpg\")" \
-              "set pgpPublicRing := new File(\"${HOME}/.gnupg/pubring.gpg\")" \
+              "set Global / pgpPassphrase := Some(\"${{ secrets.PGP_PASSPHRASE }}\".toCharArray)" \
+              "set Global / pgpSigningKey := Some(\"$KEY_ID\")" \
               publishSigned \
               sonatypeBundleRelease
         continue-on-error: false

@@ -6,7 +6,6 @@ ThisBuild / organization  := "io.github.etacassiopeia"
 ThisBuild / version       := "0.0.1"
 ThisBuild / versionScheme := Some("early-semver")
 
-
 // Sonatype publishing settings
 ThisBuild / credentials ++= (for {
   username <- sys.env.get("SONATYPE_USERNAME")
@@ -33,9 +32,8 @@ ThisBuild / developers := List(
 )
 
 // GPG signing settings with sbt-pgp
-ThisBuild / useGpg := false // Tell sbt-pgp to use `gpg` command directly (modern approach)
-ThisBuild / pgpPassphrase := sys.env.get("PGP_PASSPHRASE").map(_.toCharArray)
-ThisBuild / pgpSigningKey := Some("C70B5DF732FEA7E8") // Your key ID from earlier logs
+// Note: `useGpg` is removed since it's deprecated and true by default
+ThisBuild / pgpSigningKey := sys.env.get("PGP_KEY_ID") // Set dynamically in CI
 
 lazy val commonDependencies = Seq(
   "dev.zio"       %% "zio"          % "2.1.16",
@@ -47,7 +45,7 @@ lazy val commonDependencies = Seq(
 lazy val root = (project in file("."))
   .aggregate(core, gherkin)
   .settings(
-    name        := "zio-bdd",
+    name := "zio-bdd"
 //    description := "A ZIO-based BDD testing framework for Scala 3",
 //    licenses    := Seq("Apache-2.0" -> url("https://www.apache.org/licenses/LICENSE-2.0.txt")),
 //    homepage    := Some(url("https://github.com/EtaCassiopeia/zio-bdd")),
