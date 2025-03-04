@@ -1,9 +1,10 @@
 import xerial.sbt.Sonatype.GitHubHosting
 import xerial.sbt.Sonatype.sonatypeCentralHost
 
-ThisBuild / scalaVersion := "3.3.5"
-ThisBuild / organization := "io.github.etacassiopeia"
-ThisBuild / version      := "0.0.1"
+ThisBuild / scalaVersion  := "3.3.5"
+ThisBuild / organization  := "io.github.etacassiopeia"
+ThisBuild / version       := "0.0.1"
+ThisBuild / versionScheme := Some("early-semver")
 
 lazy val commonDependencies = Seq(
   "dev.zio"       %% "zio"          % "2.1.16",

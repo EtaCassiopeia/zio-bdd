@@ -50,15 +50,33 @@ jobs:
         with:
           apps: sbt
 
+      - name: Install GPG
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gnupg
+
       - name: Set up GPG
         run: |
-          echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
+          echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import --no-tty
           echo "pinentry-mode loopback" > ~/.gnupg/gpg.conf
           echo "passphrase ${{ secrets.GPG_PASSPHRASE }}" > ~/.gnupg/gpg-agent.conf
           echo "use-agent" >> ~/.gnupg/gpg.conf
           echo "default-key ${{ secrets.GPG_KEY_ID }}" >> ~/.gnupg/gpg.conf
+          echo "allow-preset-passphrase" >> ~/.gnupg/gpg-agent.conf
+          # Start gpg-agent and preset passphrase if possible
+          gpg-agent --daemon
+          echo "${{ secrets.GPG_PASSPHRASE }}" | gpg-connect-agent --no-autostart "PRESET_PASSPHRASE ${{ secrets.GPG_KEY_FINGERPRINT }} -1" /bye
         env:
-          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }} # Optional: Add GPG_KEY_ID to secrets for explicit key selection
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+          GPG_KEY_FINGERPRINT: ${{ secrets.GPG_KEY_FINGERPRINT }}
+
+      - name: Debug GPG Setup
+        run: |
+          gpg --list-keys
+          gpg --list-secret-keys
+          echo "GPG configuration:"
+          cat ~/.gnupg/gpg.conf
+          cat ~/.gnupg/gpg-agent.conf
 
       - name: Publish to Sonatype
         env:
@@ -77,8 +95,10 @@ jobs:
         run: |
           echo "Publishing failed. Check logs above for details."
           echo "GPG configuration:"
-          cat ~/.gnupg/gpg.conf
-          cat ~/.gnupg/gpg-agent.conf
+          cat ~/.gnupg/gpg.conf || echo "No gpg.conf found"
+          cat ~/.gnupg/gpg-agent.conf || echo "No gpg-agent.conf found"
+          echo "GPG keys:"
+          gpg --list-keys || echo "Failed to list keys"
+          gpg --list-secret-keys || echo "Failed to list secret keys"
           echo "SBT logs (if available):"
-          find . -name "*.log" -exec cat {} \;
-          
+          find . -name "*.log" -exec cat {} \; || echo "No SBT logs found"
