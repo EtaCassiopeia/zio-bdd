@@ -1,10 +1,15 @@
 import xerial.sbt.Sonatype.GitHubHosting
 import xerial.sbt.Sonatype.sonatypeCentralHost
+import com.jsuereth.sbtpgp.SbtPgp.autoImport.*
 
 ThisBuild / scalaVersion  := "3.3.5"
 ThisBuild / organization  := "io.github.etacassiopeia"
 ThisBuild / version       := "0.0.1"
 ThisBuild / versionScheme := Some("early-semver")
+
+ThisBuild / useGpg := false // Use sbt-pgp instead of external GPG binary
+ThisBuild / useGpgAgent := false // Disable GPG agent
+ThisBuild / pgpPassphrase := Some(sys.env.getOrElse("GPG_PASSPHRASE", "").toCharArray) // Read passphrase from env
 
 lazy val commonDependencies = Seq(
   "dev.zio"       %% "zio"          % "2.1.16",
