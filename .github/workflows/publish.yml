@@ -53,6 +53,11 @@ jobs:
       - name: Setup GPG
         uses: olafurpg/setup-gpg@v3
 
+      - name: Fix GPG Home Permissions
+        run: |
+          chmod 700 ~/.gnupg
+          chmod 600 ~/.gnupg/*
+
       - name: Configure GPG for Non-Interactive Use
         run: |
           mkdir -p ~/.gnupg
@@ -74,11 +79,6 @@ jobs:
       - name: Export GPG Key to secRing
         run: gpg --batch --yes --pinentry-mode loopback --passphrase "${{ secrets.PGP_PASSPHRASE }}" --export-secret-keys > ~/.gnupg/secring.gpg
 
-      - name: Configure sbt-pgp
-        run: |
-          mkdir -p ~/.sbt/1.0
-          echo 'Global / useGpgPinentry := false' > ~/.sbt/1.0/global.sbt
-
       - name: Set Git Identity
         run: |
           git config --global user.email "zainalpour@yahoo.com"
@@ -95,6 +95,7 @@ jobs:
           sbt --warn \
             -Dgpg.keyId=$KEY_ID \
             -Dpgp.passphrase="${{ secrets.PGP_PASSPHRASE }}" \
+            -Dgpg.pinentry=false \
             publishSigned \
             sonatypeBundleRelease
         continue-on-error: false
