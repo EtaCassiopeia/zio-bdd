@@ -50,34 +50,18 @@ jobs:
         with:
           apps: sbt
 
-      - name: Setup GPG
-        uses: olafurpg/setup-gpg@v3
-
-      - name: Fix GPG Home Permissions
-        run: |
-          chmod 700 ~/.gnupg
-          chmod 600 ~/.gnupg/*
-
-      - name: Configure GPG for Non-Interactive Use
-        run: |
-          mkdir -p ~/.gnupg
-          echo "use-agent" >> ~/.gnupg/gpg.conf
-          echo "pinentry-mode loopback" >> ~/.gnupg/gpg.conf
-          echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
-          gpgconf --kill gpg-agent
-
-      - name: Import GPG Key
-        run: echo "${{ secrets.PGP_SECRET }}" | base64 --decode | gpg --batch --yes --import
-        env:
-          PGP_SECRET: ${{ secrets.PGP_SECRET }}
+      - name: Set up GPG
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg_private_key: ${{ secrets.PGP_SECRET }}
+          passphrase: ${{ secrets.PGP_PASSPHRASE }}
+          git_user_signingkey: true
+          git_commit_gpgsign: false
 
       - name: Verify GPG Key
         run: |
           gpg --list-secret-keys --keyid-format LONG
           gpg --list-keys
-
-      - name: Export GPG Key to secRing
-        run: gpg --batch --yes --pinentry-mode loopback --passphrase "${{ secrets.PGP_PASSPHRASE }}" --export-secret-keys > ~/.gnupg/secring.gpg
 
       - name: Set Git Identity
         run: |
@@ -90,14 +74,18 @@ jobs:
           SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
           PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
         run: |
-          KEY_ID=$(gpg --list-secret-keys --keyid-format LONG | grep 'sec' | awk '{print $2}' | cut -d'/' -f2)
+          KEY_ID=$(gpg --list-secret-keys --keyid-format LONG | grep 'sec' | head -1 | awk '{print $2}' | cut -d'/' -f2)
+          if [ -z "$KEY_ID" ]; then
+            echo "Error: Could not find GPG key ID"
+            exit 1
+          fi
           echo "Using GPG Key: $KEY_ID"
-          sbt --warn \
-            -Dgpg.keyId=$KEY_ID \
-            -Dpgp.passphrase="${{ secrets.PGP_PASSPHRASE }}" \
-            -Dgpg.pinentry=false \
-            publishSigned \
-            sonatypeBundleRelease
+          sbt -Dsbt.global.base=/tmp/.sbt \
+              -Dsbt.ivy.home=/tmp/.ivy2 \
+              -Dgpg.keyId=$KEY_ID \
+              -Dgpg.passphrase="${{ secrets.PGP_PASSPHRASE }}" \
+              publishSigned \
+              sonatypeBundleRelease
         continue-on-error: false
 
       - name: Log Failure Details (if any)
