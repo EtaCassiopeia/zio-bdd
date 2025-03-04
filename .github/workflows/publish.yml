@@ -11,6 +11,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -18,6 +20,11 @@ jobs:
           java-version: "17"
           distribution: "temurin"
           cache: "sbt"
+
+      - name: Install sbt
+        uses: coursier/setup-action@v1
+        with:
+          apps: sbt
 
       - name: Build and Test
         run: sbt test
@@ -28,6 +35,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -36,15 +45,40 @@ jobs:
           distribution: "temurin"
           cache: "sbt"
 
+      - name: Install sbt
+        uses: coursier/setup-action@v1
+        with:
+          apps: sbt
+
       - name: Set up GPG
         run: |
           echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
-          echo "pinentry-mode loopback" >> ~/.gnupg/gpg.conf
-          echo "passphrase ${{ secrets.GPG_PASSPHRASE }}" >> ~/.gnupg/gpg-agent.conf
+          echo "pinentry-mode loopback" > ~/.gnupg/gpg.conf
+          echo "passphrase ${{ secrets.GPG_PASSPHRASE }}" > ~/.gnupg/gpg-agent.conf
+          echo "use-agent" >> ~/.gnupg/gpg.conf
+          echo "default-key ${{ secrets.GPG_KEY_ID }}" >> ~/.gnupg/gpg.conf
+        env:
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }} # Optional: Add GPG_KEY_ID to secrets for explicit key selection
 
       - name: Publish to Sonatype
         env:
           SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
           SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: sbt publishSigned sonatypeBundleRelease
+        run: |
+          sbt --warn \
+            -Dpgp.passphrase="${{ secrets.GPG_PASSPHRASE }}" \
+            publishSigned \
+            sonatypeBundleRelease
+        continue-on-error: false
+
+      - name: Log Failure Details (if any)
+        if: failure()
+        run: |
+          echo "Publishing failed. Check logs above for details."
+          echo "GPG configuration:"
+          cat ~/.gnupg/gpg.conf
+          cat ~/.gnupg/gpg-agent.conf
+          echo "SBT logs (if available):"
+          find . -name "*.log" -exec cat {} \;
+          
