@@ -1,39 +1,10 @@
-//import xerial.sbt.Sonatype.GitHubHosting
-//import xerial.sbt.Sonatype.sonatypeCentralHost
+import xerial.sbt.Sonatype.GitHubHosting
+import xerial.sbt.Sonatype.sonatypeCentralHost
 
 ThisBuild / scalaVersion  := "3.3.5"
 ThisBuild / organization  := "io.github.etacassiopeia"
 ThisBuild / version       := "0.0.1"
 ThisBuild / versionScheme := Some("early-semver")
-
-// Sonatype publishing settings
-ThisBuild / credentials ++= (for {
-  username <- sys.env.get("SONATYPE_USERNAME")
-  password <- sys.env.get("SONATYPE_PASSWORD")
-} yield Credentials("Sonatype Nexus Repository Manager", "oss.sonatype.org", username, password)).toSeq
-
-ThisBuild / publishTo := sonatypePublishToBundle.value
-ThisBuild / publishMavenStyle := true
-ThisBuild / licenses := Seq("Apache-2.0" -> url("http://www.apache.org/licenses/LICENSE-2.0.txt"))
-ThisBuild / homepage := Some(url("https://github.com/etacassiopeia/zio-bdd"))
-ThisBuild / scmInfo := Some(
-  ScmInfo(
-    url("https://github.com/etacassiopeia/zio-bdd"),
-    "scm:git:git@github.com:etacassiopeia/zio-bdd.git"
-  )
-)
-ThisBuild / developers := List(
-  Developer(
-    id = "amzai",
-    name = "Mohsen Zainalpour",
-    email = "zainalpour@yahoo.com",
-    url = url("https://github.com/etacassiopeia")
-  )
-)
-
-// GPG signing settings with sbt-pgp
-// Note: `useGpg` is removed since it's deprecated and true by default
-ThisBuild / pgpSigningKey := sys.env.get("PGP_KEY_ID") // Set dynamically in CI
 
 lazy val commonDependencies = Seq(
   "dev.zio"       %% "zio"          % "2.1.16",
@@ -45,24 +16,24 @@ lazy val commonDependencies = Seq(
 lazy val root = (project in file("."))
   .aggregate(core, gherkin)
   .settings(
-    name := "zio-bdd"
-//    description := "A ZIO-based BDD testing framework for Scala 3",
-//    licenses    := Seq("Apache-2.0" -> url("https://www.apache.org/licenses/LICENSE-2.0.txt")),
-//    homepage    := Some(url("https://github.com/EtaCassiopeia/zio-bdd")),
-//    developers := List(
-//      Developer(
-//        id = "etacassiopeia",
-//        name = "Mohsen Zainalpour",
-//        email = "zainalpour@gmail.com",
-//        url = url("https://github.com/EtaCassiopeia")
-//      )
-//    ),
-//    sonatypeCredentialHost := sonatypeCentralHost,
-//    sonatypeProjectHosting := Some(GitHubHosting("EtaCassiopeia", "zio-bdd", "zainalpour@gmail.com")),
-//    publishMavenStyle      := true,
-//    publishTo              := sonatypePublishToBundle.value,
-//    Test / publishArtifact := false,
-//    pomIncludeRepository   := { _ => false }
+    name        := "zio-bdd",
+    description := "A ZIO-based BDD testing framework for Scala 3",
+    licenses    := Seq("Apache-2.0" -> url("https://www.apache.org/licenses/LICENSE-2.0.txt")),
+    homepage    := Some(url("https://github.com/EtaCassiopeia/zio-bdd")),
+    developers := List(
+      Developer(
+        id = "etacassiopeia",
+        name = "Mohsen Zainalpour",
+        email = "zainalpour@gmail.com",
+        url = url("https://github.com/EtaCassiopeia")
+      )
+    ),
+    sonatypeCredentialHost := sonatypeCentralHost,
+    sonatypeProjectHosting := Some(GitHubHosting("EtaCassiopeia", "zio-bdd", "zainalpour@gmail.com")),
+    publishMavenStyle      := true,
+    publishTo              := sonatypePublishToBundle.value,
+    Test / publishArtifact := false,
+    pomIncludeRepository   := { _ => false }
   )
   .dependsOn(core, gherkin)
 
