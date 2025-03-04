@@ -17,3 +17,5 @@ sbt.json
 project/project/
 *.iml
 .vscode
+*.asc
+
