@@ -57,26 +57,33 @@ jobs:
 
       - name: Set up GPG
         run: |
+          # Import GPG key
           echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import --no-tty
+          # Configure GPG
           echo "pinentry-mode loopback" > ~/.gnupg/gpg.conf
-          echo "passphrase ${{ secrets.GPG_PASSPHRASE }}" > ~/.gnupg/gpg-agent.conf
           echo "use-agent" >> ~/.gnupg/gpg.conf
-          echo "default-key ${{ secrets.GPG_KEY_ID }}" >> ~/.gnupg/gpg.conf
-          echo "allow-preset-passphrase" >> ~/.gnupg/gpg-agent.conf
-          # Start gpg-agent and preset passphrase if possible
+          echo "allow-preset-passphrase" >> ~/.gnupg/gpg.conf
+          if [ -n "${{ secrets.GPG_KEY_ID }}" ]; then
+            echo "default-key ${{ secrets.GPG_KEY_ID }}" >> ~/.gnupg/gpg.conf
+          fi
+          # Start gpg-agent and preset passphrase
           gpg-agent --daemon
-          echo "${{ secrets.GPG_PASSPHRASE }}" | gpg-connect-agent --no-autostart "PRESET_PASSPHRASE ${{ secrets.GPG_KEY_FINGERPRINT }} -1" /bye
+          if [ -n "${{ secrets.GPG_KEY_FINGERPRINT }}" ]; then
+            echo "${{ secrets.GPG_PASSPHRASE }}" | gpg-connect-agent --no-autostart "PRESET_PASSPHRASE ${{ secrets.GPG_KEY_FINGERPRINT }} -1" /bye
+          fi
         env:
           GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
           GPG_KEY_FINGERPRINT: ${{ secrets.GPG_KEY_FINGERPRINT }}
 
       - name: Debug GPG Setup
         run: |
+          gpg --version
           gpg --list-keys
           gpg --list-secret-keys
           echo "GPG configuration:"
-          cat ~/.gnupg/gpg.conf
-          cat ~/.gnupg/gpg-agent.conf
+          cat ~/.gnupg/gpg.conf || echo "No gpg.conf found"
+          echo "GPG agent configuration:"
+          cat ~/.gnupg/gpg-agent.conf || echo "No gpg-agent.conf found"
 
       - name: Publish to Sonatype
         env:
