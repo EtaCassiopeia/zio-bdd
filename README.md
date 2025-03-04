@@ -1,13 +1,13 @@
-# ZIOBDDFramework
+# zio-bdd
 
-**ZIOBDDFramework** is an open-source Behavior-Driven Development (BDD) testing framework for Scala 3, designed specifically for ZIO-based applications. It blends Gherkin-style testing with ZIO’s effect system, fiber-based concurrency, and compile-time safety, addressing the limitations of existing BDD tools in the ZIO ecosystem.
+**zio-bdd** is an open-source Behavior-Driven Development (BDD) testing framework for Scala 3, designed specifically for ZIO-based applications. It blends Gherkin-style testing with ZIO’s effect system, fiber-based concurrency, and compile-time safety, addressing the limitations of existing BDD tools in the ZIO ecosystem.
 
 ## Motivation
 ZIO’s fiber-based concurrency and effect management are powerful for building scalable Scala applications, but traditional BDD frameworks struggle to integrate seamlessly:
 - **Scala-Cucumber**: Uses runtime reflection for step matching, lacks fiber support, and poorly integrates with ZIO effects and `ZLayer`, often requiring blocking calls like `unsafeRun`.
 - **Specs2/ScalaTest**: Provide limited or no native Gherkin-style BDD, rely on thread-based execution, and miss ZIO-specific features like `TestClock` or `ZLayer`.
 
-These gaps result in fragile tests, limited concurrency, and cumbersome setups. **ZIOBDDFramework** was created to offer a ZIO-native BDD solution with type-safe steps, parallel execution, and effortless dependency management.
+These gaps result in fragile tests, limited concurrency, and cumbersome setups. **zio-bdd** was created to offer a ZIO-native BDD solution with type-safe steps, parallel execution, and effortless dependency management.
 
 ## Key Features
 - **Compile-Time Step Resolution**: Leverages Scala 3 macros to match Gherkin steps at compile time, avoiding runtime reflection errors seen in Scala-Cucumber.
@@ -134,4 +134,4 @@ the greeting should be Hello, World!
 ```
 
 ## Contributions
-ZIOBDDFramework is an open-source project! We welcome contributions to enhance features like parallel execution, custom reporters, or Gherkin parsing. Submit issues or pull requests on GitHub to join the community effort.
+zio-bdd is an open-source project! We welcome contributions to enhance features like parallel execution, custom reporters, or Gherkin parsing. Submit issues or pull requests on GitHub to join the community effort.
