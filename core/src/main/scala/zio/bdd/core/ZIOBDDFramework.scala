@@ -1,16 +1,15 @@
 package zio.bdd.core
 
 import sbt.testing.*
-import zio.bdd.core.*
 import zio.bdd.gherkin.{Feature, GherkinParser}
-import zio.{Runtime, Unsafe, ZIO, ZLayer}
+import zio.{Runtime, Unsafe, ZLayer}
+
 import java.io.File
-import scala.jdk.CollectionConverters.*
 import java.lang.annotation.Annotation
 
 class ZIOBDDFingerprint extends AnnotatedFingerprint {
   override def annotationName(): String = "zio.bdd.core.ZIOBDDTest"
-  override def isModule(): Boolean = true
+  override def isModule(): Boolean      = true
 }
 
 class ZIOBDDFramework extends Framework {
@@ -28,11 +27,14 @@ class ZIOBDDFramework extends Framework {
   }
 }
 
-class ZIOBDDRunner(runnerArgs: Array[String], runnerRemoteArgs: Array[String], testClassLoader: ClassLoader) extends Runner {
+class ZIOBDDRunner(runnerArgs: Array[String], runnerRemoteArgs: Array[String], testClassLoader: ClassLoader)
+    extends Runner {
   private val runtime = Runtime.default
 
   override def tasks(taskDefs: Array[TaskDef]): Array[Task] = {
-    println(s"ZIOBDDRunner: Processing ${taskDefs.length} TaskDefs: ${taskDefs.map(_.fullyQualifiedName()).mkString(", ")}")
+    println(
+      s"ZIOBDDRunner: Processing ${taskDefs.length} TaskDefs: ${taskDefs.map(_.fullyQualifiedName()).mkString(", ")}"
+    )
     if (taskDefs.isEmpty) {
       println("ZIOBDDRunner: No TaskDefs found - check fingerprint or class loading")
     }
@@ -46,16 +48,16 @@ class ZIOBDDRunner(runnerArgs: Array[String], runnerRemoteArgs: Array[String], t
     "ZIOBDD execution completed"
   }
 
-  override def args(): Array[String] = runnerArgs
+  override def args(): Array[String]       = runnerArgs
   override def remoteArgs(): Array[String] = runnerRemoteArgs
 }
 
 class ZIOBDDTask(
-                  taskDefinition: TaskDef,
-                  testClassLoader: ClassLoader,
-                  runtime: Runtime[Any],
-                  args: Array[String]
-                ) extends Task {
+  taskDefinition: TaskDef,
+  testClassLoader: ClassLoader,
+  runtime: Runtime[Any],
+  args: Array[String]
+) extends Task {
   override def taskDef(): TaskDef = taskDefinition
 
   override def execute(eventHandler: EventHandler, loggers: Array[Logger]): Array[Task] = {
@@ -63,18 +65,20 @@ class ZIOBDDTask(
     loggers.foreach(_.info(s"ZIOBDDTask: Executing test for $className"))
     val stepInstance = instantiateStepClass(className)
 
-    val reporter = parseReporter(args).getOrElse(ConsoleReporter)
+    val reporter             = parseReporter(args).getOrElse(ConsoleReporter)
     val featureFilesFromArgs = parseFeatureFiles(args)
     val featureFiles = if (featureFilesFromArgs.isEmpty) {
       // Fallback to annotation-provided directory
       val clazz = testClassLoader.loadClass(className + "$")
       // Explicitly type as Class[_ <: Annotation] and cast to ZIOBDDTest
-      //TODO: Fails to find annotation - Remove default
-      val annotation = clazz.getAnnotation(classOf[ZIOBDDTest].asInstanceOf[Class[_ <: Annotation]]).asInstanceOf[ZIOBDDTest]
+      // TODO: Fails to find annotation - Remove default
+      val annotation =
+        clazz.getAnnotation(classOf[ZIOBDDTest].asInstanceOf[Class[_ <: Annotation]]).asInstanceOf[ZIOBDDTest]
       val featureDir = if (annotation != null) annotation.featureDir else "example/src/test/resources/features"
-      val dir = new File(featureDir)
+      val dir        = new File(featureDir)
       if (dir.exists() && dir.isDirectory) {
-        dir.listFiles()
+        dir
+          .listFiles()
           .filter(_.getName.endsWith(".feature"))
           .map(_.getAbsolutePath)
           .toList
@@ -88,30 +92,33 @@ class ZIOBDDTask(
     loggers.foreach(_.info(s"ZIOBDDTask: Feature files: ${featureFiles.mkString(", ")}"))
     val env = ZLayer.succeed(stepInstance) ++ LogCollector.live ++ ZLayer.succeed(reporter) ++ stepInstance.environment
 
-    val features = try {
-      discoverFeatures(stepInstance, featureFiles)
-    } catch {
-      case e: Throwable =>
-        loggers.foreach(_.error(s"ZIOBDDTask: Failed to parse features: ${e.getMessage}"))
-        Feature("Failed Feature", scenarios = Nil)
-    }
+    val features =
+      try {
+        discoverFeatures(stepInstance, featureFiles)
+      } catch {
+        case e: Throwable =>
+          loggers.foreach(_.error(s"ZIOBDDTask: Failed to parse features: ${e.getMessage}"))
+          Feature("Failed Feature", scenarios = Nil)
+      }
     loggers.foreach(_.info(s"ZIOBDDTask: Parsed features: ${features.toString}"))
 
-    val program = ScenarioRunner.runScenarios(stepInstance, features, parallelism = 1)
+    val program = ScenarioRunner
+      .runScenarios(stepInstance, features, parallelism = 1)
       .map(_.flatten)
 
-    val results = try {
-      Unsafe.unsafe { implicit unsafe =>
-        val result = runtime.unsafe.run(program.provideLayer(env))
-        loggers.foreach(_.info(s"ZIOBDDTask: Run result: $result"))
-        result.getOrThrowFiberFailure()
+    val results =
+      try {
+        Unsafe.unsafe { implicit unsafe =>
+          val result = runtime.unsafe.run(program.provideLayer(env))
+          loggers.foreach(_.info(s"ZIOBDDTask: Run result: $result"))
+          result.getOrThrowFiberFailure()
+        }
+      } catch {
+        case e: Throwable =>
+          loggers.foreach(_.error(s"ZIOBDDTask: Execution failed: ${e.getMessage}"))
+          loggers.foreach(_.debug(s"ZIOBDDTask: Exception stack trace: ${e.getStackTrace.mkString("\n")}"))
+          Nil
       }
-    } catch {
-      case e: Throwable =>
-        loggers.foreach(_.error(s"ZIOBDDTask: Execution failed: ${e.getMessage}"))
-        loggers.foreach(_.debug(s"ZIOBDDTask: Exception stack trace: ${e.getStackTrace.mkString("\n")}"))
-        Nil
-    }
 
     reportResults(results, eventHandler, loggers)
     Array()
@@ -119,13 +126,13 @@ class ZIOBDDTask(
 
   override def tags(): Array[String] = Array("zio-bdd")
 
-  private def instantiateStepClass(className: String): ZIOSteps[Any] = {
+  private def instantiateStepClass(className: String): ZIOSteps[Any] =
     try {
       val moduleClassName = if (className.endsWith("$")) className else className + "$"
-      val clazz = testClassLoader.loadClass(moduleClassName)
+      val clazz           = testClassLoader.loadClass(moduleClassName)
       println(s"ZIOBDDTask: Successfully loaded class $moduleClassName")
       val instanceField = clazz.getField("MODULE$")
-      val instance = instanceField.get(null).asInstanceOf[ZIOSteps[Any]]
+      val instance      = instanceField.get(null).asInstanceOf[ZIOSteps[Any]]
       println(s"ZIOBDDTask: Successfully instantiated $moduleClassName")
       instance
     } catch {
@@ -133,22 +140,22 @@ class ZIOBDDTask(
         println(s"ZIOBDDTask: Failed to instantiate $className: ${e.getMessage}")
         throw e
     }
-  }
 
-  private def parseReporter(args: Array[String]): Option[Reporter] = {
+  private def parseReporter(args: Array[String]): Option[Reporter] =
     args.sliding(2).collectFirst {
       case Array("--reporter", "console") => ConsoleReporter
-      case Array("--reporter", "file") => FileReporter
+      case Array("--reporter", "file")    => FileReporter
     }
-  }
 
-  private def parseFeatureFiles(args: Array[String]): List[String] = {
-    args.sliding(2).collect {
-      case Array("--feature-file", path) => path
-    }.toList
-  }
+  private def parseFeatureFiles(args: Array[String]): List[String] =
+    args
+      .sliding(2)
+      .collect { case Array("--feature-file", path) =>
+        path
+      }
+      .toList
 
-  private def discoverFeatures(steps: ZIOSteps[Any], featureFiles: List[String]): Feature = {
+  private def discoverFeatures(steps: ZIOSteps[Any], featureFiles: List[String]): Feature =
     if (featureFiles.nonEmpty) {
       val featureContents = featureFiles.map { path =>
         scala.io.Source.fromFile(path).mkString
@@ -159,35 +166,34 @@ class ZIOBDDTask(
     } else {
       Feature("Default Feature", scenarios = Nil)
     }
-  }
 
   private def reportResults(
-                             results: List[StepResult],
-                             eventHandler: EventHandler,
-                             loggers: Array[Logger]
-                           ): Unit = {
+    results: List[StepResult],
+    eventHandler: EventHandler,
+    loggers: Array[Logger]
+  ): Unit = {
     loggers.foreach(_.info(s"ZIOBDDTask: Reporting ${results.length} results"))
     if (results.isEmpty) {
       loggers.foreach(_.warn("ZIOBDDTask: No results to report - test may have failed or produced no steps"))
       val event = new Event {
-        override def fullyQualifiedName(): String = taskDef.fullyQualifiedName()
-        override def fingerprint(): Fingerprint = taskDef.fingerprint()
-        override def selector(): Selector = new SuiteSelector()
-        override def status(): Status = Status.Failure
+        override def fullyQualifiedName(): String   = taskDef.fullyQualifiedName()
+        override def fingerprint(): Fingerprint     = taskDef.fingerprint()
+        override def selector(): Selector           = new SuiteSelector()
+        override def status(): Status               = Status.Failure
         override def throwable(): OptionalThrowable = new OptionalThrowable(new Exception("No test steps executed"))
-        override def duration(): Long = 0L
+        override def duration(): Long               = 0L
       }
       eventHandler.handle(event)
     } else {
       results.foreach { result =>
         val event = new Event {
           override def fullyQualifiedName(): String = taskDef.fullyQualifiedName()
-          override def fingerprint(): Fingerprint = taskDef.fingerprint()
-          override def selector(): Selector = new TestSelector(result.step)
-          override def status(): Status = if (result.succeeded) Status.Success else Status.Failure
+          override def fingerprint(): Fingerprint   = taskDef.fingerprint()
+          override def selector(): Selector         = new TestSelector(result.step)
+          override def status(): Status             = if (result.succeeded) Status.Success else Status.Failure
           override def throwable(): OptionalThrowable = result.error match {
             case Some(msg) => new OptionalThrowable(new Exception(msg))
-            case None => new OptionalThrowable()
+            case None      => new OptionalThrowable()
           }
           override def duration(): Long = result.logs.lastOption.map(_._2.toEpochMilli).getOrElse(0L)
         }

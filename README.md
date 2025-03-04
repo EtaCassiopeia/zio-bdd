@@ -21,37 +21,14 @@ These gaps result in fragile tests, limited concurrency, and cumbersome setups. 
 - **From Specs2/ScalaTest**: Offers a Gherkin-based BDD DSL with ZIO-first design, leveraging fibers and `ZLayer` for concurrency and setup, unlike their thread-based, code-centric approaches.
 
 ## Setup
-1. **Add Dependency**:
-   Assuming `ZIOBDDFramework` is published (e.g., at `"io.github.zio-bdd" %% "zio-bdd" % "1.0.0"`), add it to your `build.sbt`:
+
+**Add Dependency**:
    ```scala
-   libraryDependencies += "io.github.zio-bdd" %% "zio-bdd" % "1.0.0" % Test
+   libraryDependencies += "io.github.etacassiopeia" %% "zio-bdd" % "0.1.0" % Test
    libraryDependencies += "dev.zio" %% "zio" % "2.1.16" // Required for ZIO effects
 
    // Enable ZIOBDDFramework in sbt
    Test / testFrameworks += new TestFramework("zio.bdd.core.ZIOBDDFramework")
-   ```
-
-2. **Project Structure** (Example Multi-Module Setup):
-   ```
-   zio-bdd/
-   ├── src/
-   │   └── test/resources/features/  # Feature files for root module (optional)
-   ├── example/
-   │   ├── src/test/scala/zio/bdd/example/  # Test specs (e.g., SimpleSpec.scala)
-   │   └── src/test/resources/features/     # Feature files (e.g., simple.feature)
-   └── build.sbt
-   ```
-
-   For a multi-module project, add the dependency to the desired module (e.g., `example`):
-   ```scala
-   lazy val example = project
-     .in(file("example"))
-     .settings(
-       scalaVersion := "3.3.5",
-       libraryDependencies += "io.github.zio-bdd" %% "zio-bdd" % "1.0.0" % Test,
-       libraryDependencies += "dev.zio" %% "zio" % "2.1.16",
-       Test / testFrameworks += new TestFramework("zio.bdd.core.ZIOBDDFramework")
-     )
    ```
 
 ## Usage Example
@@ -63,7 +40,7 @@ package zio.bdd.example
 import zio.*
 import zio.bdd.core.{ZIOSteps, ZIOBDDTest}
 
-@ZIOBDDTest
+@ZIOBDDTest(featureDir = "example/src/test/resources/features")
 object SimpleSpec extends ZIOSteps.Default[GreetingService] {
   Given[String, String]("a user named {string}") { name =>
     ZIO.succeed(name)
@@ -80,6 +57,7 @@ object SimpleSpec extends ZIOSteps.Default[GreetingService] {
     } yield ()
   }
 
+  // Provide the environment layer using ZLayer composition
   override def environment: ZLayer[Any, Any, GreetingService] =
     ZLayer.succeed(Config("Hello")) >>> GreetingService.live
 }
@@ -90,24 +68,25 @@ trait GreetingService {
 }
 
 object GreetingService {
-  val live: ZLayer[Config, Nothing, GreetingService] = ZLayer.fromFunction { config: Config =>
+  val live: ZLayer[Config, Nothing, GreetingService] = ZLayer.fromFunction { (config: Config) =>
     new GreetingService {
-      def greet(name: String): ZIO[Any, Nothing, String] = ZIO.succeed(s"${config.greeting}, $name!")
+      override def greet(name: String): ZIO[Any, Nothing, String] =
+        ZIO.succeed(s"${config.greetingPrefix}, $name!")
     }
   }
 }
 
-case class Config(greeting: String)
+case class Config(greetingPrefix: String)
 ```
 
 ### 2. Create a Feature File
 Create `example/src/test/resources/features/simple.feature`:
 ```
 Feature: Simple Greeting
-  Scenario: Greeting a user
-    Given a user named "World"
+  Scenario: Greet a user
+    Given a user named World
     When the user is greeted
-    Then the greeting should be "Hello, World!"
+    Then the greeting should be Hello, World!
 ```
 
 ### 3. Run Tests
