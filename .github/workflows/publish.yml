@@ -50,30 +50,13 @@ jobs:
         with:
           apps: sbt
 
-      - name: Install GPG
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gnupg
+      - name: Setup GPG
+        uses: olafurpg/setup-gpg@v3
 
-      - name: Set up GPG
-        run: |
-          # Import GPG key
-          echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import --no-tty
-          # Configure GPG
-          echo "pinentry-mode loopback" > ~/.gnupg/gpg.conf
-          echo "use-agent" >> ~/.gnupg/gpg.conf
-          echo "allow-preset-passphrase" >> ~/.gnupg/gpg.conf
-          if [ -n "${{ secrets.GPG_KEY_ID }}" ]; then
-            echo "default-key ${{ secrets.GPG_KEY_ID }}" >> ~/.gnupg/gpg.conf
-          fi
-          # Start gpg-agent and preset passphrase
-          gpg-agent --daemon
-          if [ -n "${{ secrets.GPG_KEY_FINGERPRINT }}" ]; then
-            echo "${{ secrets.GPG_PASSPHRASE }}" | gpg-connect-agent --no-autostart "PRESET_PASSPHRASE ${{ secrets.GPG_KEY_FINGERPRINT }} -1" /bye
-          fi
+      - name: Import GPG Key
+        run: echo "${{ secrets.PGP_SECRET }}" | base64 --decode | gpg --batch --import --no-tty
         env:
-          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
-          GPG_KEY_FINGERPRINT: ${{ secrets.GPG_KEY_FINGERPRINT }}
+          PGP_SECRET: ${{ secrets.PGP_SECRET }}
 
       - name: Debug GPG Setup
         run: |
@@ -82,17 +65,16 @@ jobs:
           gpg --list-secret-keys
           echo "GPG configuration:"
           cat ~/.gnupg/gpg.conf || echo "No gpg.conf found"
-          echo "GPG agent configuration:"
           cat ~/.gnupg/gpg-agent.conf || echo "No gpg-agent.conf found"
 
       - name: Publish to Sonatype
         env:
           SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
           SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
-          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
         run: |
           sbt --warn \
-            -Dpgp.passphrase="${{ secrets.GPG_PASSPHRASE }}" \
+            -Dpgp.passphrase="${{ secrets.PGP_PASSPHRASE }}" \
             publishSigned \
             sonatypeBundleRelease
         continue-on-error: false
