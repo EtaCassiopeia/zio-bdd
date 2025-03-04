@@ -3,33 +3,48 @@ name: Publish to Sonatype Central
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - 'v*.*.*' # Trigger on version tags like v1.0.0
 
 jobs:
   publish:
     runs-on: ubuntu-latest
 
     steps:
+      # Step 1: Checkout the repository
       - uses: actions/checkout@v4
 
-      # Set up JDK and sbt using coursier
-      - uses: coursier/setup-action@v1
+      # Step 2: Set up JDK
+      - uses: actions/setup-java@v4
         with:
-          jvm: temurin:17
-          apps: sbt
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'sbt'
 
-      # Import GPG key
-      - name: Import GPG key
+      # Step 3: Install sbt
+      - name: Install sbt
         run: |
+          curl -L https://github.com/sbt/sbt/releases/download/v1.9.7/sbt-1.9.7.tgz | tar xz
+          echo "$PWD/sbt/bin" >> $GITHUB_PATH
+        shell: bash
+
+      # Step 4: Configure GPG for non-interactive signing
+      - name: Configure GPG
+        run: |
+          # Import the GPG key
           echo "${{ secrets.GPG_KEY }}" | gpg --import --batch --yes
+          # Create a temporary file for the passphrase
+          echo "${{ secrets.GPG_PASSPHRASE }}" > passphrase.txt
+          # Set up GPG to allow non-interactive signing
+          echo "allow-loopback-pinentry" > ~/.gnupg/gpg-agent.conf
+          echo "pinentry-mode loopback" > ~/.gnupg/gpg.conf
         env:
           GPG_KEY: ${{ secrets.GPG_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
 
-      # Publish to Sonatype
+      # Step 5: Build and publish to Sonatype
       - name: Publish to Sonatype
         run: |
           sbt -Dsbt.sonatype.credentials="${{ secrets.SONATYPE_USERNAME }}:${{ secrets.SONATYPE_PASSWORD }}" \
-              -Dgpg.passphrase="${{ secrets.GPG_PASSPHRASE }}" \
               publishSigned sonatypeBundleRelease
         env:
           SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
