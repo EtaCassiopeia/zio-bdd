@@ -3,31 +3,29 @@ name: Publish to Sonatype Central
 on:
   push:
     tags:
-      - 'v*.*.*' # Trigger on version tags like v1.0.0
+      - 'v*.*.*'
 
 jobs:
   publish:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout the repository
       - uses: actions/checkout@v4
 
-      # Step 2: Set up JDK (use a compatible version for your Scala project)
-      - uses: actions/setup-java@v4
+      # Set up JDK and sbt using coursier
+      - uses: coursier/setup-action@v1
         with:
-          distribution: 'temurin'
-          java-version: '17'
-          cache: 'sbt'
+          jvm: temurin:17
+          apps: sbt
 
-      # Step 3: Set up GPG for signing
+      # Import GPG key
       - name: Import GPG key
         run: |
           echo "${{ secrets.GPG_KEY }}" | gpg --import --batch --yes
         env:
           GPG_KEY: ${{ secrets.GPG_KEY }}
 
-      # Step 4: Build and publish to Sonatype
+      # Publish to Sonatype
       - name: Publish to Sonatype
         run: |
           sbt -Dsbt.sonatype.credentials="${{ secrets.SONATYPE_USERNAME }}:${{ secrets.SONATYPE_PASSWORD }}" \
