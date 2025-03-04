@@ -53,19 +53,31 @@ jobs:
       - name: Setup GPG
         uses: olafurpg/setup-gpg@v3
 
+      - name: Configure GPG for Non-Interactive Use
+        run: |
+          mkdir -p ~/.gnupg
+          echo "use-agent" >> ~/.gnupg/gpg.conf
+          echo "pinentry-mode loopback" >> ~/.gnupg/gpg.conf
+          echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
+          gpgconf --kill gpg-agent
+
       - name: Import GPG Key
-        run: echo "${{ secrets.PGP_SECRET }}" | base64 --decode | gpg --batch --import --no-tty
+        run: echo "${{ secrets.PGP_SECRET }}" | base64 --decode | gpg --batch --yes --import
         env:
           PGP_SECRET: ${{ secrets.PGP_SECRET }}
 
-      - name: Debug GPG Setup
+      - name: Verify GPG Key
         run: |
-          gpg --version
+          gpg --list-secret-keys --keyid-format LONG
           gpg --list-keys
-          gpg --list-secret-keys
-          echo "GPG configuration:"
-          cat ~/.gnupg/gpg.conf || echo "No gpg.conf found"
-          cat ~/.gnupg/gpg-agent.conf || echo "No gpg-agent.conf found"
+
+      - name: Export GPG Key to secRing
+        run: gpg --batch --yes --pinentry-mode loopback --passphrase "${{ secrets.PGP_PASSPHRASE }}" --export-secret-keys > ~/.gnupg/secring.gpg
+
+      - name: Set Git Identity (Optional)
+        run: |
+          git config --global user.email "zainalpour@gmail.com"
+          git config --global user.name "Mohsen Zainalpour"
 
       - name: Publish to Sonatype
         env:
