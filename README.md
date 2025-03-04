@@ -24,16 +24,16 @@ These gaps result in fragile tests, limited concurrency, and cumbersome setups. 
 - [X] Gherkin parser
 - [X] Step definition and macro expansion
 - [X] ScenarioRunner
-- [X] sbt Test interface to create the test framework
+- [X] SBT test interface for framework integration
 - [X] Feature discovery
-- [X] Extending standard Gherkin by adding test aspects like Flaky, Repeat, and Retry
-- [ ] Publishing artifacts on Sonatype
-- [ ] Improving carrying output values to the next step
-- [ ] Improve feature discovery and Runner configs
-- [ ] Add JUnit XML reporter
-- [ ] Extend Gherkin syntax to support ZIO test generators within examples or scenario outlines
-- [ ] Enable E2E testing by introducing test flows
-- [ ] Extend Gherkin to support event and trigger mechanisms for event-driven scenarios and steps
+- [X] Extended Gherkin with test aspects: Flaky, Repeat, and Retry
+- [ ] Publish artifacts on Sonatype
+- [ ] Enhance output value propagation between steps
+- [ ] Improve feature discovery and runner configurations
+- [ ] Add JUnit XML reporting
+- [ ] Extend Gherkin syntax to support ZIO test generators in examples and scenario outlines
+- [ ] Introduce E2E testing with test flow support
+- [ ] Expand Gherkin to handle event-driven scenarios with event and trigger mechanisms
 
 ## Setup
 
