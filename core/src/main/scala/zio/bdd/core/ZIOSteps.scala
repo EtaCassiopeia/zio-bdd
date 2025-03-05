@@ -1,18 +1,19 @@
 package zio.bdd.core
 
 import zio.*
+import zio.bdd.gherkin.StepType
+
 import scala.quoted.*
 import scala.util.matching.Regex
 
 trait ZIOSteps[R] {
   type Step[I, O] = I => ZIO[R, Throwable, O]
 
-  // Simplified StepDef without runtime type info for macros
-  final case class StepDef[I, O](pattern: Regex, fn: Step[I, O])
+  final case class StepDef[I, O](stepType: StepType, pattern: Regex, fn: Step[I, O])
 
   def getSteps: List[StepDef[?, ?]]
 
-  protected def register[I, O](pattern: String, fn: Step[I, O]): Unit
+  protected def register[I, O](stepType: StepType, pattern: String, fn: Step[I, O]): Unit
 
   def environment: ZLayer[Any, Any, R]
 
@@ -35,20 +36,16 @@ object ZIOSteps {
 
     override def getSteps: List[StepDef[?, ?]] = steps.reverse
 
-    override protected def register[I, O](pattern: String, fn: Step[I, O]): Unit = {
-      // Handle both legacy {string} and new {name:type} placeholders
+    override protected def register[I, O](stepType: StepType, pattern: String, fn: Step[I, O]): Unit = {
       val regexPattern = pattern
-        // Legacy placeholders
         .replace("{string}", "(.+)")
         .replace("{int}", "(\\d+)")
         .replace("{float}", "(\\d+\\.\\d+)")
-        // New typed placeholders: {name:String} -> (.+), ignore type in regex
         .replaceAll("\\{[^:]+:[^}]+\\}", "(.+)")
         .r
-      steps = StepDef(regexPattern, fn) :: steps
+      steps = StepDef(stepType, regexPattern, fn) :: steps
     }
 
-    // Default environment if not overridden
     override def environment: ZLayer[Any, Any, R] = ZLayer.empty.asInstanceOf[ZLayer[Any, Any, R]]
   }
 
@@ -56,23 +53,23 @@ object ZIOSteps {
     pattern: Expr[String],
     fn: Expr[I => ZIO[R, Throwable, O]],
     self: Expr[ZIOSteps[R]]
-  )(using Quotes): Expr[Unit] = '{ $self.register($pattern, $fn) }
+  )(using Quotes): Expr[Unit] = '{ $self.register(StepType.GivenStep, $pattern, $fn) }
 
   def whenImpl[R: Type, I: Type, O: Type](
     pattern: Expr[String],
     fn: Expr[I => ZIO[R, Throwable, O]],
     self: Expr[ZIOSteps[R]]
-  )(using Quotes): Expr[Unit] = '{ $self.register($pattern, $fn) }
+  )(using Quotes): Expr[Unit] = '{ $self.register(StepType.WhenStep, $pattern, $fn) }
 
   def thenImpl[R: Type, I: Type, O: Type](
     pattern: Expr[String],
     fn: Expr[I => ZIO[R, Throwable, O]],
     self: Expr[ZIOSteps[R]]
-  )(using Quotes): Expr[Unit] = '{ $self.register($pattern, $fn) }
+  )(using Quotes): Expr[Unit] = '{ $self.register(StepType.ThenStep, $pattern, $fn) }
 
   def andImpl[R: Type, I: Type, O: Type](
     pattern: Expr[String],
     fn: Expr[I => ZIO[R, Throwable, O]],
     self: Expr[ZIOSteps[R]]
-  )(using Quotes): Expr[Unit] = '{ $self.register($pattern, $fn) }
+  )(using Quotes): Expr[Unit] = '{ $self.register(StepType.AndStep, $pattern, $fn) }
 }

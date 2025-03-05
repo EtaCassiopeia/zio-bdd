@@ -7,9 +7,20 @@ import java.io.File
 import scala.io.Source
 
 // Define data structures to represent the parsed Gherkin syntax
-case class Feature(name: String, background: List[String] = Nil, scenarios: List[Scenario])
+case class Feature(name: String, background: List[Step] = Nil, scenarios: List[Scenario])
 
-case class Scenario(name: String, steps: List[String], examples: List[ExampleRow], metadata: ScenarioMetadata)
+case class Scenario(name: String, steps: List[Step], examples: List[ExampleRow], metadata: ScenarioMetadata)
+
+enum StepType {
+  case GivenStep
+  case WhenStep
+  case ThenStep
+  case AndStep
+}
+
+case class Step(stepType: StepType, pattern: String) {
+  override def toString: String = s"${stepType.toString.replace("Step", "")} $pattern"
+}
 
 case class ExampleRow(data: Map[String, String])
 
@@ -40,10 +51,20 @@ object GherkinParser {
   def tags(using P[_]): P[List[String]] = P(tag.rep.map(_.toList))
 
   // Background parser: captures background steps
-  def background(using P[_]): P[List[String]] = P("Background" ~ ":" ~/ ws ~ step.rep).map(_.toList)
+  def background(using P[_]): P[List[Step]] = P("Background" ~ ":" ~/ ws ~ step.rep).map(_.toList)
 
-  // Step parser: parses steps with optional colon, capturing everything including typed placeholders
-  def step(using P[_]): P[String] = P(("Given" | "When" | "Then" | "And") ~ ":".? ~/ text ~ ws).map(_.trim)
+  // Step parser: captures step type as StepType and pattern separately
+  def step(using P[_]): P[Step] = P(
+    ("Given" | "When" | "Then" | "And").! ~ ":".? ~/ text
+  ).map { case (stepTypeStr: String, pattern: String) =>
+    val stepType = stepTypeStr match {
+      case "Given" => StepType.GivenStep
+      case "When"  => StepType.WhenStep
+      case "Then"  => StepType.ThenStep
+      case "And"   => StepType.AndStep
+    }
+    Step(stepType, pattern.trim)
+  }
 
   // Examples parser: parses the Examples section with header and data rows
   def examples(using P[_]): P[List[ExampleRow]] =
@@ -95,7 +116,7 @@ object GherkinParser {
     ScenarioMetadata(retryCount, isFlaky, repeatCount)
   }
 
-  // Parse a single feature file with ZIO resource management and detailed error handling
+  // Parse a single feature file
   def parseFeatureFile(file: File): ZIO[Any, Throwable, Feature] =
     ZIO.scoped {
       ZIO.fromAutoCloseable(ZIO.attempt(Source.fromFile(file))).flatMap { source =>
@@ -104,7 +125,7 @@ object GherkinParser {
       }
     }
 
-  // Load all feature files from a directory with ZIO concurrency and logging
+  // Load all feature files from a directory
   def loadFeatures(directory: File): ZIO[Any, Throwable, List[Feature]] =
     for {
       files <- ZIO.attempt {
