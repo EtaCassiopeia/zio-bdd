@@ -28,7 +28,7 @@ These gaps result in fragile tests, limited concurrency, and cumbersome setups. 
 - [X] Feature discovery
 - [X] Extended Gherkin with test aspects: Flaky, Repeat, and Retry
 - [ ] Publish artifacts on Sonatype
-- [ ] Enhance output value propagation between steps
+- [X] Enhance output value propagation between steps using OutputStack
 - [ ] Improve feature discovery and runner configurations
 - [ ] Add JUnit XML reporting
 - [ ] Extend Gherkin syntax to support ZIO test generators in examples and scenario outlines

@@ -15,38 +15,23 @@ class ZIOBDDFingerprint extends AnnotatedFingerprint {
 class ZIOBDDFramework extends Framework {
   override def name(): String = "ZIOBDD"
 
-  override def fingerprints(): Array[Fingerprint] = {
-    println("ZIOBDDFramework: Fingerprints requested")
+  override def fingerprints(): Array[Fingerprint] =
     Array(new ZIOBDDFingerprint)
-  }
 
-  override def runner(args: Array[String], remoteArgs: Array[String], testClassLoader: ClassLoader): Runner = {
-    println(s"ZIOBDDFramework: Creating runner with args: ${args.mkString(", ")}")
-    println(s"ZIOBDDFramework: Test class loader: $testClassLoader")
+  override def runner(args: Array[String], remoteArgs: Array[String], testClassLoader: ClassLoader): Runner =
     new ZIOBDDRunner(args, remoteArgs, testClassLoader)
-  }
 }
 
 class ZIOBDDRunner(runnerArgs: Array[String], runnerRemoteArgs: Array[String], testClassLoader: ClassLoader)
     extends Runner {
   private val runtime = Runtime.default
 
-  override def tasks(taskDefs: Array[TaskDef]): Array[Task] = {
-    println(
-      s"ZIOBDDRunner: Processing ${taskDefs.length} TaskDefs: ${taskDefs.map(_.fullyQualifiedName()).mkString(", ")}"
-    )
-    if (taskDefs.isEmpty) {
-      println("ZIOBDDRunner: No TaskDefs found - check fingerprint or class loading")
-    }
+  override def tasks(taskDefs: Array[TaskDef]): Array[Task] =
     taskDefs.map { taskDef =>
       new ZIOBDDTask(taskDef, testClassLoader, runtime, runnerArgs)
     }
-  }
 
-  override def done(): String = {
-    println("ZIOBDDRunner: Done called")
-    "ZIOBDD execution completed"
-  }
+  override def done(): String = "ZIOBDD execution completed"
 
   override def args(): Array[String]       = runnerArgs
   override def remoteArgs(): Array[String] = runnerRemoteArgs
@@ -130,14 +115,11 @@ class ZIOBDDTask(
     try {
       val moduleClassName = if (className.endsWith("$")) className else className + "$"
       val clazz           = testClassLoader.loadClass(moduleClassName)
-      println(s"ZIOBDDTask: Successfully loaded class $moduleClassName")
-      val instanceField = clazz.getField("MODULE$")
-      val instance      = instanceField.get(null).asInstanceOf[ZIOSteps[Any]]
-      println(s"ZIOBDDTask: Successfully instantiated $moduleClassName")
+      val instanceField   = clazz.getField("MODULE$")
+      val instance        = instanceField.get(null).asInstanceOf[ZIOSteps[Any]]
       instance
     } catch {
       case e: Exception =>
-        println(s"ZIOBDDTask: Failed to instantiate $className: ${e.getMessage}")
         throw e
     }
 

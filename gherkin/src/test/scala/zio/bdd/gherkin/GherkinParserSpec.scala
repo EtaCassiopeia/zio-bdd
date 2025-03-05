@@ -18,16 +18,15 @@ object GherkinParserSpec extends ZIOSpecDefault {
                       |    Then the user exists
         """.stripMargin
       checkParse(content) { feature =>
-        println(feature.scenarios.head.metadata)
         assertTrue(
           feature.name == "User Management",
           feature.background.isEmpty,
           feature.scenarios.length == 1,
           feature.scenarios.head.name == "Create user",
           feature.scenarios.head.steps == List(
-            "a system is running",
-            "a user is created",
-            "the user exists"
+            Step(StepType.GivenStep, "a system is running"),
+            Step(StepType.WhenStep, "a user is created"),
+            Step(StepType.ThenStep, "the user exists")
           ),
           feature.scenarios.head.examples.isEmpty,
           !feature.scenarios.head.metadata.isFlaky,
@@ -48,12 +47,12 @@ object GherkinParserSpec extends ZIOSpecDefault {
       checkParse(content) { feature =>
         assertTrue(
           feature.name == "User Authentication",
-          feature.background == List("a system is running"),
+          feature.background == List(Step(StepType.GivenStep, "a system is running")),
           feature.scenarios.length == 1,
           feature.scenarios.head.name == "Login",
           feature.scenarios.head.steps == List(
-            "user logs in",
-            "user is authenticated"
+            Step(StepType.WhenStep, "user logs in"),
+            Step(StepType.ThenStep, "user is authenticated")
           )
         )
       }
@@ -74,7 +73,12 @@ object GherkinParserSpec extends ZIOSpecDefault {
           scenario.name == "Process payment",
           scenario.metadata.retryCount == 3,
           scenario.metadata.isFlaky,
-          scenario.metadata.repeatCount == 1
+          scenario.metadata.repeatCount == 1,
+          scenario.steps == List(
+            Step(StepType.GivenStep, "a payment request"),
+            Step(StepType.WhenStep, "payment is processed"),
+            Step(StepType.ThenStep, "payment succeeds")
+          )
         )
       }
     },
@@ -91,15 +95,14 @@ object GherkinParserSpec extends ZIOSpecDefault {
                       |    | Bob   | wrong    | fails    |
         """.stripMargin
       checkParse(content) { feature =>
-        println(feature)
         val scenario = feature.scenarios.head
         assertTrue(
           feature.name == "Login Validation",
           scenario.name == "Validate credentials",
           scenario.steps == List(
-            "user <name> exists",
-            "user enters password <password>",
-            "login <result>"
+            Step(StepType.GivenStep, "user <name> exists"),
+            Step(StepType.WhenStep, "user enters password <password>"),
+            Step(StepType.ThenStep, "login <result>")
           ),
           scenario.examples.length == 2,
           scenario.examples(0).data == Map(
@@ -133,9 +136,9 @@ object GherkinParserSpec extends ZIOSpecDefault {
           feature.name == "User Validation",
           scenario.name == "Validate reset emails",
           scenario.steps == List(
-            "a user exists with name {name:String}",
-            "the user requests a password reset",
-            "an email should be sent to {email:String}"
+            Step(StepType.GivenStep, "a user exists with name {name:String}"),
+            Step(StepType.WhenStep, "the user requests a password reset"),
+            Step(StepType.ThenStep, "an email should be sent to {email:String}")
           ),
           scenario.examples.length == 2,
           scenario.examples(0).data == Map(
@@ -167,7 +170,17 @@ object GherkinParserSpec extends ZIOSpecDefault {
           feature.name == "User Operations",
           feature.scenarios.length == 2,
           feature.scenarios(0).name == "Create user",
+          feature.scenarios(0).steps == List(
+            Step(StepType.GivenStep, "system ready"),
+            Step(StepType.WhenStep, "create user"),
+            Step(StepType.ThenStep, "user exists")
+          ),
           feature.scenarios(1).name == "Delete user",
+          feature.scenarios(1).steps == List(
+            Step(StepType.GivenStep, "user exists"),
+            Step(StepType.WhenStep, "delete user"),
+            Step(StepType.ThenStep, "user gone")
+          ),
           feature.scenarios(1).metadata.repeatCount == 2
         )
       }
@@ -191,15 +204,18 @@ object GherkinParserSpec extends ZIOSpecDefault {
       checkParse(content) { feature =>
         val scenario = feature.scenarios.head
         assertTrue(
-          feature.background == List("system running", "database ready"),
+          feature.background == List(
+            Step(StepType.GivenStep, "system running"),
+            Step(StepType.AndStep, "database ready")
+          ),
           scenario.metadata.retryCount == 2,
           scenario.metadata.isFlaky == true,
           scenario.metadata.repeatCount == 3,
           scenario.steps == List(
-            "user <name>",
-            "action <action>",
-            "result <result>",
-            "cleanup done"
+            Step(StepType.GivenStep, "user <name>"),
+            Step(StepType.WhenStep, "action <action>"),
+            Step(StepType.ThenStep, "result <result>"),
+            Step(StepType.AndStep, "cleanup done")
           ),
           scenario.examples.head.data == Map(
             "name"   -> "Alice",
@@ -222,13 +238,13 @@ object GherkinParserSpec extends ZIOSpecDefault {
       checkParse(content) { feature =>
         assertTrue(
           feature.name == "User Password Reset",
-          feature.background == List("""a user exists with name "Default""""),
+          feature.background == List(Step(StepType.GivenStep, """a user exists with name "Default"""")),
           feature.scenarios.length == 1,
           feature.scenarios.head.name == "Successful password reset with logging",
           feature.scenarios.head.steps == List(
-            "the user requests a password reset",
-            "the reset email is logged",
-            """an email should be sent to "default@example.com""""
+            Step(StepType.WhenStep, "the user requests a password reset"),
+            Step(StepType.AndStep, "the reset email is logged"),
+            Step(StepType.ThenStep, """an email should be sent to "default@example.com"""")
           ),
           feature.scenarios.head.examples.isEmpty,
           !feature.scenarios.head.metadata.isFlaky,
@@ -260,7 +276,8 @@ object GherkinParserSpec extends ZIOSpecDefault {
         } yield assertTrue(
           features.length == 1,
           features.head.name == "Test",
-          features.head.scenarios.head.name == "Simple"
+          features.head.scenarios.head.name == "Simple",
+          features.head.scenarios.head.steps == List(Step(StepType.GivenStep, "step"))
         )
       }
     },
@@ -300,8 +317,6 @@ object GherkinParserSpec extends ZIOSpecDefault {
       .parseFeature(content)
       .fold(
         failure = { error =>
-          println(s"Failed to parse feature: ${error.getMessage}")
-          println(s"Failed content: $content")
           assertTrue(false)
         },
         success = { feature =>

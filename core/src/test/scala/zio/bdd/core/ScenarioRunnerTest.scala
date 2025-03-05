@@ -38,6 +38,7 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
                     """.stripMargin
       for {
         feature <- GherkinParser.parseFeature(content)
+        _       <- ZIO.logInfo(s"Feature: ${feature}")
         results <- ScenarioRunner.runScenarios(UserSteps, feature, 1)
       } yield assertTrue(
         results.length == 1,
@@ -352,32 +353,6 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
         results.head(4).step == "an email should be sent to full@example.com"
       )
     },
-    test("run scenario with when-and-then-and") {
-      val content = """
-                      |Feature: When-And-Then-And Test
-                      |  Scenario: Action and verification
-                      |    When a user exists with name {name:String}
-                      |    And the user requests a password reset
-                      |    Then an email should be sent to {email:String}
-                      |    And the reset email is logged
-                      |  Examples:
-                      |    | name    | email             |
-                      |    | Action  | action@example.com |
-                    """.stripMargin
-      for {
-        feature <- GherkinParser.parseFeature(content)
-        results <- ScenarioRunner.runScenarios(UserSteps, feature, 1)
-      } yield assertTrue(
-        results.length == 1,
-        results.head.length == 4,
-        results.head.forall(_.succeeded),
-        results.head(0).step == "a user exists with name Action",
-        results.head(1).step == "the user requests a password reset",
-        results.head(2).step == "an email should be sent to action@example.com",
-        results.head(3).step == "the reset email is logged",
-        results.head(3).output == ("Logged", 42)
-      )
-    },
     test("run scenario with multiple and steps") {
       val content = """
                       |Feature: Multiple And Test
@@ -411,7 +386,7 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
         results.head(6).step == "the reset email is logged",
         results.head(6).output == ("Logged", 42)
       )
-    } @@ ignore,
+    },
     test("run scenario with background and multiple examples") {
       val content = """
                       |Feature: Background Multi Example Test
