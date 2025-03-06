@@ -7,10 +7,9 @@ ThisBuild / version       := "0.0.1"
 ThisBuild / versionScheme := Some("early-semver")
 
 lazy val commonDependencies = Seq(
-  "dev.zio"       %% "zio"          % "2.1.16",
-  "dev.zio"       %% "zio-test"     % "2.1.16" % Test,
-  "dev.zio"       %% "zio-test-sbt" % "2.1.16" % Test,
-  "org.scalatest" %% "scalatest"    % "3.2.19" % Test
+  "dev.zio" %% "zio"          % "2.1.16",
+  "dev.zio" %% "zio-test"     % "2.1.16" % Test,
+  "dev.zio" %% "zio-test-sbt" % "2.1.16" % Test
 )
 
 lazy val root = (project in file("."))
