@@ -6,7 +6,6 @@ import fastparse.MultiLineWhitespace.*
 import java.io.File
 import scala.io.Source
 
-// Data structures to represent the parsed Gherkin syntax
 case class Feature(name: String, background: List[Step] = Nil, scenarios: List[Scenario])
 
 case class Scenario(name: String, steps: List[Step], examples: List[ExampleRow], metadata: ScenarioMetadata)
