@@ -3,7 +3,6 @@ package zio.bdd.core
 import zio.*
 import zio.bdd.gherkin.*
 import zio.test.*
-import zio.test.TestAspect.ignore
 
 object ScenarioRunnerTest extends ZIOSpecDefault {
   val testEnv: ZLayer[Any, Nothing, UserRepo & EmailService & LogCollector & Reporter] =
