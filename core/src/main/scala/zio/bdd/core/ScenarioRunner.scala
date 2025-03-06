@@ -30,13 +30,17 @@ object ScenarioRunner {
     steps: ZIOSteps[R],
     feature: Feature,
     parallelism: Int
-  ): ZIO[R with LogCollector with Reporter, Throwable, List[List[StepResult]]] = {
-    // Build parameterized scenarios from the feature (e.g., expanding Examples)
-    val scenariosWithMetadata = ParameterizedScenarioBuilder.buildScenarios(feature)
-
+  ): ZIO[R with LogCollector with Reporter, Throwable, List[List[StepResult]]] =
     for {
       reporter <- ZIO.service[Reporter]
       _        <- reporter.startFeature(feature.name)
+      // Build parameterized scenarios from the feature (e.g., expanding Examples)
+      scenariosWithMetadata <-
+        ParameterizedScenarioBuilder
+          .buildScenarios(feature)
+          .mapError(e =>
+            new RuntimeException(e.toString)
+          ) // Map BuildError to Throwable until we have a better error handling for the rest of the code
       // Execute scenarios in parallel, respecting repeatCount
       results <- ZIO
                    .foreachPar(scenariosWithMetadata) { case (gherkinSteps, metadata) =>
@@ -54,7 +58,6 @@ object ScenarioRunner {
                    .map(_.toList)
       _ <- reporter.endFeature(feature.name, results)
     } yield results
-  }
 
   // Combines previous output with step parameters into a single input value
   def combine(prev: Any, params: List[String]): Any = {
