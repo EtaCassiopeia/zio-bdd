@@ -2,7 +2,6 @@ package zio.bdd.core
 
 import zio.*
 import zio.bdd.gherkin.{Feature, ScenarioMetadata, Step as GherkinStep}
-import scala.util.matching.Regex
 
 object ScenarioRunner {
 
@@ -58,28 +57,4 @@ object ScenarioRunner {
                    .map(_.toList)
       _ <- reporter.endFeature(feature.name, results)
     } yield results
-
-  // Combines previous output with step parameters into a single input value
-  def combine(prev: Any, params: List[String]): Any = {
-    val flattenedPrev = OutputStack.flattenOutput(prev)
-    params match {
-      case Nil => flattenedPrev
-      case head :: Nil =>
-        flattenedPrev match {
-          case ()     => parseParam(head)
-          case single => (single, parseParam(head)) // Pair previous output with single param
-        }
-      case many =>
-        flattenedPrev match {
-          case ()     => Tuple.fromArray(many.map(parseParam).toArray)
-          case single => Tuple.fromArray((single :: many.map(parseParam)).toArray) // Prepend previous output
-        }
-    }
-  }
-
-  // Extracts parameters from a step's pattern match
-  def extractParams(pattern: Regex, line: String): List[String] =
-    pattern.findFirstMatchIn(line).map(_.subgroups).getOrElse(Nil)
-
-  private def parseParam(param: String): Any = param.trim
 }

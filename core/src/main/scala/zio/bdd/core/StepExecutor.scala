@@ -7,7 +7,7 @@ import scala.util.matching.Regex
 
 // Executes individual Gherkin steps by matching them to step definitions and running them
 case class StepExecutor[R](
-  steps: ZIOSteps[R],               // User-provided step definitions
+  steps: ZIOSteps[R],               // Provided step definitions
   stackRef: Ref[Chunk[StepRecord]], // Stack tracking outputs of executed steps
   reporter: Reporter,               // Handles reporting of step start/end and results
   logCollector: LogCollector        // Collects logs during execution
@@ -150,10 +150,27 @@ case class StepExecutor[R](
       _     <- reporter.endStep(line, result)
     } yield result
 
-  // Delegates to ScenarioRunner for combining previous output with parameters
-  private def combine(prev: Any, params: List[String]): Any = ScenarioRunner.combine(prev, params)
+  // Combines previous output with step parameters into a single input value
+  private def combine(prev: Any, params: List[String]): Any = {
+    val flattenedPrev = OutputStack.flattenOutput(prev)
+    params match {
+      case Nil => flattenedPrev
+      case head :: Nil =>
+        flattenedPrev match {
+          case ()     => parseParam(head)
+          case single => (single, parseParam(head)) // Pair previous output with single param
+        }
+      case many =>
+        flattenedPrev match {
+          case ()     => Tuple.fromArray(many.map(parseParam).toArray)
+          case single => Tuple.fromArray((single :: many.map(parseParam)).toArray) // Prepend previous output
+        }
+    }
+  }
 
-  // Delegates to ScenarioRunner for extracting parameters from a regex pattern
-  // Uses ScenarioRunner's public extractParams method
-  private def extractParams(pattern: Regex, line: String): List[String] = ScenarioRunner.extractParams(pattern, line)
+  // Extracts parameters from a step's pattern match
+  private def extractParams(pattern: Regex, line: String): List[String] =
+    pattern.findFirstMatchIn(line).map(_.subgroups).getOrElse(Nil)
+
+  private def parseParam(param: String): Any = param.trim
 }

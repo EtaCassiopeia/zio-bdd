@@ -3,7 +3,7 @@ package zio.bdd.core
 import zio.*
 import zio.bdd.gherkin.StepType
 
-// Manages a stack of step records, tracking outputs across step executions
+// A stack of step records, tracking outputs across step executions
 object OutputStack {
   // Creates an empty stack
   def make: UIO[Ref[Chunk[StepRecord]]] = Ref.make(Chunk.empty[StepRecord])
