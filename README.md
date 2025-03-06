@@ -27,13 +27,16 @@ These gaps result in fragile tests, limited concurrency, and cumbersome setups. 
 - [X] SBT test interface for framework integration
 - [X] Feature discovery
 - [X] Extended Gherkin with test aspects: Flaky, Repeat, and Retry
-- [ ] Publish artifacts on Sonatype
 - [X] Enhance output value propagation between steps using OutputStack
+- [ ] Implement plugins for navigate between feature files and step definitions (e.g., IntelliJ, VSCode)
 - [ ] Improve feature discovery and runner configurations
-- [ ] Add JUnit XML reporting
+- [ ] Publish artifacts on Sonatype
+- [ ] Implement JUnit XML reporting for CI integration
 - [ ] Extend Gherkin syntax to support ZIO test generators in examples and scenario outlines
 - [ ] Introduce E2E testing with test flow support
 - [ ] Expand Gherkin to handle event-driven scenarios with event and trigger mechanisms
+- [ ] Add support for linting and code formatting
+- [ ] Improve test coverage
 
 ## Setup
 
@@ -120,4 +123,3 @@ Feature: Simple Greeting
 
 ## Contributions
 zio-bdd is an open-source project! We welcome contributions to enhance features like parallel execution, custom reporters, or Gherkin parsing. Submit issues or pull requests on GitHub to join the community effort.
-
