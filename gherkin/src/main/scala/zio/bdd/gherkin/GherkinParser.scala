@@ -89,13 +89,21 @@ object GherkinParser {
   def gherkin(using P[_]): P[Feature] =
     P(Start ~/ ws ~ feature ~ ws ~ End)
 
+  // Preprocess content to remove comments (lines starting with #)
+  private def preprocessContent(content: String): String =
+    content.linesIterator
+      .filterNot(line => line.trim.startsWith("#")) // Remove lines starting with #
+      .filterNot(_.trim.isEmpty)                    // Optionally remove empty lines
+      .mkString("\n")
+
   // Helper method to parse content, converting Parsed.Failure to ZIO failure
   def parseFeature(content: String): ZIO[Any, Throwable, Feature] =
     ZIO.fromEither {
-      parse(content, p => gherkin(using p)) match {
+      val cleanedContent = preprocessContent(content) // Preprocess to remove comments
+      parse(cleanedContent, p => gherkin(using p)) match {
         case Parsed.Success(feature, _) => Right(feature)
         case Parsed.Failure(label, index, extra) =>
-          val inputSnippet = content.linesIterator.drop(index / content.length).nextOption() match {
+          val inputSnippet = cleanedContent.linesIterator.drop(index / cleanedContent.length).nextOption() match {
             case Some(line) => s"near: '$line' (index $index)"
             case None       => "at end of input"
           }
