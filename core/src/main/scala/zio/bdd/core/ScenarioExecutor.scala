@@ -32,7 +32,7 @@ case class ScenarioExecutor[R](
                 StepResult(
                   gherkinStep.toString,
                   succeeded = false,
-                  error = Some("Skipped due to prior failure"),
+                  error = Some(new Exception("Skipped due to prior failure")),
                   output = (),
                   logs = Nil,
                   duration = Duration.Zero,

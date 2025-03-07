@@ -113,9 +113,9 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
         results.head.length == 3,
         results.head(0).succeeded,
         !results.head(1).succeeded,
-        results.head(1).error.contains("Reset failed"),
+        results.head(1).error.map(_.getMessage).contains("Reset failed"),
         !results.head(2).succeeded,
-        results.head(2).error.contains("Skipped due to prior failure"),
+        results.head(2).error.map(_.getMessage).contains("Skipped due to prior failure"),
         feature.scenarios.head.metadata.retryCount == 3
       )
     },
@@ -186,7 +186,7 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
         results.head.length == 2,
         results.head(0).succeeded,
         !results.head(1).succeeded,
-        results.head(1).error.contains("No step definition matches"),
+        results.head(1).error.map(_.getMessage).contains("No step definition matches"),
         results.head(1).step == "an undefined step runs"
       )
     },
@@ -210,7 +210,7 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
         results.head(0).succeeded,
         results.head(1).succeeded,
         !results.head(2).succeeded,
-        results.head(2).error.contains("Invalid input for Then step: expected a valid email address"),
+        results.head(2).error.map(_.getMessage).contains("Invalid input for Then step: expected a valid email address"),
         results.head(2).step == "an email should be sent to 123"
       )
     },

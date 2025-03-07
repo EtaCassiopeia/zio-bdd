@@ -56,16 +56,17 @@ object ConsoleReporter extends Reporter {
 
   def endStep(step: String, result: StepResult): ZIO[Any, Nothing, Unit] = {
     val status   = if (result.succeeded) s"${LightGreen}PASSED${Reset}" else s"${LightRed}FAILED${Reset}"
-    val errorMsg = result.error.map(e => s" - ${LightRed}Error: $e${Reset}").getOrElse("")
+    val errorMsg = result.error.map(t => s" - ${LightRed}Error: ${t.getMessage}${Reset}").getOrElse("")
+    val stackTrace =
+      result.error.map(t => s"${LightRed}Stack trace:\n${t.getStackTrace.mkString("\n")}${Reset}").getOrElse("")
     val logs = if (result.logs.nonEmpty) {
       result.logs.map { case (msg, time) => s"${LightYellow}      ╰─ [$time] $msg${Reset}" }.mkString("\n")
-    } else {
-      "" // No logs, no extra lines
-    }
+    } else ""
     val timing = s" (start: ${result.startTime}, duration: ${result.duration.toMillis}ms)"
     Console
       .printLine(
-        s"${LightBlue}    ├─◑ [$status] $step$errorMsg$timing${Reset}" + (if (logs.nonEmpty) s"\n$logs" else "")
+        s"${LightBlue}    ├─◑ [$status] $step$errorMsg$timing${Reset}" +
+          (if (logs.nonEmpty || stackTrace.nonEmpty) s"\n$logs$stackTrace" else "")
       )
       .orDie
   }

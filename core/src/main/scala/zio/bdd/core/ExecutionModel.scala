@@ -8,7 +8,7 @@ import zio.Duration
 case class StepResult(
   step: String,                  // The step's text (e.g., "Given I have 5 items")
   succeeded: Boolean,            // Whether the step succeeded
-  error: Option[String],         // Error message if the step failed
+  error: Option[Throwable],      // Error message if the step failed
   output: Any,                   // The output produced by the step
   logs: List[(String, Instant)], // Logs collected during execution
   duration: Duration,            // New: Execution time

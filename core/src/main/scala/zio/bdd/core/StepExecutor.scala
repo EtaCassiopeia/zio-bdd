@@ -148,7 +148,7 @@ case class StepExecutor[R](
           StepResult(
             line,
             succeeded = false,
-            error = Some(error.getMessage),
+            error = Some(error),
             output = (),
             logs = logs,
             duration = Duration.Zero,
@@ -172,7 +172,7 @@ case class StepExecutor[R](
       result = StepResult(
                  line,
                  succeeded = false,
-                 error = Some("No step definition matches"),
+                 error = Some(new Exception("No step definition matches")),
                  output = (),
                  logs = logs,
                  duration = Duration.Zero,

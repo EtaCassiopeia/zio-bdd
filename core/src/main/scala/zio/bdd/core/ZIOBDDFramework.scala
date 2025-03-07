@@ -158,34 +158,48 @@ class ZIOBDDTask(
     if (results.isEmpty) {
       loggers.foreach(_.warn("ZIOBDDTask: No results to report - test may have failed or produced no steps"))
       val event = new Event {
-        override def fullyQualifiedName(): String   = taskDef.fullyQualifiedName()
-        override def fingerprint(): Fingerprint     = taskDef.fingerprint()
-        override def selector(): Selector           = new SuiteSelector()
-        override def status(): Status               = Status.Failure
+        override def fullyQualifiedName(): String = taskDef.fullyQualifiedName()
+
+        override def fingerprint(): Fingerprint = taskDef.fingerprint()
+
+        override def selector(): Selector = new SuiteSelector()
+
+        override def status(): Status = Status.Failure
+
         override def throwable(): OptionalThrowable = new OptionalThrowable(new Exception("No test steps executed"))
-        override def duration(): Long               = 0L
+
+        override def duration(): Long = 0L
       }
       eventHandler.handle(event)
     } else {
       results.foreach { result =>
         val event = new Event {
           override def fullyQualifiedName(): String = taskDef.fullyQualifiedName()
-          override def fingerprint(): Fingerprint   = taskDef.fingerprint()
-          override def selector(): Selector         = new TestSelector(result.step)
-          override def status(): Status             = if (result.succeeded) Status.Success else Status.Failure
+
+          override def fingerprint(): Fingerprint = taskDef.fingerprint()
+
+          override def selector(): Selector = new TestSelector(result.step)
+
+          override def status(): Status = if (result.succeeded) Status.Success else Status.Failure
+
           override def throwable(): OptionalThrowable = result.error match {
-            case Some(msg) => new OptionalThrowable(new Exception(msg))
-            case None      => new OptionalThrowable()
+            case Some(t) => new OptionalThrowable(t)
+            case None    => new OptionalThrowable()
           }
-          override def duration(): Long = result.logs.lastOption.map(_._2.toEpochMilli).getOrElse(0L)
+
+          override def duration(): Long = result.duration.toMillis
         }
         eventHandler.handle(event)
 
         loggers.foreach { logger =>
-          val logMsg = s"${result.step} - ${if (result.succeeded) "PASSED" else "FAILED"}"
+          val logMsg =
+            s"${result.step} - ${if (result.succeeded) "PASSED" else "FAILED"} (duration: ${result.duration.toMillis}ms)"
           logger.info(logMsg)
           result.logs.foreach { case (msg, time) => logger.debug(s"[$time] $msg") }
-          result.error.foreach(err => logger.error(err))
+          result.error.foreach { t =>
+            logger.error(s"Error: ${t.getMessage}")
+            logger.debug(s"Stack trace: ${t.getStackTrace.mkString("\n")}")
+          }
         }
       }
     }
