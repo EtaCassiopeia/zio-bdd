@@ -10,7 +10,7 @@ trait Reporter {
     feature: String,
     results: List[List[StepResult]],
     ignoredCount: Int
-  ): ZIO[Any, Nothing, Unit] // Updated signature
+  ): ZIO[Any, Nothing, Unit]
   def startScenario(scenario: String): ZIO[Any, Nothing, Unit]
   def endScenario(scenario: String, results: List[StepResult]): ZIO[Any, Nothing, Unit]
   def startStep(step: String): ZIO[Any, Nothing, Unit]
