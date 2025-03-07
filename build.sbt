@@ -1,7 +1,7 @@
 import xerial.sbt.Sonatype.GitHubHosting
 import xerial.sbt.Sonatype.sonatypeCentralHost
 
-ThisBuild / scalaVersion  := "3.3.5"
+ThisBuild / scalaVersion  := "3.6.4"
 ThisBuild / organization  := "io.github.etacassiopeia"
 ThisBuild / version       := "0.0.1"
 ThisBuild / versionScheme := Some("early-semver")

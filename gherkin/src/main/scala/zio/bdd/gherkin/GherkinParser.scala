@@ -32,33 +32,33 @@ case class ScenarioMetadata(
 
 object GherkinParser {
   // Whitespace parser: handles spaces, tabs, newlines, carriage returns
-  def ws(using P[_]): P[Unit] = P(CharIn(" \t\n\r").rep)
+  def ws(using P[?]): P[Unit] = P(CharIn(" \t\n\r").rep)
 
   // Tag parser: captures tags like @retry(3), @flaky, @ignore
-  def tag(using P[_]): P[String] = P("@" ~ CharsWhile(c => c.isLetterOrDigit || c == '_' || c == '(' || c == ')').!)
+  def tag(using P[?]): P[String] = P("@" ~ CharsWhile(c => c.isLetterOrDigit || c == '_' || c == '(' || c == ')').!)
 
   // Keyword parser: handles Gherkin keywords with optional colon
-  def keyword(using P[_]): P[String] = P(
+  def keyword(using P[?]): P[String] = P(
     ("Feature" | "Background" | "Scenario Outline" | "Scenario" | "Given" | "When" | "Then" | "And" | "Examples") ~ (":".?)
   ).!.map(_.stripSuffix(":"))
 
   // Text parser: captures text until newline, including typed placeholders like {name:String}
-  def text(using P[_]): P[String] = P(CharsWhile(_ != '\n').!)
+  def text(using P[?]): P[String] = P(CharsWhile(_ != '\n').!)
 
   // Cell parser: captures text between '|' characters, trims whitespace
-  def cell(using P[_]): P[String] = P(CharsWhile(_ != '|').!).map(_.trim)
+  def cell(using P[?]): P[String] = P(CharsWhile(_ != '|').!).map(_.trim)
 
   // Row parser: parses a table row starting and ending with '|'
-  def row(using P[_]): P[List[String]] = P("|" ~/ cell.rep(sep = "|") ~ "|").map(_.toList)
+  def row(using P[?]): P[List[String]] = P("|" ~/ cell.rep(sep = "|") ~ "|").map(_.toList)
 
   // Tags parser: captures zero or more tags
-  def tags(using P[_]): P[List[String]] = P(tag.rep.map(_.toList))
+  def tags(using P[?]): P[List[String]] = P(tag.rep.map(_.toList))
 
   // Background parser: captures background steps
-  def background(using P[_]): P[List[Step]] = P("Background" ~ ":" ~/ ws ~ step.rep).map(_.toList)
+  def background(using P[?]): P[List[Step]] = P("Background" ~ ":" ~/ ws ~ step.rep).map(_.toList)
 
   // Step parser: captures step type as StepType and pattern separately
-  def step(using P[_]): P[Step] = P(
+  def step(using P[?]): P[Step] = P(
     ("Given" | "When" | "Then" | "And").! ~ ":".? ~/ text
   ).map { case (stepTypeStr: String, pattern: String) =>
     val stepType = stepTypeStr match {
@@ -71,13 +71,13 @@ object GherkinParser {
   }
 
   // Examples parser: parses the Examples section with header and data rows
-  def examples(using P[_]): P[List[ExampleRow]] =
+  def examples(using P[?]): P[List[ExampleRow]] =
     P("Examples" ~ ":" ~/ ws ~ row ~ (ws ~ row).rep).map { case (header, rows) =>
       rows.map(row => ExampleRow(header.zip(row).toMap)).toList
     }
 
   // Scenario parser: supports both Scenario and Scenario Outline with tags
-  def scenario(using P[_]): P[Scenario] =
+  def scenario(using P[?]): P[Scenario] =
     P(tags ~ (("Scenario" ~ !("Outline" ~ ":")) | "Scenario Outline") ~ ":" ~/ text ~ ws ~ step.rep ~ examples.?).map {
       case (tags, name, steps, examplesOpt) =>
         val metadata = parseMetadata(tags)
@@ -85,13 +85,13 @@ object GherkinParser {
     }
 
   // Feature parser: parses feature name, optional background, and one or more scenarios
-  def feature(using P[_]): P[Feature] =
+  def feature(using P[?]): P[Feature] =
     P("Feature" ~ ":" ~/ text ~ ws ~ background.? ~ scenario.rep(1)).map { case (name, bgOpt, scenarios) =>
       Feature(name.trim, bgOpt.getOrElse(Nil), scenarios.toList)
     }
 
   // Top-level parser: parses the entire Gherkin content
-  def gherkin(using P[_]): P[Feature] =
+  def gherkin(using P[?]): P[Feature] =
     P(Start ~/ ws ~ feature ~ ws ~ End)
 
   // Preprocess content to remove comments (lines starting with #)
