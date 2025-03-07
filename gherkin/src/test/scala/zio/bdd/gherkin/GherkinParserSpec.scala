@@ -8,7 +8,7 @@ import java.io.File
 
 object GherkinParserSpec extends ZIOSpecDefault {
 
-  def spec: Spec[TestEnvironment with Scope, Any] = suite("GherkinParser")(
+  def spec: Spec[TestEnvironment & Scope, Any] = suite("GherkinParser")(
     test("parse basic feature with single scenario") {
       val content = """
                       |Feature: User Management

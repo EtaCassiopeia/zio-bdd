@@ -58,7 +58,7 @@ class ZIOBDDTask(
       // Explicitly type as Class[_ <: Annotation] and cast to ZIOBDDTest
       // TODO: Fails to find annotation - Remove default
       val annotation =
-        clazz.getAnnotation(classOf[ZIOBDDTest].asInstanceOf[Class[_ <: Annotation]]).asInstanceOf[ZIOBDDTest]
+        clazz.getAnnotation(classOf[ZIOBDDTest].asInstanceOf[Class[? <: Annotation]]).asInstanceOf[ZIOBDDTest]
       val featureDir = if (annotation != null) annotation.featureDir else "example/src/test/resources/features"
       val dir        = new File(featureDir)
       if (dir.exists() && dir.isDirectory) {

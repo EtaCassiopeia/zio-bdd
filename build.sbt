@@ -1,7 +1,7 @@
 import xerial.sbt.Sonatype.GitHubHosting
 import xerial.sbt.Sonatype.sonatypeCentralHost
 
-ThisBuild / scalaVersion  := "3.3.5"
+ThisBuild / scalaVersion  := "3.6.4"
 ThisBuild / organization  := "io.github.etacassiopeia"
 ThisBuild / version       := "0.0.1"
 ThisBuild / versionScheme := Some("early-semver")
@@ -41,7 +41,10 @@ lazy val core = (project in file("core"))
   .settings(
     name := "zio-bdd-core",
     libraryDependencies ++= commonDependencies,
-    libraryDependencies += "org.scala-sbt" % "test-interface" % "1.0" % "provided",
+    libraryDependencies ++= Seq(
+      "org.scala-sbt" % "test-interface" % "1.0" % "provided",
+      "dev.zio"      %% "zio-streams"    % "2.1.16"
+    ),
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
     publish / skip := true
   )

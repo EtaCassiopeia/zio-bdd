@@ -21,7 +21,7 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
       LogCollector.live ++
       ZLayer.succeed(ConsoleReporter)
 
-  def spec: Spec[TestEnvironment with Scope, Any] = suite("ScenarioRunner")(
+  def spec: Spec[TestEnvironment & Scope, Any] = suite("ScenarioRunner")(
     test("run valid scenario with background") {
       val content = """
                       |Feature: User Management

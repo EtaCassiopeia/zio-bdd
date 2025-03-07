@@ -10,7 +10,7 @@ object ScenarioRunner {
     steps: ZIOSteps[R],
     gherkinSteps: List[GherkinStep],
     metadata: ScenarioMetadata = ScenarioMetadata()
-  ): ZIO[R with LogCollector with Reporter, Throwable, List[StepResult]] =
+  ): ZIO[R & LogCollector & Reporter, Throwable, List[StepResult]] =
     for {
       reporter     <- ZIO.service[Reporter]
       logCollector <- ZIO.service[LogCollector]
@@ -34,7 +34,7 @@ object ScenarioRunner {
     steps: ZIOSteps[R],
     feature: Feature,
     parallelism: Int
-  ): ZIO[R with LogCollector with Reporter, Throwable, List[List[StepResult]]] =
+  ): ZIO[R & LogCollector & Reporter, Throwable, List[List[StepResult]]] =
     for {
       reporter <- ZIO.service[Reporter]
       _        <- reporter.startFeature(feature.name)
