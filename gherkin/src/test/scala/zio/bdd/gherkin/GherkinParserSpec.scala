@@ -253,6 +253,43 @@ object GherkinParserSpec extends ZIOSpecDefault {
         )
       }
     },
+    test("parse feature with comments at multiple levels") {
+      val content = """
+                      |# File-level comment about password reset
+                      |Feature: User Password Reset with Comments
+                      |  # Background comment explaining setup
+                      |  Background:
+                      |    # Comment before Given step
+                      |    Given a user exists with name "Default"
+                      |  # Scenario comment describing the test case
+                      |  Scenario: Successful password reset with logging
+                      |    # Comment before When step
+                      |    When the user requests a password reset
+                      |    # Comment explaining logging
+                      |    And the reset email is logged
+                      |    # Comment before Then step
+                      |    Then an email should be sent to "default@example.com"
+                      |# End of file comment
+        """.stripMargin
+
+      checkParse(content) { feature =>
+        assertTrue(
+          feature.name == "User Password Reset with Comments",
+          feature.background == List(Step(StepType.GivenStep, """a user exists with name "Default"""")),
+          feature.scenarios.length == 1,
+          feature.scenarios.head.name == "Successful password reset with logging",
+          feature.scenarios.head.steps == List(
+            Step(StepType.WhenStep, "the user requests a password reset"),
+            Step(StepType.AndStep, "the reset email is logged"),
+            Step(StepType.ThenStep, """an email should be sent to "default@example.com"""")
+          ),
+          feature.scenarios.head.examples.isEmpty,
+          !feature.scenarios.head.metadata.isFlaky,
+          feature.scenarios.head.metadata.repeatCount == 1,
+          feature.scenarios.head.metadata.retryCount == 0
+        )
+      }
+    },
     test("loadFeatures from directory") {
       ZIO.scoped {
         for {
