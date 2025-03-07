@@ -6,16 +6,16 @@ import java.io.File
 
 trait Reporter {
   def startFeature(feature: String): ZIO[Any, Nothing, Unit]
-
-  def endFeature(feature: String, results: List[List[StepResult]]): ZIO[Any, Nothing, Unit]
-
+  def endFeature(
+    feature: String,
+    results: List[List[StepResult]],
+    ignoredCount: Int
+  ): ZIO[Any, Nothing, Unit] // Updated signature
   def startScenario(scenario: String): ZIO[Any, Nothing, Unit]
-
   def endScenario(scenario: String, results: List[StepResult]): ZIO[Any, Nothing, Unit]
-
   def startStep(step: String): ZIO[Any, Nothing, Unit]
-
   def endStep(step: String, result: StepResult): ZIO[Any, Nothing, Unit]
+  def reportIgnoredScenario(scenario: String): ZIO[Any, Nothing, Unit]
 }
 
 object ConsoleReporter extends Reporter {
@@ -24,17 +24,18 @@ object ConsoleReporter extends Reporter {
   private val LightRed    = "\u001b[91m" // Bright red for failed
   private val LightBlue   = "\u001b[94m" // Bright blue for features and steps
   private val LightYellow = "\u001b[93m" // Bright yellow for scenarios and logs
+  private val LightGray   = "\u001b[90m" // Gray for ignored scenarios
   private val Reset       = "\u001b[0m"
 
   def startFeature(feature: String): ZIO[Any, Nothing, Unit] =
     Console.printLine(s"${LightBlue}* Feature: $feature${Reset}").orDie
 
-  def endFeature(feature: String, results: List[List[StepResult]]): ZIO[Any, Nothing, Unit] = {
+  def endFeature(feature: String, results: List[List[StepResult]], ignoredCount: Int): ZIO[Any, Nothing, Unit] = {
     val passed = results.flatten.count(_.succeeded)
     val failed = results.flatten.length - passed
     Console
       .printLine(
-        s"${LightBlue}* Finished Feature: $feature - ${LightGreen}$passed passed${Reset}, ${LightRed}$failed failed${Reset}"
+        s"${LightBlue}* Finished Feature: $feature - ${LightGreen}$passed passed${Reset}, ${LightRed}$failed failed${Reset}, ${LightGray}$ignoredCount ignored${Reset}"
       )
       .orDie
   }
@@ -65,6 +66,9 @@ object ConsoleReporter extends Reporter {
       .printLine(s"${LightBlue}    ├─◑ [$status] $step$errorMsg${Reset}" + (if (logs.nonEmpty) s"\n$logs" else ""))
       .orDie
   }
+
+  def reportIgnoredScenario(scenario: String): ZIO[Any, Nothing, Unit] =
+    Console.printLine(s"${LightGray}  ◉ Scenario Ignored: $scenario${Reset}").orDie
 }
 
 object FileReporter extends Reporter {
@@ -78,7 +82,7 @@ object FileReporter extends Reporter {
 
   def startFeature(feature: String): ZIO[Any, Nothing, Unit] = ZIO.unit
 
-  def endFeature(feature: String, results: List[List[StepResult]]): ZIO[Any, Nothing, Unit] = {
+  def endFeature(feature: String, results: List[List[StepResult]], ignoredCount: Int): ZIO[Any, Nothing, Unit] = {
     val content = results.zipWithIndex.flatMap { case (scenarioResults, idx) =>
       val scenarioHeader = s"Scenario $idx:\n"
       scenarioResults.map { result =>
@@ -87,8 +91,10 @@ object FileReporter extends Reporter {
         val logs     = result.logs.map { case (msg, time) => s"[$time] $msg" }.mkString("\n  ")
         s"[$status] ${result.step}$errorMsg\n  $logs"
       }.mkString(scenarioHeader, "\n", "\n")
-    }.mkString("\n")
-    ZIO.logInfo(s"Preparing to write results for feature: $feature with ${results.length} scenarios") *>
+    }.mkString("\n") + (if (ignoredCount > 0) s"\nIgnored Scenarios: $ignoredCount" else "")
+    ZIO.logInfo(
+      s"Preparing to write results for feature: $feature with ${results.length} scenarios and $ignoredCount ignored"
+    ) *>
       writeToFile(feature, content)
   }
 
@@ -99,4 +105,7 @@ object FileReporter extends Reporter {
   def startStep(step: String): ZIO[Any, Nothing, Unit] = ZIO.unit
 
   def endStep(step: String, result: StepResult): ZIO[Any, Nothing, Unit] = ZIO.unit
+
+  def reportIgnoredScenario(scenario: String): ZIO[Any, Nothing, Unit] =
+    ZIO.logInfo(s"Scenario ignored: $scenario")
 }

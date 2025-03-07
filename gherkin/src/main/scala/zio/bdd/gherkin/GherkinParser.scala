@@ -23,13 +23,18 @@ case class Step(stepType: StepType, pattern: String) {
 
 case class ExampleRow(data: Map[String, String])
 
-case class ScenarioMetadata(retryCount: Int = 0, isFlaky: Boolean = false, repeatCount: Int = 1)
+case class ScenarioMetadata(
+  retryCount: Int = 0,
+  isFlaky: Boolean = false,
+  repeatCount: Int = 1,
+  isIgnored: Boolean = false
+)
 
 object GherkinParser {
   // Whitespace parser: handles spaces, tabs, newlines, carriage returns
   def ws(using P[_]): P[Unit] = P(CharIn(" \t\n\r").rep)
 
-  // Tag parser: captures tags like @Retry(3), @Flaky
+  // Tag parser: captures tags like @retry(3), @flaky, @ignore
   def tag(using P[_]): P[String] = P("@" ~ CharsWhile(c => c.isLetterOrDigit || c == '_' || c == '(' || c == ')').!)
 
   // Keyword parser: handles Gherkin keywords with optional colon
@@ -117,10 +122,11 @@ object GherkinParser {
 
   // Parse metadata from tags
   private def parseMetadata(tags: List[String]): ScenarioMetadata = {
-    val retryCount  = tags.collectFirst { case s"Retry($n)" => n.toInt }.getOrElse(0)
-    val isFlaky     = tags.contains("Flaky")
-    val repeatCount = tags.collectFirst { case s"Repeat($n)" => n.toInt }.getOrElse(1)
-    ScenarioMetadata(retryCount, isFlaky, repeatCount)
+    val retryCount  = tags.collectFirst { case s"retry($n)" => n.toInt }.getOrElse(0)
+    val isFlaky     = tags.contains("flaky")
+    val repeatCount = tags.collectFirst { case s"repeat($n)" => n.toInt }.getOrElse(1)
+    val isIgnored   = tags.contains("ignore")
+    ScenarioMetadata(retryCount, isFlaky, repeatCount, isIgnored)
   }
 
   // Parse a single feature file
