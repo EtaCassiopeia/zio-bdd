@@ -3,6 +3,7 @@ package zio.bdd.core
 import zio.*
 import zio.bdd.gherkin.{StepType, Step as GherkinStep}
 
+import java.time.Instant
 import scala.util.matching.Regex
 
 // Executes individual Gherkin steps by matching them to step definitions and running them
@@ -24,19 +25,23 @@ case class StepExecutor[R](
       lastNonAndStepType <- OutputStack.findLastNonAndStepType(stackRef)
       expectedStepType    = if (isAnd) lastNonAndStepType else currentStepType
       stepDefOpt         <- findMatchingStepDef(expectedStepType, gherkinStep)
+      start              <- Clock.instant
       result <- stepDefOpt match {
                   case Some(stepDef) =>
                     // If a step definition matches, execute it
-                    executeMatchedStep(stepDef, gherkinStep, line, isAnd, currentStepType)
+                    executeMatchedStep(stepDef, gherkinStep, line, isAnd, currentStepType, start)
                   case None =>
                     // If no match, report a failure
-                    executeUnmatchedStep(gherkinStep, line, currentStepType)
+                    executeUnmatchedStep(gherkinStep, line, currentStepType, start)
                 }
+      end        <- Clock.instant
+      duration    = Duration.fromInterval(start, end)
+      finalResult = result.copy(duration = duration, startTime = start)
       // Record the step's result in the stack for use by subsequent steps
-      _            <- OutputStack.push(stackRef, StepRecord(currentStepType, line, result.output))
+      _            <- OutputStack.push(stackRef, StepRecord(currentStepType, line, finalResult.output))
       updatedStack <- stackRef.get
-      _            <- logCollector.log(s"After $line, NewStack: $updatedStack")
-    } yield result
+      _            <- logCollector.log(s"After $line, NewStack: $updatedStack, Duration: $duration")
+    } yield finalResult
   }
 
   // Finds a step definition that matches the Gherkin step's type and pattern
@@ -63,7 +68,8 @@ case class StepExecutor[R](
     gherkinStep: GherkinStep,
     line: String,
     isAnd: Boolean,
-    currentStepType: StepType
+    currentStepType: StepType,
+    start: Instant
   ): ZIO[R, Throwable, StepResult] = {
     val pattern = stepDef.pattern
     // Cast fn to Any => ZIO[R, Throwable, Any] to match executeStepFunction's expected type
@@ -79,7 +85,7 @@ case class StepExecutor[R](
       _     <- logCollector.log(s"Selected Input for $line: $input")
       _     <- reporter.startStep(line)
       // Execute the step function with the prepared input
-      result <- executeStepFunction(fn, line, input, isAnd)
+      result <- executeStepFunction(fn, line, input, isAnd, start)
       _      <- reporter.endStep(line, result)
     } yield result
   }
@@ -109,7 +115,8 @@ case class StepExecutor[R](
     fn: Any => ZIO[R, Throwable, Any], // Explicitly typed to match the cast in executeMatchedStep
     line: String,
     input: Any,
-    isAnd: Boolean
+    isAnd: Boolean,
+    start: Instant
   ): ZIO[R, Throwable, StepResult] =
     (for {
       _      <- logCollector.log(s"Executing: $line with input: $input")
@@ -126,11 +133,27 @@ case class StepExecutor[R](
                      } else {
                        ZIO.succeed(output)
                      }
-    } yield StepResult(line, succeeded = true, error = None, output = finalOutput, logs = logs)).catchAll { error =>
+    } yield StepResult(
+      line,
+      succeeded = true,
+      error = None,
+      output = finalOutput,
+      logs = logs,
+      duration = Duration.Zero,
+      startTime = start
+    )).catchAll { error =>
       // On failure, capture logs and report the error
       logCollector.getLogs.flatMap { logs =>
         logCollector.clearLogs.as {
-          StepResult(line, succeeded = false, error = Some(error.getMessage), output = (), logs = logs)
+          StepResult(
+            line,
+            succeeded = false,
+            error = Some(error.getMessage),
+            output = (),
+            logs = logs,
+            duration = Duration.Zero,
+            startTime = start
+          )
         }
       }
     }
@@ -139,15 +162,24 @@ case class StepExecutor[R](
   private def executeUnmatchedStep(
     gherkinStep: GherkinStep,
     line: String,
-    currentStepType: StepType
+    currentStepType: StepType,
+    start: Instant
   ): ZIO[Any, Nothing, StepResult] =
     for {
-      _     <- logCollector.log(s"No step definition matches: $line")
-      logs  <- logCollector.getLogs
-      _     <- logCollector.clearLogs
-      result = StepResult(line, succeeded = false, error = Some("No step definition matches"), output = (), logs = logs)
-      _     <- reporter.startStep(line)
-      _     <- reporter.endStep(line, result)
+      _    <- logCollector.log(s"No step definition matches: $line")
+      logs <- logCollector.getLogs
+      _    <- logCollector.clearLogs
+      result = StepResult(
+                 line,
+                 succeeded = false,
+                 error = Some("No step definition matches"),
+                 output = (),
+                 logs = logs,
+                 duration = Duration.Zero,
+                 startTime = start
+               )
+      _ <- reporter.startStep(line)
+      _ <- reporter.endStep(line, result)
     } yield result
 
   // Combines previous output with step parameters into a single input value

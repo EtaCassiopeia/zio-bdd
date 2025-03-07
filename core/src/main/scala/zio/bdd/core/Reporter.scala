@@ -62,8 +62,11 @@ object ConsoleReporter extends Reporter {
     } else {
       "" // No logs, no extra lines
     }
+    val timing = s" (start: ${result.startTime}, duration: ${result.duration.toMillis}ms)"
     Console
-      .printLine(s"${LightBlue}    ├─◑ [$status] $step$errorMsg${Reset}" + (if (logs.nonEmpty) s"\n$logs" else ""))
+      .printLine(
+        s"${LightBlue}    ├─◑ [$status] $step$errorMsg$timing${Reset}" + (if (logs.nonEmpty) s"\n$logs" else "")
+      )
       .orDie
   }
 

@@ -3,6 +3,8 @@ package zio.bdd.core
 import zio.*
 import zio.bdd.gherkin.Step as GherkinStep
 
+import java.time.Instant
+
 // Executes a sequence of Gherkin steps recursively, stopping on failure
 case class ScenarioExecutor[R](
   stepExecutor: StepExecutor[R] // Delegate individual step execution to StepExecutor
@@ -32,7 +34,9 @@ case class ScenarioExecutor[R](
                   succeeded = false,
                   error = Some("Skipped due to prior failure"),
                   output = (),
-                  logs = Nil
+                  logs = Nil,
+                  duration = Duration.Zero,
+                  startTime = Instant.now()
                 )
               )
             )
