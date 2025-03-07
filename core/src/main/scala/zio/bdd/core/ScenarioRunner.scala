@@ -17,11 +17,16 @@ object ScenarioRunner {
       stackRef     <- OutputStack.make // Initialize the output stack for tracking step results
       scenarioText  = gherkinSteps.mkString("\n")
       _            <- reporter.startScenario(scenarioText)
-      // Set up executors with dependencies
-      stepExecutor     = StepExecutor(steps, stackRef, reporter, logCollector)
-      scenarioExecutor = ScenarioExecutor(stepExecutor)
-      results         <- scenarioExecutor.runSteps(gherkinSteps) // Delegate execution
-      _               <- reporter.endScenario(scenarioText, results)
+      results <- if (metadata.isIgnored) {
+                   // If scenario is ignored, report it and return an empty result list
+                   reporter.reportIgnoredScenario(scenarioText).as(Nil)
+                 } else {
+                   // Set up executors with dependencies and run the scenario
+                   val stepExecutor     = StepExecutor(steps, stackRef, reporter, logCollector)
+                   val scenarioExecutor = ScenarioExecutor(stepExecutor)
+                   scenarioExecutor.runSteps(gherkinSteps)
+                 }
+      _ <- reporter.endScenario(scenarioText, results)
     } yield results
 
   // Runs all scenarios in a feature, handling parallelism and parameterization
@@ -37,24 +42,30 @@ object ScenarioRunner {
       scenariosWithMetadata <-
         ParameterizedScenarioBuilder
           .buildScenarios(feature)
-          .mapError(e =>
-            new RuntimeException(e.toString)
-          ) // Map BuildError to Throwable until we have a better error handling for the rest of the code
+          .mapError(e => new RuntimeException(e.toString))
+      // Track ignored scenarios
+      ignoredCountRef <- Ref.make(0)
       // Execute scenarios in parallel, respecting repeatCount
       results <- ZIO
                    .foreachPar(scenariosWithMetadata) { case (gherkinSteps, metadata) =>
                      val scenarioId = gherkinSteps.mkString("\n").hashCode.toString
-                     ZIO
-                       .foreach(1 to metadata.repeatCount) { iteration =>
-                         // Annotate logs with scenario ID and iteration for traceability
-                         ZIO.logAnnotate("scenarioId", s"${scenarioId}_iteration_$iteration") {
-                           run(steps, gherkinSteps, metadata)
+                     if (metadata.isIgnored) {
+                       // Increment ignored count and run (which will report and return empty results)
+                       ignoredCountRef.update(_ + 1) *>
+                         run(steps, gherkinSteps, metadata)
+                     } else {
+                       ZIO
+                         .foreach(1 to metadata.repeatCount) { iteration =>
+                           ZIO.logAnnotate("scenarioId", s"${scenarioId}_iteration_$iteration") {
+                             run(steps, gherkinSteps, metadata)
+                           }
                          }
-                       }
-                       .map(_.flatten.toList)
+                         .map(_.flatten.toList)
+                     }
                    }
                    .withParallelism(parallelism)
                    .map(_.toList)
-      _ <- reporter.endFeature(feature.name, results)
+      ignoredCount <- ignoredCountRef.get
+      _            <- reporter.endFeature(feature.name, results, ignoredCount)
     } yield results
 }

@@ -85,7 +85,7 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
     test("run scenario with retry on failure") {
       val content = """
                       |Feature: Retry Test
-                      |  @Retry(3)
+                      |  @retry(3)
                       |  Scenario: Retry on failure
                       |    Given a user exists with name {name:String}
                       |    When the user requests a password reset
@@ -122,7 +122,7 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
     test("run scenario with repeat") {
       val content = """
                       |Feature: Repeat Test
-                      |  @Repeat(2)
+                      |  @repeat(2)
                       |  Scenario: Repeat execution
                       |    Given a user exists with name {name:String}
                       |    When the user requests a password reset
@@ -142,6 +142,30 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
         results.head(2).step == "a user exists with name Repeat",
         results.head(3).step == "the user requests a password reset",
         feature.scenarios.head.metadata.repeatCount == 2
+      )
+    },
+    test("run scenario with ignore tag") {
+      val content = """
+                      |Feature: Ignore Test
+                      |  @ignore
+                      |  Scenario: Ignored scenario
+                      |    Given a user exists with name {name:String}
+                      |    When the user requests a password reset
+                      |    Then an email should be sent to {email:String}
+                      |  Examples:
+                      |    | name    | email             |
+                      |    | Ignored | ignored@example.com |
+                  """.stripMargin
+      for {
+        feature <- GherkinParser.parseFeature(content)
+        results <- ScenarioRunner.runScenarios(UserSteps, feature, 1)
+      } yield assertTrue(
+        feature.scenarios.length == 1,
+        feature.scenarios.head.metadata.isIgnored,
+        feature.scenarios.head.name == "Ignored scenario",
+        feature.scenarios.head.steps.length == 3, // Steps are parsed but not executed
+        results.length == 1,
+        results.head.isEmpty // No steps executed, empty result list
       )
     },
     test("fail on unmatched step") {
@@ -206,7 +230,7 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
     test("run scenario with flaky tag") {
       val content = """
                       |Feature: Flaky Test
-                      |  @Flaky
+                      |  @flaky
                       |  Scenario: Flaky scenario
                       |    Given a user exists with name {name:String}
                       |    When the user requests a password reset
@@ -420,7 +444,7 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
                       |  Background:
                       |    Given a user exists with name {name:String}
                       |    And the user requests a password reset
-                      |  @Retry(2) @Flaky @Repeat(3)
+                      |  @retry(2) @flaky @repeat(3)
                       |  Scenario Outline: Full feature test
                       |    When the user requests a password reset
                       |    And the reset email is logged

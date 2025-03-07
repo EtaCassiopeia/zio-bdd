@@ -60,7 +60,7 @@ object GherkinParserSpec extends ZIOSpecDefault {
     test("parse scenario with tags") {
       val content = """
                       |Feature: Payment Processing
-                      |  @Retry(3) @Flaky
+                      |  @retry(3) @flaky @ignore
                       |  Scenario: Process payment
                       |    Given a payment request
                       |    When payment is processed
@@ -73,6 +73,7 @@ object GherkinParserSpec extends ZIOSpecDefault {
           scenario.name == "Process payment",
           scenario.metadata.retryCount == 3,
           scenario.metadata.isFlaky,
+          scenario.metadata.isIgnored,
           scenario.metadata.repeatCount == 1,
           scenario.steps == List(
             Step(StepType.GivenStep, "a payment request"),
@@ -159,7 +160,7 @@ object GherkinParserSpec extends ZIOSpecDefault {
                       |    Given system ready
                       |    When create user
                       |    Then user exists
-                      |  @Repeat(2)
+                      |  @repeat(2)
                       |  Scenario: Delete user
                       |    Given user exists
                       |    When delete user
@@ -191,7 +192,7 @@ object GherkinParserSpec extends ZIOSpecDefault {
                       |  Background:
                       |    Given system running
                       |    And database ready
-                      |  @Retry(2) @Flaky @Repeat(3)
+                      |  @retry(2) @flaky @repeat(3)
                       |  Scenario Outline: Complex scenario
                       |    Given user <name>
                       |    When action <action>
@@ -209,7 +210,7 @@ object GherkinParserSpec extends ZIOSpecDefault {
             Step(StepType.AndStep, "database ready")
           ),
           scenario.metadata.retryCount == 2,
-          scenario.metadata.isFlaky == true,
+          scenario.metadata.isFlaky,
           scenario.metadata.repeatCount == 3,
           scenario.steps == List(
             Step(StepType.GivenStep, "user <name>"),
