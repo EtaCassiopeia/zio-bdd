@@ -57,7 +57,13 @@ object ScenarioRunner {
                        ZIO
                          .foreach(1 to metadata.repeatCount) { iteration =>
                            ZIO.logAnnotate("scenarioId", s"${scenarioId}_iteration_$iteration") {
+                             // Retry the scenario up to retryCount times if it fails
                              run(steps, gherkinSteps, metadata)
+                               .retryN(metadata.retryCount) // Retry if any step fails
+                               .catchAll { error =>
+                                 // After retries exhausted, run one last time to get the final failure result
+                                 run(steps, gherkinSteps, metadata)
+                               }
                            }
                          }
                          .map(_.flatten.toList)
