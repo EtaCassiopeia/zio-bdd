@@ -7,6 +7,7 @@ import java.time.Instant
 import scala.util.matching.Regex
 
 case class StepExecutor[R](
+  scenarioId: String,
   steps: ZIOSteps[R],
   stackRef: Ref[Chunk[StepRecord]],
   reporter: Reporter,
@@ -33,7 +34,7 @@ case class StepExecutor[R](
         result.copy(duration = duration, startTime = start, file = gherkinStep.file, line = gherkinStep.line)
       _            <- OutputStack.push(stackRef, StepRecord(currentStepType, line, finalResult.output))
       updatedStack <- stackRef.get
-      _            <- logCollector.logStdout(s"After $line, NewStack: $updatedStack, Duration: $duration")
+      _            <- logCollector.logStdout(scenarioId, s"After $line, NewStack: $updatedStack, Duration: $duration")
     } yield finalResult
   }
 
@@ -67,9 +68,9 @@ case class StepExecutor[R](
 
     for {
       currentStack <- stackRef.get
-      _            <- logCollector.logStdout(s"Step: $line, OutputStack: $currentStack, Params: $params")
+      _            <- logCollector.logStdout(scenarioId, s"Step: $line, OutputStack: $currentStack, Params: $params")
       input        <- determineInput(params, currentStepType, isAnd)
-      _            <- logCollector.logStdout(s"Selected Input for $line: $input")
+      _            <- logCollector.logStdout(scenarioId, s"Selected Input for $line: $input")
       _            <- reporter.startStep(line)
       result       <- executeStepFunction(fn, line, input, isAnd, start)
       _            <- reporter.endStep(line, result)
@@ -101,10 +102,10 @@ case class StepExecutor[R](
     start: Instant
   ): ZIO[R, Throwable, StepResult] =
     (for {
-      _      <- logCollector.logStdout(s"Executing: $line with input: $input")
+      _      <- logCollector.logStdout(scenarioId, s"Executing: $line with input: $input")
       output <- fn(input)
-      logs   <- logCollector.getLogs
-      _      <- logCollector.clearLogs
+      logs   <- logCollector.getLogs(scenarioId)
+      // _      <- logCollector.clearLogs
       finalOutput <- if (isAnd && OutputStack.flattenOutput(output) != ()) {
                        OutputStack.peek(stackRef).flatMap {
                          case Some(prev) if OutputStack.flattenOutput(prev.output) != () =>
@@ -123,8 +124,8 @@ case class StepExecutor[R](
       duration = Duration.Zero,
       startTime = start
     )).catchAll { error =>
-      logCollector.logStderr(s"Step failed: $line - ${error.getMessage}") *>
-        logCollector.getLogs.flatMap { logs =>
+      logCollector.logStderr(scenarioId, s"Step failed: $line - ${error.getMessage}") *>
+        logCollector.getLogs(scenarioId).flatMap { logs =>
           logCollector.clearLogs.as {
             StepResult(
               line,
@@ -146,9 +147,9 @@ case class StepExecutor[R](
     start: Instant
   ): ZIO[Any, Nothing, StepResult] =
     for {
-      _    <- logCollector.logStderr(s"No step definition matches: $line")
-      logs <- logCollector.getLogs
-      _    <- logCollector.clearLogs
+      _    <- logCollector.logStderr(scenarioId, s"No step definition matches: $line")
+      logs <- logCollector.getLogs(scenarioId)
+      // _    <- logCollector.clearLogs
       result = StepResult(
                  line,
                  succeeded = false,

@@ -43,9 +43,9 @@ lazy val core = (project in file("core"))
     name := "zio-bdd-core",
     libraryDependencies ++= commonDependencies,
     libraryDependencies ++= Seq(
-      "org.scala-sbt"           % "test-interface" % "1.0"    % "provided",
+      "org.scala-sbt"           % "test-interface" % "1.0" % "provided",
       "org.scala-lang.modules" %% "scala-xml"      % "2.3.0",
-      "dev.zio"                %% "zio-stream"     % "2.1.16" % Test
+      "dev.zio"                %% "zio-streams"    % "2.1.16"
     ),
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
     publish / skip := true

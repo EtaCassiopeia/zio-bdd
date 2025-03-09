@@ -7,7 +7,7 @@ object ScenarioRunner {
 
   // Runs a single scenario (list of steps) with the given step definitions
   def run[R](
-    scenarioName: String,
+    scenarioId: String,
     steps: ZIOSteps[R],
     gherkinSteps: List[GherkinStep],
     metadata: ScenarioMetadata = ScenarioMetadata()
@@ -17,17 +17,17 @@ object ScenarioRunner {
       logCollector <- ZIO.service[LogCollector]
       stackRef     <- OutputStack.make // Initialize the output stack for tracking step results
       scenarioText  = gherkinSteps.mkString("\n")
-      _            <- reporter.startScenario(scenarioName)
+      _            <- reporter.startScenario(scenarioId)
       results <- if (metadata.isIgnored) {
                    // If scenario is ignored, report it and return an empty result list
                    reporter.reportIgnoredScenario(scenarioText).as(Nil)
                  } else {
                    // Set up executors with dependencies and run the scenario
-                   val stepExecutor     = StepExecutor(steps, stackRef, reporter, logCollector)
+                   val stepExecutor     = StepExecutor(scenarioId, steps, stackRef, reporter, logCollector)
                    val scenarioExecutor = ScenarioExecutor(stepExecutor)
                    scenarioExecutor.runSteps(gherkinSteps)
                  }
-      _ <- reporter.endScenario(scenarioName, results)
+      _ <- reporter.endScenario(scenarioId, results)
     } yield results
 
   // Runs all scenarios in a feature, handling parallelism and parameterization

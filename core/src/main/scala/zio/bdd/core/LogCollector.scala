@@ -1,7 +1,8 @@
 package zio.bdd.core
 
-import zio.{ZLogger, *}
+import zio.{Runtime, ZLogger, *}
 import zio.logging.LogFormat
+
 import java.time.Instant
 
 case class LogEntry(message: String, timestamp: Instant, source: LogSource)
@@ -29,9 +30,10 @@ case class CollectedLogs(stdout: List[LogEntry] = Nil, stderr: List[LogEntry] = 
  * streams, allowing reporters (e.g., JUnit XML) to process them distinctly.
  */
 trait LogCollector {
-  def logStdout(message: String): ZIO[Any, Nothing, Unit]
-  def logStderr(message: String): ZIO[Any, Nothing, Unit]
-  def getLogs: ZIO[Any, Nothing, CollectedLogs]
+  def logStdout(scenarioId: String, message: String): ZIO[Any, Nothing, Unit]
+  def logStderr(scenarioId: String, message: String): ZIO[Any, Nothing, Unit]
+  def getLogs(scenarioId: String): ZIO[Any, Nothing, CollectedLogs]
+  def getAllLogs: ZIO[Any, Nothing, Map[String, CollectedLogs]]
   def clearLogs: ZIO[Any, Nothing, Unit]
 }
 
@@ -49,17 +51,36 @@ object LogCollector {
    */
   val collectorImpl: ZLayer[Any, Nothing, LogCollector] = ZLayer.scoped {
     for {
-      ref <- Ref.make(CollectedLogs()) // Replace with FiberRef for fiber-specific logs
+      ref <- Ref.make(Map.empty[String, CollectedLogs]) // Replace with FiberRef for fiber-specific logs
     } yield new LogCollector {
-      def logStdout(message: String): ZIO[Any, Nothing, Unit] =
-        Clock.instant.flatMap(now => ref.update(_.add(LogEntry(message, now, LogSource.Stdout))))
+      def logStdout(scenarioId: String, message: String): ZIO[Any, Nothing, Unit] =
+        Clock.instant.flatMap(now =>
+          ref.update(
+            _.updatedWith(scenarioId)(
+              _.map(_.add(LogEntry(message, now, LogSource.Stdout)))
+                .orElse(Some(CollectedLogs(stdout = List(LogEntry(message, now, LogSource.Stdout)))))
+            )
+          )
+        )
 
-      def logStderr(message: String): ZIO[Any, Nothing, Unit] =
-        Clock.instant.flatMap(now => ref.update(_.add(LogEntry(message, now, LogSource.Stderr))))
+      def logStderr(scenarioId: String, message: String): ZIO[Any, Nothing, Unit] =
+        Clock.instant.flatMap(now =>
+          ref.update(
+            _.updatedWith(scenarioId)(
+              _.map(_.add(LogEntry(message, now, LogSource.Stderr)))
+                .orElse(Some(CollectedLogs(stderr = List(LogEntry(message, now, LogSource.Stderr)))))
+            )
+          )
+        )
 
-      def getLogs: ZIO[Any, Nothing, CollectedLogs] = ref.get
+      def getLogs(scenarioId: String): ZIO[Any, Nothing, CollectedLogs] =
+        ref.get.map(_.getOrElse(scenarioId, CollectedLogs()))
 
-      def clearLogs: ZIO[Any, Nothing, Unit] = ref.set(CollectedLogs())
+      def getAllLogs: ZIO[Any, Nothing, Map[String, CollectedLogs]] =
+        ref.get
+
+      def clearLogs: ZIO[Any, Nothing, Unit] =
+        ref.set(Map.empty)
     }
   }
 
@@ -95,8 +116,12 @@ object LogCollector {
         Runtime.default.unsafe
           .run(
             logLevel match {
-              case LogLevel.Error | LogLevel.Fatal => collector.logStderr(formattedMessage)
-              case _                               => collector.logStdout(formattedMessage)
+              case LogLevel.Error | LogLevel.Fatal =>
+                val scenarioId = annotations.getOrElse("scenarioId", "default")
+                collector.logStderr(scenarioId, formattedMessage)
+              case _ =>
+                val scenarioId = annotations.getOrElse("scenarioId", "default")
+                collector.logStdout(scenarioId, formattedMessage)
             }
           )
           .getOrThrowFiberFailure()
@@ -124,14 +149,17 @@ object LogCollector {
   val live: ZLayer[Any, Nothing, LogCollector] =
     collectorImpl >>> (collectorImpl ++ loggingLayer) >>> ZLayer.service[LogCollector]
 
-  def logStdout(message: String): ZIO[LogCollector, Nothing, Unit] =
-    ZIO.serviceWithZIO[LogCollector](_.logStdout(message))
+  def logStdout(scenarioId: String, message: String): ZIO[LogCollector, Nothing, Unit] =
+    ZIO.serviceWithZIO[LogCollector](_.logStdout(scenarioId, message))
 
-  def logStderr(message: String): ZIO[LogCollector, Nothing, Unit] =
-    ZIO.serviceWithZIO[LogCollector](_.logStderr(message))
+  def logStderr(scenarioId: String, message: String): ZIO[LogCollector, Nothing, Unit] =
+    ZIO.serviceWithZIO[LogCollector](_.logStderr(scenarioId, message))
 
-  def getLogs: ZIO[LogCollector, Nothing, CollectedLogs] =
-    ZIO.serviceWithZIO[LogCollector](_.getLogs)
+  def getLogs(scenarioId: String): ZIO[LogCollector, Nothing, CollectedLogs] =
+    ZIO.serviceWithZIO[LogCollector](_.getLogs(scenarioId))
+
+  def getAllLogs: ZIO[LogCollector, Nothing, Map[String, CollectedLogs]] =
+    ZIO.serviceWithZIO[LogCollector](_.getAllLogs)
 
   def clearLogs: ZIO[LogCollector, Nothing, Unit] =
     ZIO.serviceWithZIO[LogCollector](_.clearLogs)

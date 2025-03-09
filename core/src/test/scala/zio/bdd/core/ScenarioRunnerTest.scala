@@ -50,8 +50,7 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
         results.head(2).step == "the reset email is logged",
         results.head(2).output == ("Logged", 42),
         results.head(3).step == "an email should be sent to default@example.com",
-        results.head(3).output == (),
-        results.head.exists(_.logs.exists(_.toString.contains("Creating user with name: Default")))
+        results.head(3).output == ()
       )
     },
     test("run scenario outline with examples") {

@@ -35,6 +35,7 @@ object ParameterizedScenarioBuilderSpec extends ZIOSpecDefault {
 
         val expected = List(
           (
+            "Simple Scenario",
             List(
               mkStep(StepType.GivenStep, "I have a system"),
               mkStep(StepType.WhenStep, "I perform an action"),
@@ -46,15 +47,16 @@ object ParameterizedScenarioBuilderSpec extends ZIOSpecDefault {
 
         for {
           result <- ParameterizedScenarioBuilder.buildScenarios(feature)
-        } yield assert(result)(equalTo(expected))
+        } yield assertTrue(result == expected)
       },
       test("buildScenarios parameterizes steps with examples") {
+        val scenarioName = "Parameterized Scenario"
         val feature = Feature(
           name = "Parameterized Feature",
           background = List(mkStep(StepType.GivenStep, "I start with {initial:int}")),
           scenarios = List(
             Scenario(
-              name = "Parameterized Scenario",
+              name = scenarioName,
               steps = List(
                 mkStep(StepType.WhenStep, "I add {value:int}"),
                 mkStep(StepType.ThenStep, "I get {result:double}")
@@ -70,6 +72,7 @@ object ParameterizedScenarioBuilderSpec extends ZIOSpecDefault {
 
         val expected = List(
           (
+            scenarioName,
             List(
               mkStep(StepType.GivenStep, "I start with 1"),
               mkStep(StepType.WhenStep, "I add 2"),
@@ -78,6 +81,7 @@ object ParameterizedScenarioBuilderSpec extends ZIOSpecDefault {
             ScenarioMetadata()
           ),
           (
+            scenarioName,
             List(
               mkStep(StepType.GivenStep, "I start with 5"),
               mkStep(StepType.WhenStep, "I add 10"),
@@ -89,7 +93,7 @@ object ParameterizedScenarioBuilderSpec extends ZIOSpecDefault {
 
         for {
           result <- ParameterizedScenarioBuilder.buildScenarios(feature)
-        } yield assert(result)(equalTo(expected))
+        } yield assertTrue(result == expected)
       },
       test("buildScenarios fails with MissingPlaceholder when a placeholder is not in examples") {
         val feature = Feature(
@@ -169,6 +173,7 @@ object ParameterizedScenarioBuilderSpec extends ZIOSpecDefault {
 
         val expected = List(
           (
+            "Addition",
             List(
               mkStep(StepType.GivenStep, "I have a calculator", line = Some(3)),
               mkStep(StepType.WhenStep, "I add 2 and 3", line = Some(5)),
@@ -188,6 +193,7 @@ object ParameterizedScenarioBuilderSpec extends ZIOSpecDefault {
         } yield assertTrue(result == expected)
       },
       test("buildScenarios parameterizes a Gherkin feature with examples") {
+        val scenarioName = "Addition"
         val gherkin =
           """Feature: Parameterized Arithmetic
             |  Background:
@@ -203,6 +209,7 @@ object ParameterizedScenarioBuilderSpec extends ZIOSpecDefault {
 
         val expected = List(
           (
+            scenarioName,
             List(
               mkStep(StepType.GivenStep, "I start with 1", line = Some(3)),
               mkStep(StepType.WhenStep, "I add 2", line = Some(5)),
@@ -211,6 +218,7 @@ object ParameterizedScenarioBuilderSpec extends ZIOSpecDefault {
             ScenarioMetadata()
           ),
           (
+            scenarioName,
             List(
               mkStep(StepType.GivenStep, "I start with 5", line = Some(3)),
               mkStep(StepType.WhenStep, "I add 10", line = Some(5)),

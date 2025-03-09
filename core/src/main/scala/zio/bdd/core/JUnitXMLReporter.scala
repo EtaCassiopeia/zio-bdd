@@ -28,25 +28,21 @@ case class JUnitXMLReporter(
     ignoredCount: Int
   ): ZIO[LogCollector, Nothing, Unit] =
     for {
-      _           <- ZIO.logDebug(s"Entering endFeature for '$feature'")
-      testCases   <- testCasesRef.get
-      _           <- ZIO.logDebug(s"Ending feature '$feature' with ${testCases.length} test cases")
-      startTime    = results.flatten.headOption.map(_.startTime).getOrElse(Instant.now())
-      logs        <- ZIO.serviceWithZIO[LogCollector](_.getLogs)
-      updatedCases = testCases.reverse.map(tc => tc.copy(logs = logs))
+      testCases <- testCasesRef.get
+      _         <- ZIO.logDebug(s"Ending feature '$feature' with ${testCases.length} test cases")
       suite = TestSuite(
                 name = feature,
-                cases = updatedCases,
-                timestamp = startTime
+                cases = testCases.reverse,
+                timestamp = results.flatten.headOption.map(_.startTime).getOrElse(Instant.now())
               )
       _       <- ensureOutputDir.orDie
       filePath = s"$outputDir/${feature.replaceAll("[^a-zA-Z0-9]", "_")}-${format.toString.toLowerCase}.xml"
       _       <- JUnitReporter.writeToFile(suite, filePath, format).orDie
-      _       <- ZIO.logInfo(s"Generated JUnit XML report for feature '$feature' at $filePath with ${testCases.length} cases")
+      _       <- ZIO.serviceWithZIO[LogCollector](_.clearLogs)
     } yield ()
 
   override def startScenario(scenario: String): ZIO[Any, Nothing, Unit] =
-    ZIO.logDebug(s"Starting scenario: $scenario") *> ZIO.unit
+    ZIO.logDebug(s"Starting scenario: $scenario").unit
 
   override def endScenario(scenario: String, results: List[StepResult]): ZIO[LogCollector, Nothing, Unit] =
     for {
@@ -56,9 +52,10 @@ case class JUnitXMLReporter(
       duration = results.lastOption
                    .map(r => java.time.Duration.between(startTime, r.startTime.plusNanos(r.duration.toNanos)).toMillis)
                    .getOrElse(0L)
-      logs      <- LogCollector.getLogs
-      succeeded  = results.forall(_.succeeded)
-      assertions = results.count(_.succeeded)
+      scenarioId <- ZIO.logAnnotations.map(_.getOrElse("scenarioId", s"${scenario}_default"))
+      logs       <- LogCollector.getLogs(scenarioId)
+      succeeded   = results.forall(_.succeeded)
+      assertions  = results.count(_.succeeded)
       testCase = TestCase(
                    name = scenario,
                    succeeded = succeeded,
@@ -67,9 +64,7 @@ case class JUnitXMLReporter(
                    duration = duration,
                    assertions = assertions
                  )
-      _ <- testCasesRef.update(testCase :: _) // Directly update the Ref
-      _ <- LogCollector.clearLogs
-      _ <- ZIO.logDebug(s"Exiting endScenario: Added test case for '$scenario' with logs: ${logs.toStepResultLogs}")
+      _ <- testCasesRef.update(testCase :: _)
     } yield ()
 
   override def startStep(step: String): ZIO[Any, Nothing, Unit] =

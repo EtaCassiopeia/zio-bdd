@@ -23,8 +23,7 @@ object JUnitXMLReporterTest extends ZIOSpecDefault {
         }
       ) ++
       LogCollector.live ++
-      ZLayer.succeed(ConsoleReporter)
-//      JUnitXMLReporter.live(JUnitReporter.Format.JUnit5, testResultPath)
+      JUnitXMLReporter.live(JUnitReporter.Format.JUnit5, testResultPath)
 
   def spec: Spec[TestEnvironment & Scope, Any] = suite("ScenarioRunner")(
     test("JUnitXMLReporter generates correct JUnit 5 XML report") {
