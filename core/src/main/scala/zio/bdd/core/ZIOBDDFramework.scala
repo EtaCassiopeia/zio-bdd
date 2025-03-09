@@ -2,8 +2,7 @@ package zio.bdd.core
 
 import sbt.testing.*
 import zio.bdd.gherkin.{Feature, GherkinParser}
-import zio.{Clock, Runtime, Unsafe, ZLayer}
-
+import zio.{Runtime, Unsafe, ZLayer}
 import java.io.File
 import java.lang.annotation.Annotation
 
@@ -53,20 +52,13 @@ class ZIOBDDTask(
     val reporter             = parseReporter(args).getOrElse(ConsoleReporter)
     val featureFilesFromArgs = parseFeatureFiles(args)
     val featureFiles = if (featureFilesFromArgs.isEmpty) {
-      // Fallback to annotation-provided directory
       val clazz = testClassLoader.loadClass(className + "$")
-      // Explicitly type as Class[_ <: Annotation] and cast to ZIOBDDTest
-      // TODO: Fails to find annotation - Remove default
       val annotation =
         clazz.getAnnotation(classOf[ZIOBDDTest].asInstanceOf[Class[? <: Annotation]]).asInstanceOf[ZIOBDDTest]
       val featureDir = if (annotation != null) annotation.featureDir else "example/src/test/resources/features"
       val dir        = new File(featureDir)
       if (dir.exists() && dir.isDirectory) {
-        dir
-          .listFiles()
-          .filter(_.getName.endsWith(".feature"))
-          .map(_.getAbsolutePath)
-          .toList
+        dir.listFiles().filter(_.getName.endsWith(".feature")).map(_.getAbsolutePath).toList
       } else {
         loggers.foreach(_.warn(s"ZIOBDDTask: Feature directory '$featureDir' not found or not a directory"))
         List()
@@ -75,7 +67,11 @@ class ZIOBDDTask(
       featureFilesFromArgs
     }
     loggers.foreach(_.info(s"ZIOBDDTask: Feature files: ${featureFiles.mkString(", ")}"))
-    val env = ZLayer.succeed(stepInstance) ++ LogCollector.live ++ ZLayer.succeed(reporter) ++ stepInstance.environment
+
+    val env = ZLayer.succeed(stepInstance) ++
+      LogCollector.live ++
+      ZLayer.succeed(reporter) ++
+      stepInstance.environment
 
     val features =
       try {
@@ -83,7 +79,12 @@ class ZIOBDDTask(
       } catch {
         case e: Throwable =>
           loggers.foreach(_.error(s"ZIOBDDTask: Failed to parse features: ${e.getMessage}"))
-          Feature("Failed Feature", scenarios = Nil)
+          Feature(
+            "Failed Feature",
+            scenarios = Nil,
+            file = Some("unknown.feature"),
+            line = Some(1)
+          ) // Updated with defaults
       }
     loggers.foreach(_.info(s"ZIOBDDTask: Parsed features: ${features.toString}"))
 
@@ -130,12 +131,7 @@ class ZIOBDDTask(
     }
 
   private def parseFeatureFiles(args: Array[String]): List[String] =
-    args
-      .sliding(2)
-      .collect { case Array("--feature-file", path) =>
-        path
-      }
-      .toList
+    args.sliding(2).collect { case Array("--feature-file", path) => path }.toList
 
   private def discoverFeatures(steps: ZIOSteps[Any], featureFiles: List[String]): Feature =
     if (featureFiles.nonEmpty) {
@@ -143,10 +139,15 @@ class ZIOBDDTask(
         scala.io.Source.fromFile(path).mkString
       }.mkString("\n")
       Unsafe.unsafe { implicit unsafe =>
-        runtime.unsafe.run(GherkinParser.parseFeature(featureContents)).getOrThrowFiberFailure()
+        runtime.unsafe.run(GherkinParser.parseFeature(featureContents, featureFiles.head)).getOrThrowFiberFailure()
       }
     } else {
-      Feature("Default Feature", scenarios = Nil)
+      Feature(
+        "Default Feature",
+        scenarios = Nil,
+        file = Some("unknown.feature"),
+        line = Some(1)
+      ) // Updated with defaults
     }
 
   private def reportResults(
@@ -158,42 +159,33 @@ class ZIOBDDTask(
     if (results.isEmpty) {
       loggers.foreach(_.warn("ZIOBDDTask: No results to report - test may have failed or produced no steps"))
       val event = new Event {
-        override def fullyQualifiedName(): String = taskDef.fullyQualifiedName()
-
-        override def fingerprint(): Fingerprint = taskDef.fingerprint()
-
-        override def selector(): Selector = new SuiteSelector()
-
-        override def status(): Status = Status.Failure
-
+        override def fullyQualifiedName(): String   = taskDef.fullyQualifiedName()
+        override def fingerprint(): Fingerprint     = taskDef.fingerprint()
+        override def selector(): Selector           = new SuiteSelector()
+        override def status(): Status               = Status.Failure
         override def throwable(): OptionalThrowable = new OptionalThrowable(new Exception("No test steps executed"))
-
-        override def duration(): Long = 0L
+        override def duration(): Long               = 0L
       }
       eventHandler.handle(event)
     } else {
       results.foreach { result =>
         val event = new Event {
           override def fullyQualifiedName(): String = taskDef.fullyQualifiedName()
-
-          override def fingerprint(): Fingerprint = taskDef.fingerprint()
-
-          override def selector(): Selector = new TestSelector(result.step)
-
-          override def status(): Status = if (result.succeeded) Status.Success else Status.Failure
-
+          override def fingerprint(): Fingerprint   = taskDef.fingerprint()
+          override def selector(): Selector         = new TestSelector(result.step)
+          override def status(): Status             = if (result.succeeded) Status.Success else Status.Failure
           override def throwable(): OptionalThrowable = result.error match {
             case Some(t) => new OptionalThrowable(t)
             case None    => new OptionalThrowable()
           }
-
           override def duration(): Long = result.duration.toMillis
         }
         eventHandler.handle(event)
 
         loggers.foreach { logger =>
-          val logMsg =
-            s"${result.step} - ${if (result.succeeded) "PASSED" else "FAILED"} (duration: ${result.duration.toMillis}ms)"
+          val logMsg = s"${result.step} - ${
+              if (result.succeeded) "PASSED" else "FAILED"
+            } (duration: ${result.duration.toMillis}ms, file: ${result.file}:${result.line})"
           logger.info(logMsg)
           result.logs.foreach { case (msg, time) => logger.debug(s"[$time] $msg") }
           result.error.foreach { t =>

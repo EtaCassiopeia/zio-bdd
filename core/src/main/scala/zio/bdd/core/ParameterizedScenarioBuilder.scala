@@ -94,7 +94,7 @@ object ParameterizedScenarioBuilder {
               }
             }
       }
-      .map(newPattern => GherkinStep(step.stepType, newPattern))
+      .map(newPattern => GherkinStep(step.stepType, newPattern, step.file, step.line))
   }
 
   /**

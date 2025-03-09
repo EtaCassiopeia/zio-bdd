@@ -7,7 +7,12 @@ import zio.test.Assertion.*
 
 object ParameterizedScenarioBuilderSpec extends ZIOSpecDefault {
 
-  private def mkStep(stepType: StepType, pattern: String): GherkinStep = GherkinStep(stepType, pattern)
+  private def mkStep(
+    stepType: StepType,
+    pattern: String,
+    file: Option[String] = Some("unknown.feature"),
+    line: Option[Int] = None
+  ): GherkinStep = GherkinStep(stepType, pattern, file, line)
 
   override def spec: Spec[Any, ParameterizedScenarioBuilder.BuildError] =
     suite("ParameterizedScenarioBuilder")(
@@ -165,9 +170,9 @@ object ParameterizedScenarioBuilderSpec extends ZIOSpecDefault {
         val expected = List(
           (
             List(
-              mkStep(StepType.GivenStep, "I have a calculator"),
-              mkStep(StepType.WhenStep, "I add 2 and 3"),
-              mkStep(StepType.ThenStep, "I see 5")
+              mkStep(StepType.GivenStep, "I have a calculator", line = Some(3)),
+              mkStep(StepType.WhenStep, "I add 2 and 3", line = Some(5)),
+              mkStep(StepType.ThenStep, "I see 5", line = Some(6))
             ),
             ScenarioMetadata()
           )
@@ -199,17 +204,17 @@ object ParameterizedScenarioBuilderSpec extends ZIOSpecDefault {
         val expected = List(
           (
             List(
-              mkStep(StepType.GivenStep, "I start with 1"),
-              mkStep(StepType.WhenStep, "I add 2"),
-              mkStep(StepType.ThenStep, "I get 3.0")
+              mkStep(StepType.GivenStep, "I start with 1", line = Some(3)),
+              mkStep(StepType.WhenStep, "I add 2", line = Some(5)),
+              mkStep(StepType.ThenStep, "I get 3.0", line = Some(6))
             ),
             ScenarioMetadata()
           ),
           (
             List(
-              mkStep(StepType.GivenStep, "I start with 5"),
-              mkStep(StepType.WhenStep, "I add 10"),
-              mkStep(StepType.ThenStep, "I get 15.0")
+              mkStep(StepType.GivenStep, "I start with 5", line = Some(3)),
+              mkStep(StepType.WhenStep, "I add 10", line = Some(5)),
+              mkStep(StepType.ThenStep, "I get 15.0", line = Some(6))
             ),
             ScenarioMetadata()
           )

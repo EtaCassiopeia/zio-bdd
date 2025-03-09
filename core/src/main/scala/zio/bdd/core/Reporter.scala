@@ -62,7 +62,8 @@ object ConsoleReporter extends Reporter {
     val logs = if (result.logs.nonEmpty) {
       result.logs.map { case (msg, time) => s"${LightYellow}      ╰─ [$time] $msg${Reset}" }.mkString("\n")
     } else ""
-    val timing = s" (start: ${result.startTime}, duration: ${result.duration.toMillis}ms)"
+    val timing =
+      s" (start: ${result.startTime}, duration: ${result.duration.toMillis}ms, file: ${result.file}:${result.line})"
     Console
       .printLine(
         s"${LightBlue}    ├─◑ [$status] $step$errorMsg$timing${Reset}" +

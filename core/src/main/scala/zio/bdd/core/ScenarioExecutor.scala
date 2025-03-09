@@ -36,7 +36,9 @@ case class ScenarioExecutor[R](
                   output = (),
                   logs = Nil,
                   duration = Duration.Zero,
-                  startTime = Instant.now()
+                  startTime = Instant.now(),
+                  file = gherkinStep.file,
+                  line = gherkinStep.line
                 )
               )
             )

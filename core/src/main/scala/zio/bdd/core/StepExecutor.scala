@@ -34,9 +34,10 @@ case class StepExecutor[R](
                     // If no match, report a failure
                     executeUnmatchedStep(gherkinStep, line, currentStepType, start)
                 }
-      end        <- Clock.instant
-      duration    = Duration.fromInterval(start, end)
-      finalResult = result.copy(duration = duration, startTime = start)
+      end     <- Clock.instant
+      duration = Duration.fromInterval(start, end)
+      finalResult =
+        result.copy(duration = duration, startTime = start, file = gherkinStep.file, line = gherkinStep.line)
       // Record the step's result in the stack for use by subsequent steps
       _            <- OutputStack.push(stackRef, StepRecord(currentStepType, line, finalResult.output))
       updatedStack <- stackRef.get
@@ -142,7 +143,6 @@ case class StepExecutor[R](
       duration = Duration.Zero,
       startTime = start
     )).catchAll { error =>
-      // On failure, capture logs and report the error
       logCollector.getLogs.flatMap { logs =>
         logCollector.clearLogs.as {
           StepResult(
@@ -176,7 +176,9 @@ case class StepExecutor[R](
                  output = (),
                  logs = logs,
                  duration = Duration.Zero,
-                 startTime = start
+                 startTime = start,
+                 file = gherkinStep.file,
+                 line = gherkinStep.line
                )
       _ <- reporter.startStep(line)
       _ <- reporter.endStep(line, result)

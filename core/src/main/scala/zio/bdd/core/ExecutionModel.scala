@@ -12,12 +12,14 @@ case class StepResult(
   output: Any,                   // The output produced by the step
   logs: List[(String, Instant)], // Logs collected during execution
   duration: Duration,            // New: Execution time
-  startTime: Instant             // New: Start timestamp
+  startTime: Instant,            // New: Start timestamp
+  file: Option[String] = None,   // Source file path
+  line: Option[Int] = None       // Line number
 )
 
 // Represents a recorded step in the output stack
 case class StepRecord(
   stepType: StepType, // The type of step (Given, When, Then, And)
-  line: String,       // The step's text
+  stepText: String,   // The step's text
   output: Any         // The output produced by the step
 )
