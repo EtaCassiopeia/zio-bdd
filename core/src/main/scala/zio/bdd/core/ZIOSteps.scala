@@ -6,7 +6,7 @@ import zio.bdd.gherkin.StepType
 import scala.quoted.*
 import scala.util.matching.Regex
 
-trait ZIOSteps[R] {
+trait ZIOSteps[R] extends Hooks[R] {
   type Step[I, O] = I => ZIO[R, Throwable, O]
 
   final case class StepDef[I, O](stepType: StepType, pattern: Regex, fn: Step[I, O])

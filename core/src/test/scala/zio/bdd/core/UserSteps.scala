@@ -63,4 +63,14 @@ object UserSteps extends ZIOSteps.Default[UserRepo & EmailService & LogCollector
         } yield ()
       }
   }
+
+  // Hook implementations
+  override def beforeFeature: ZIO[UserRepo & EmailService & LogCollector, Throwable, Unit] =
+    ZIO.logInfo("Preparing feature: setting up test database")
+
+  override def beforeScenario(scenarioId: String): ZIO[UserRepo & EmailService & LogCollector, Throwable, Unit] =
+    ZIO.logInfo(s"Starting scenario with ID: $scenarioId")
+
+  override def beforeStep(scenarioId: String): ZIO[UserRepo & EmailService & LogCollector, Throwable, Unit] =
+    ZIO.logInfo(s"Before step in scenario $scenarioId")
 }

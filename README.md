@@ -28,14 +28,15 @@ These gaps result in fragile tests, limited concurrency, and cumbersome setups. 
 - [X] Feature discovery
 - [X] Extended Gherkin with test aspects: Flaky, Repeat, and Retry
 - [X] Enhance output value propagation between steps using OutputStack
-- [ ] Implement plugins for navigate between feature files and step definitions (e.g., IntelliJ, VSCode)
+- [X] Implement JUnit XML reporting for CI integration
+- [X] Add hook support for before/after steps, scenarios, and features
 - [ ] Improve feature discovery and runner configurations
-- [ ] Publish artifacts on Sonatype
-- [ ] Implement JUnit XML reporting for CI integration
 - [ ] Extend Gherkin syntax to support ZIO test generators in examples and scenario outlines
+- [ ] Publish artifacts on Sonatype
+- [ ] Implement plugins for navigate between feature files and step definitions (e.g., IntelliJ, VSCode)
+- [ ] Add support for linting and code formatting
 - [ ] Introduce E2E testing with test flow support
 - [ ] Expand Gherkin to handle event-driven scenarios with event and trigger mechanisms
-- [ ] Add support for linting and code formatting
 - [ ] Improve test coverage
 
 ## Setup
