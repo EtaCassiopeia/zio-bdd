@@ -1,6 +1,7 @@
 package zio.bdd.core
 
 import zio.*
+import zio.bdd.core.report.Reporter
 import zio.bdd.gherkin.{Feature, ScenarioMetadata, Step as GherkinStep}
 
 object ScenarioRunner {

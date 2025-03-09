@@ -1,6 +1,7 @@
-package zio.bdd.core
+package zio.bdd.core.report
 
 import zio.*
+import zio.bdd.core.{LogCollector, StepResult}
 
 trait Reporter {
   def startFeature(feature: String): ZIO[Any, Nothing, Unit]

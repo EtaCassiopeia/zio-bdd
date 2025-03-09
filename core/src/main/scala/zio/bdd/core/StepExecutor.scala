@@ -1,7 +1,8 @@
 package zio.bdd.core
 
 import zio.*
-import zio.bdd.gherkin.{StepType, Step => GherkinStep}
+import zio.bdd.core.report.Reporter
+import zio.bdd.gherkin.{StepType, Step as GherkinStep}
 
 import java.time.Instant
 import scala.util.matching.Regex
@@ -149,7 +150,6 @@ case class StepExecutor[R](
     for {
       _    <- logCollector.logStderr(scenarioId, s"No step definition matches: $line")
       logs <- logCollector.getLogs(scenarioId)
-      // _    <- logCollector.clearLogs
       result = StepResult(
                  line,
                  succeeded = false,

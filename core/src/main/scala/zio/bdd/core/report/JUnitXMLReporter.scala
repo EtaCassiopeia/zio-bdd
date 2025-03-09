@@ -1,8 +1,11 @@
-package zio.bdd.core
+package zio.bdd.core.report
 
 import zio.*
+import zio.bdd.core.report.JUnitReporter.{Format, TestCase, TestSuite}
+import zio.bdd.core.report.{JUnitReporter, Reporter}
+import zio.bdd.core.{CollectedLogs, LogCollector, StepResult}
+
 import java.time.Instant
-import JUnitReporter.{Format, TestCase, TestSuite}
 
 case class JUnitXMLReporter(
   format: Format = Format.JUnit5,

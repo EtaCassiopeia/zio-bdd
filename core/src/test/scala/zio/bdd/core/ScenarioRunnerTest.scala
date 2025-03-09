@@ -1,6 +1,7 @@
 package zio.bdd.core
 
 import zio.*
+import zio.bdd.core.report.{ConsoleReporter, Reporter}
 import zio.bdd.gherkin.*
 import zio.test.*
 

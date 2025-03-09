@@ -1,6 +1,8 @@
-package zio.bdd.core
+package zio.bdd.core.report
 
 import zio.*
+import zio.bdd.core.report.{JUnitReporter, JUnitXMLReporter, Reporter}
+import zio.bdd.core.*
 import zio.bdd.gherkin.*
 import zio.stream.{ZPipeline, ZSink, ZStream}
 import zio.test.*

@@ -1,6 +1,8 @@
-package zio.bdd.core
+package zio.bdd.core.report
 
 import zio.*
+import zio.bdd.core.report.Reporter
+import zio.bdd.core.{LogCollector, StepResult}
 
 import java.io.File
 

@@ -1,6 +1,8 @@
-package zio.bdd.core
+package zio.bdd.core.report
 
 import zio.*
+import zio.bdd.core.CollectedLogs
+
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 import scala.xml.{Elem, NodeSeq, PrettyPrinter}
