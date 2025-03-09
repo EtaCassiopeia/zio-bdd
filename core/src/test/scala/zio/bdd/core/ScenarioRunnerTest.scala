@@ -1,6 +1,7 @@
 package zio.bdd.core
 
 import zio.*
+import zio.bdd.core.report.{ConsoleReporter, Reporter}
 import zio.bdd.gherkin.*
 import zio.test.*
 
@@ -50,8 +51,7 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
         results.head(2).step == "the reset email is logged",
         results.head(2).output == ("Logged", 42),
         results.head(3).step == "an email should be sent to default@example.com",
-        results.head(3).output == (),
-        results.head.exists(_.logs.exists(_.toString.contains("Creating user with name: Default")))
+        results.head(3).output == ()
       )
     },
     test("run scenario outline with examples") {
@@ -113,9 +113,9 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
         results.head.length == 3,
         results.head(0).succeeded,
         !results.head(1).succeeded,
-        results.head(1).error.contains("Reset failed"),
+        results.head(1).error.map(_.getMessage).contains("Reset failed"),
         !results.head(2).succeeded,
-        results.head(2).error.contains("Skipped due to prior failure"),
+        results.head(2).error.map(_.getMessage).contains("Skipped due to prior failure"),
         feature.scenarios.head.metadata.retryCount == 3
       )
     },
@@ -186,7 +186,7 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
         results.head.length == 2,
         results.head(0).succeeded,
         !results.head(1).succeeded,
-        results.head(1).error.contains("No step definition matches"),
+        results.head(1).error.map(_.getMessage).contains("No step definition matches"),
         results.head(1).step == "an undefined step runs"
       )
     },
@@ -210,7 +210,7 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
         results.head(0).succeeded,
         results.head(1).succeeded,
         !results.head(2).succeeded,
-        results.head(2).error.contains("Invalid input for Then step: expected a valid email address"),
+        results.head(2).error.map(_.getMessage).contains("Invalid input for Then step: expected a valid email address"),
         results.head(2).step == "an email should be sent to 123"
       )
     },

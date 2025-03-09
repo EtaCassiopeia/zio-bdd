@@ -6,9 +6,22 @@ import fastparse.MultiLineWhitespace.*
 import java.io.File
 import scala.io.Source
 
-case class Feature(name: String, background: List[Step] = Nil, scenarios: List[Scenario])
+case class Feature(
+  name: String,
+  background: List[Step] = Nil,
+  scenarios: List[Scenario],
+  file: Option[String] = None,
+  line: Option[Int] = None
+)
 
-case class Scenario(name: String, steps: List[Step], examples: List[ExampleRow], metadata: ScenarioMetadata)
+case class Scenario(
+  name: String,
+  steps: List[Step],
+  examples: List[ExampleRow],
+  metadata: ScenarioMetadata,
+  file: Option[String] = None,
+  line: Option[Int] = None
+)
 
 enum StepType {
   case GivenStep
@@ -17,8 +30,9 @@ enum StepType {
   case AndStep
 }
 
-case class Step(stepType: StepType, pattern: String) {
-  override def toString: String = s"${stepType.toString.replace("Step", "")} $pattern"
+case class Step(stepType: StepType, pattern: String, file: Option[String] = None, line: Option[Int] = None) {
+  override def toString: String =
+    s"${stepType.toString.replace("Step", "")} $pattern ${file.zip(line).map { case (f, l) => s"($f:$l)" }.getOrElse("")}"
 }
 
 case class ExampleRow(data: Map[String, String])
@@ -31,10 +45,19 @@ case class ScenarioMetadata(
 )
 
 object GherkinParser {
+  // Context to track file and content for line numbers
+  case class ParseContext(file: String, content: String) {
+    def lineAt(index: Int): Int = content.take(index).count(_ == '\n') + 1
+  }
+
   // Whitespace parser: handles spaces, tabs, newlines, carriage returns
   def ws(using P[?]): P[Unit] = P(CharIn(" \t\n\r").rep)
 
   // Tag parser: captures tags like @retry(3), @flaky, @ignore
+  // TODO: Add support for Gherkin tags to organize scenarios and features.
+  // This change lets you:
+  // - Run only a specific subset of scenarios.
+  // - Limit hooks to a particular group of scenarios.
   def tag(using P[?]): P[String] = P("@" ~ CharsWhile(c => c.isLetterOrDigit || c == '_' || c == '(' || c == ')').!)
 
   // Keyword parser: handles Gherkin keywords with optional colon
@@ -55,60 +78,66 @@ object GherkinParser {
   def tags(using P[?]): P[List[String]] = P(tag.rep.map(_.toList))
 
   // Background parser: captures background steps
-  def background(using P[?]): P[List[Step]] = P("Background" ~ ":" ~/ ws ~ step.rep).map(_.toList)
+  def background(ctx: ParseContext)(using P[?]): P[List[Step]] =
+    P("Background" ~ ":" ~/ ws ~ step(ctx).rep).map(_.toList)
 
   // Step parser: captures step type as StepType and pattern separately
-  def step(using P[?]): P[Step] = P(
-    ("Given" | "When" | "Then" | "And").! ~ ":".? ~/ text
-  ).map { case (stepTypeStr: String, pattern: String) =>
-    val stepType = stepTypeStr match {
-      case "Given" => StepType.GivenStep
-      case "When"  => StepType.WhenStep
-      case "Then"  => StepType.ThenStep
-      case "And"   => StepType.AndStep
+  def step(ctx: ParseContext)(using P[?]): P[Step] =
+    P(Index ~ ("Given" | "When" | "Then" | "And").! ~ ":".? ~/ text).map { case (idx, stepTypeStr, pattern) =>
+      val stepType = stepTypeStr match {
+        case "Given" => StepType.GivenStep
+        case "When"  => StepType.WhenStep
+        case "Then"  => StepType.ThenStep
+        case "And"   => StepType.AndStep
+      }
+      Step(stepType, pattern.trim, Some(ctx.file), Some(ctx.lineAt(idx)))
     }
-    Step(stepType, pattern.trim)
-  }
 
   // Examples parser: parses the Examples section with header and data rows
   def examples(using P[?]): P[List[ExampleRow]] =
-    P("Examples" ~ ":" ~/ ws ~ row ~ (ws ~ row).rep).map { case (header, rows) =>
-      rows.map(row => ExampleRow(header.zip(row).toMap)).toList
+    P("Examples" ~ ":" ~/ ws ~ row ~ (ws ~ Index ~ row).rep).map { case (header, rows) =>
+      rows.map { case (idx, row) =>
+        ExampleRow(header.zip(row).toMap)
+      }.toList
     }
 
   // Scenario parser: supports both Scenario and Scenario Outline with tags
-  def scenario(using P[?]): P[Scenario] =
-    P(tags ~ (("Scenario" ~ !("Outline" ~ ":")) | "Scenario Outline") ~ ":" ~/ text ~ ws ~ step.rep ~ examples.?).map {
-      case (tags, name, steps, examplesOpt) =>
-        val metadata = parseMetadata(tags)
-        Scenario(name.trim, steps.toList, examplesOpt.getOrElse(Nil), metadata)
+  def scenario(ctx: ParseContext)(using P[?]): P[Scenario] =
+    P(
+      tags ~ Index ~ (("Scenario" ~ !("Outline" ~ ":")) | "Scenario Outline") ~ ":" ~/ text ~ ws ~ step(
+        ctx
+      ).rep ~ examples.?
+    ).map { case (tags, idx, name, steps, examplesOpt) =>
+      val metadata = parseMetadata(tags)
+      Scenario(name.trim, steps.toList, examplesOpt.getOrElse(Nil), metadata, Some(ctx.file), Some(ctx.lineAt(idx)))
     }
 
   // Feature parser: parses feature name, optional background, and one or more scenarios
-  def feature(using P[?]): P[Feature] =
-    P("Feature" ~ ":" ~/ text ~ ws ~ background.? ~ scenario.rep(1)).map { case (name, bgOpt, scenarios) =>
-      Feature(name.trim, bgOpt.getOrElse(Nil), scenarios.toList)
+  def feature(ctx: ParseContext)(using P[?]): P[Feature] =
+    P("Feature" ~ ":" ~/ Index ~ text ~ ws ~ background(ctx).? ~ scenario(ctx).rep(1)).map {
+      case (idx, name, bgOpt, scenarios) =>
+        Feature(name.trim, bgOpt.getOrElse(Nil), scenarios.toList, Some(ctx.file), Some(ctx.lineAt(idx)))
     }
 
   // Top-level parser: parses the entire Gherkin content
-  def gherkin(using P[?]): P[Feature] =
-    P(Start ~/ ws ~ feature ~ ws ~ End)
+  def gherkin(ctx: ParseContext)(using P[?]): P[Feature] =
+    P(Start ~/ ws ~ feature(ctx) ~ ws ~ End)
 
   // Preprocess content to remove comments (lines starting with #)
   private def preprocessContent(content: String): String =
     content.linesIterator
-      .filterNot(line => line.trim.startsWith("#")) // Remove lines starting with #
-      .filterNot(_.trim.isEmpty)                    // Optionally remove empty lines
+      .map(line => if (line.trim.startsWith("#")) "" else line)
       .mkString("\n")
 
   // Helper method to parse content, converting Parsed.Failure to ZIO failure
-  def parseFeature(content: String): ZIO[Any, Throwable, Feature] =
+  def parseFeature(content: String, file: String = "unknown.feature"): ZIO[Any, Throwable, Feature] =
     ZIO.fromEither {
-      val cleanedContent = preprocessContent(content) // Preprocess to remove comments
-      parse(cleanedContent, p => gherkin(using p)) match {
+      val cleanedContent = preprocessContent(content)
+      val ctx            = ParseContext(file, cleanedContent)
+      parse(cleanedContent, p => gherkin(ctx)(using p)) match {
         case Parsed.Success(feature, _) => Right(feature)
         case Parsed.Failure(label, index, extra) =>
-          val inputSnippet = cleanedContent.linesIterator.drop(index / cleanedContent.length).nextOption() match {
+          val inputSnippet = cleanedContent.linesIterator.drop(ctx.lineAt(index) - 1).nextOption() match {
             case Some(line) => s"near: '$line' (index $index)"
             case None       => "at end of input"
           }
@@ -134,7 +163,7 @@ object GherkinParser {
     ZIO.scoped {
       ZIO.fromAutoCloseable(ZIO.attempt(Source.fromFile(file))).flatMap { source =>
         val content = source.getLines().mkString("\n")
-        parseFeature(content)
+        parseFeature(content, file.getAbsolutePath)
       }
     }
 

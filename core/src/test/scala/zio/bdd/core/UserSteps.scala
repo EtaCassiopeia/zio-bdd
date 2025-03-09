@@ -16,7 +16,8 @@ case class User(name: String, email: String)
 object UserSteps extends ZIOSteps.Default[UserRepo & EmailService & LogCollector] {
   Given("a user exists with name {name:String}") { (name: String) =>
     for {
-      _    <- ZIO.serviceWithZIO[LogCollector](_.log(s"Creating user with name: $name"))
+      // Use either ZIO.log* or LogCollector.log* methods for logging messages
+      _    <- ZIO.logInfo(s"Creating user with name: $name")
       repo <- ZIO.service[UserRepo]
       user <- repo.createUser(name)
     } yield user
@@ -24,15 +25,16 @@ object UserSteps extends ZIOSteps.Default[UserRepo & EmailService & LogCollector
 
   When("the user requests a password reset") { (user: User) =>
     for {
-      _        <- ZIO.serviceWithZIO[LogCollector](_.log(s"Requesting reset for user: ${user.name}"))
-      emailSvc <- ZIO.service[EmailService]
-      _        <- emailSvc.sendResetEmail(user.email)
+      scenarioId <- ZIO.logAnnotations.map(_.getOrElse("scenarioId", "default"))
+      _          <- LogCollector.logStdout(scenarioId, s"Requesting reset for user: ${user.name}")
+      emailSvc   <- ZIO.service[EmailService]
+      _          <- emailSvc.sendResetEmail(user.email)
     } yield ()
   }
 
   And("the user requests a password reset") { (user: User) =>
     for {
-      _        <- ZIO.serviceWithZIO[LogCollector](_.log(s"Requesting reset for user: ${user.name}"))
+      _        <- ZIO.logInfo(s"Requesting reset for user: ${user.name}")
       emailSvc <- ZIO.service[EmailService]
       _        <- emailSvc.sendResetEmail(user.email)
     } yield ()
@@ -40,7 +42,8 @@ object UserSteps extends ZIOSteps.Default[UserRepo & EmailService & LogCollector
 
   And("the reset email is logged") { (prev: Any) =>
     for {
-      _ <- ZIO.serviceWithZIO[LogCollector](_.log(s"Logging reset email for previous output: $prev"))
+      scenarioId <- ZIO.logAnnotations.map(_.getOrElse("scenarioId", "default"))
+      _          <- LogCollector.logStdout(scenarioId, s"Logging reset email for previous output: $prev")
     } yield ("Logged", 42)
   }
 
@@ -52,7 +55,7 @@ object UserSteps extends ZIOSteps.Default[UserRepo & EmailService & LogCollector
       })
       .flatMap { expectedEmail =>
         for {
-          _          <- ZIO.serviceWithZIO[LogCollector](_.log(s"Checking emails for: $expectedEmail"))
+          _          <- ZIO.logInfo(s"Checking emails for: $expectedEmail")
           emailSvc   <- ZIO.service[EmailService]
           sentEmails <- emailSvc.getSentEmails
           _ <-
