@@ -7,7 +7,7 @@ import java.time.Instant
 import java.time.format.DateTimeFormatter
 import scala.xml.{Elem, NodeSeq, PrettyPrinter}
 
-object JUnitReporter {
+object JUnitXMLFormatter {
 
   case class TestCase(
     name: String,
