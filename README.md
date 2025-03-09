@@ -17,7 +17,7 @@ These gaps result in fragile tests, limited concurrency, and cumbersome setups. 
 - **ZIO Effect Integration**: Natively supports ZIO effects and ZLayer for type-safe dependency injection, eliminating blocking calls.
 - **Dynamic Feature Discovery**: Automatically scans the module’s `src/test/resources/features/` directory for `.feature` files, configurable via `@ZIOBDDTest`.
 - **Customizable Reporting**: Includes console, JUnit XML, and extensible reporting for CI integration.
-- **Extending Standard Gherkin**: Adds testing aspects like `Flaky`, `Repeat`, and `Retry` annotations.
+- **Extending Standard Gherkin**: Adds testing aspects like `flaky`, `repeat`, and `retry` annotations.
 
 ## Feature Checklist
 
@@ -30,7 +30,7 @@ These gaps result in fragile tests, limited concurrency, and cumbersome setups. 
 - [X] Enhance output value propagation between steps using OutputStack
 - [X] Implement JUnit XML reporting for CI integration
 - [X] Add hook support for before/after steps, scenarios, and features
-- [ ] Improve feature discovery and runner configurations
+- [X] Improve feature discovery and runner configurations
 - [ ] Extend Gherkin syntax to support ZIO test generators in examples and scenario outlines
 - [ ] Publish artifacts on Sonatype
 - [ ] Implement plugins for navigate between feature files and step definitions (e.g., IntelliJ, VSCode)
@@ -43,7 +43,7 @@ These gaps result in fragile tests, limited concurrency, and cumbersome setups. 
 
 **Add Dependency**:
 ```scala
-libraryDependencies += "io.github.etacassiopeia" %% "zio-bdd" % "0.1.0" % Test
+libraryDependencies += "io.github.etacassiopeia" %% "zio-bdd" % "0.1.0" % Test // Not yet published, use local build
 libraryDependencies += "dev.zio" %% "zio" % "2.1.16" // Required for ZIO effects
 
 // Enable zio-bdd in sbt
@@ -57,9 +57,9 @@ Create `example/src/test/scala/zio/bdd/example/SimpleSpec.scala`:
 package zio.bdd.example
 
 import zio.*
-import zio.bdd.core.{ZIOSteps, ZIOBDDTest}
+import zio.bdd.core.{ZIOSteps, Suite}
 
-@ZIOBDDTest(featureDir = "example/src/test/resources/features")
+@Suite(featureDir = "example/src/test/resources/features", reporters = Array("console", "junitxml"), parallelism = 2)
 object SimpleSpec extends ZIOSteps.Default[GreetingService] {
   Given[String, String]("a user named {string}") { name =>
     ZIO.succeed(name)
@@ -98,6 +98,7 @@ case class Config(greetingPrefix: String)
 
 ### 2. Create a Feature File
 Create `example/src/test/resources/features/simple.feature`:
+
 ```gherkin
 Feature: Simple Greeting
   Scenario: Greet a user

@@ -1,20 +1,19 @@
 package zio.bdd.core
 
 import sbt.testing.*
-import zio.bdd.core.report.{ConsoleReporter, FileReporter, Reporter}
+import zio.bdd.core.report.{ConsoleReporter, JUnitReporter, JUnitXMLReporter, Reporter}
 import zio.bdd.gherkin.{Feature, GherkinParser}
-import zio.{Runtime, Unsafe, ZLayer}
+import zio.{Ref, Runtime, Unsafe, ZIO, ZLayer}
 
 import java.io.File
-import java.lang.annotation.Annotation
 
 class ZIOBDDFingerprint extends AnnotatedFingerprint {
-  override def annotationName(): String = "zio.bdd.core.ZIOBDDTest"
-  override def isModule(): Boolean      = true
+  override def annotationName(): String = "zio.bdd.core.Suite"
+  override def isModule: Boolean        = true
 }
 
 class ZIOBDDFramework extends Framework {
-  override def name(): String = "ZIOBDD"
+  override def name(): String = "zio-bdd"
 
   override def fingerprints(): Array[Fingerprint] =
     Array(new ZIOBDDFingerprint)
@@ -32,10 +31,43 @@ class ZIOBDDRunner(runnerArgs: Array[String], runnerRemoteArgs: Array[String], t
       new ZIOBDDTask(taskDef, testClassLoader, runtime, runnerArgs)
     }
 
-  override def done(): String = "ZIOBDD execution completed"
+  override def done(): String = "zio-bdd execution completed"
 
   override def args(): Array[String]       = runnerArgs
   override def remoteArgs(): Array[String] = runnerRemoteArgs
+}
+
+case class TestConfig(
+  featureFiles: List[String] = Nil,
+  reporters: List[Reporter] = List(ConsoleReporter),
+  parallelism: Int = 1
+)
+
+case class CompositeReporter(reporters: List[Reporter]) extends Reporter {
+  def startScenario(scenarioId: String): ZIO[Any, Nothing, Unit] =
+    ZIO.foreachDiscard(reporters)(_.startScenario(scenarioId))
+
+  def endScenario(scenarioId: String, results: List[StepResult]): ZIO[LogCollector, Nothing, Unit] =
+    ZIO.foreachDiscard(reporters)(_.endScenario(scenarioId, results))
+
+  def startFeature(featureName: String): ZIO[Any, Nothing, Unit] =
+    ZIO.foreachDiscard(reporters)(_.startFeature(featureName))
+
+  def endFeature(
+    featureName: String,
+    results: List[List[StepResult]],
+    ignoredCount: Int
+  ): ZIO[LogCollector, Nothing, Unit] =
+    ZIO.foreachDiscard(reporters)(_.endFeature(featureName, results, ignoredCount))
+
+  def startStep(step: String): ZIO[Any, Nothing, Unit] =
+    ZIO.foreachDiscard(reporters)(_.startStep(step))
+
+  def endStep(step: String, result: StepResult): ZIO[Any, Nothing, Unit] =
+    ZIO.foreachDiscard(reporters)(_.endStep(step, result))
+
+  def reportIgnoredScenario(scenarioText: String): ZIO[Any, Nothing, Unit] =
+    ZIO.foreachDiscard(reporters)(_.reportIgnoredScenario(scenarioText))
 }
 
 class ZIOBDDTask(
@@ -44,32 +76,21 @@ class ZIOBDDTask(
   runtime: Runtime[Any],
   args: Array[String]
 ) extends Task {
+
+  private val defaultTestResultDir = "target/test-results"
+
   override def taskDef(): TaskDef = taskDefinition
 
   override def execute(eventHandler: EventHandler, loggers: Array[Logger]): Array[Task] = {
     val className = taskDef.fullyQualifiedName()
-    loggers.foreach(_.info(s"ZIOBDDTask: Executing test for $className"))
+    loggers.foreach(_.info(s"Executing test for $className"))
     val stepInstance = instantiateStepClass(className)
+    val config       = parseConfig(args, className)
 
-    val reporter             = parseReporter(args).getOrElse(ConsoleReporter)
-    val featureFilesFromArgs = parseFeatureFiles(args)
-    val featureFiles = if (featureFilesFromArgs.isEmpty) {
-      val clazz = testClassLoader.loadClass(className + "$")
-      val annotation =
-        clazz.getAnnotation(classOf[ZIOBDDTest].asInstanceOf[Class[? <: Annotation]]).asInstanceOf[ZIOBDDTest]
-      val featureDir = if (annotation != null) annotation.featureDir else "example/src/test/resources/features"
-      val dir        = new File(featureDir)
-      if (dir.exists() && dir.isDirectory) {
-        dir.listFiles().filter(_.getName.endsWith(".feature")).map(_.getAbsolutePath).toList
-      } else {
-        loggers.foreach(_.warn(s"ZIOBDDTask: Feature directory '$featureDir' not found or not a directory"))
-        List()
-      }
-    } else {
-      featureFilesFromArgs
-    }
-    loggers.foreach(_.info(s"ZIOBDDTask: Feature files: ${featureFiles.mkString(", ")}"))
+    val featureFiles = resolveFeatureFiles(config, className, loggers)
+    loggers.foreach(_.info(s"Feature files: ${featureFiles.mkString(", ")}"))
 
+    val reporter = if (config.reporters.length > 1) CompositeReporter(config.reporters) else config.reporters.head
     val env = ZLayer.succeed(stepInstance) ++
       LogCollector.live ++
       ZLayer.succeed(reporter) ++
@@ -80,31 +101,32 @@ class ZIOBDDTask(
         discoverFeatures(stepInstance, featureFiles)
       } catch {
         case e: Throwable =>
-          loggers.foreach(_.error(s"ZIOBDDTask: Failed to parse features: ${e.getMessage}"))
-          Feature(
-            "Failed Feature",
-            scenarios = Nil,
-            file = Some("unknown.feature"),
-            line = Some(1)
-          ) // Updated with defaults
+          loggers.foreach(_.error(s"Failed to parse features: ${e.getMessage}"))
+          List(
+            Feature(
+              name = "Failed Feature",
+              background = Nil,
+              scenarios = Nil,
+              file = Some("unknown.feature"),
+              line = Some(1)
+            )
+          )
       }
-    loggers.foreach(_.info(s"ZIOBDDTask: Parsed features: ${features.toString}"))
+    loggers.foreach(_.info(s"Parsed features: ${features.map(_.name).mkString(", ")}"))
 
-    val program = ScenarioRunner
-      .runScenarios(stepInstance, features, parallelism = 1)
-      .map(_.flatten)
+    val program = FeatureRunner.runFeatures(stepInstance, features, config.parallelism)
 
     val results =
       try {
         Unsafe.unsafe { implicit unsafe =>
           val result = runtime.unsafe.run(program.provideLayer(env))
-          loggers.foreach(_.info(s"ZIOBDDTask: Run result: $result"))
+          loggers.foreach(_.info(s"Run result: $result"))
           result.getOrThrowFiberFailure()
         }
       } catch {
         case e: Throwable =>
-          loggers.foreach(_.error(s"ZIOBDDTask: Execution failed: ${e.getMessage}"))
-          loggers.foreach(_.debug(s"ZIOBDDTask: Exception stack trace: ${e.getStackTrace.mkString("\n")}"))
+          loggers.foreach(_.error(s"Execution failed: ${e.getMessage}"))
+          loggers.foreach(_.debug(s"Exception stack trace: ${e.getStackTrace.mkString("\n")}"))
           Nil
       }
 
@@ -119,47 +141,127 @@ class ZIOBDDTask(
       val moduleClassName = if (className.endsWith("$")) className else className + "$"
       val clazz           = testClassLoader.loadClass(moduleClassName)
       val instanceField   = clazz.getField("MODULE$")
-      val instance        = instanceField.get(null).asInstanceOf[ZIOSteps[Any]]
-      instance
+      instanceField.get(null).asInstanceOf[ZIOSteps[Any]]
     } catch {
-      case e: Exception =>
-        throw e
+      case e: Exception => throw e
     }
 
-  private def parseReporter(args: Array[String]): Option[Reporter] =
-    args.sliding(2).collectFirst {
-      case Array("--reporter", "console") => ConsoleReporter
-      case Array("--reporter", "file")    => FileReporter
-    }
+  private def parseConfig(args: Array[String], className: String): TestConfig = {
+    val clazz      = testClassLoader.loadClass(className + "$")
+    val annotation = Option(clazz.getAnnotation(classOf[zio.bdd.core.Suite]))
+    val annoConfig = annotation
+      .map(a =>
+        TestConfig(
+          featureFiles = if (a.featureDir().isEmpty) Nil else List(a.featureDir()),
+          reporters = a
+            .reporters()
+            .map {
+              case "console" => ConsoleReporter
+              case "junitxml" =>
+                JUnitXMLReporter(
+                  JUnitReporter.Format.JUnit5,
+                  Ref.unsafe.make(List.empty[JUnitReporter.TestCase])(Unsafe.unsafe),
+                  defaultTestResultDir
+                )
+              case other => ConsoleReporter
+            }
+            .toList,
+          parallelism = a.parallelism()
+        )
+      )
+      .getOrElse(TestConfig())
+
+    val cliConfig = TestConfig(
+      featureFiles = parseFeatureFiles(args),
+      reporters = parseReporters(args),
+      parallelism = parseParallelism(args)
+    )
+
+    TestConfig(
+      featureFiles = if (cliConfig.featureFiles.nonEmpty) cliConfig.featureFiles else annoConfig.featureFiles,
+      reporters = if (cliConfig.reporters.nonEmpty) cliConfig.reporters else annoConfig.reporters,
+      parallelism = if (cliConfig.parallelism != 1) cliConfig.parallelism else annoConfig.parallelism
+    )
+  }
 
   private def parseFeatureFiles(args: Array[String]): List[String] =
     args.sliding(2).collect { case Array("--feature-file", path) => path }.toList
 
-  private def discoverFeatures(steps: ZIOSteps[Any], featureFiles: List[String]): Feature =
-    if (featureFiles.nonEmpty) {
-      val featureContents = featureFiles.map { path =>
-        scala.io.Source.fromFile(path).mkString
-      }.mkString("\n")
-      Unsafe.unsafe { implicit unsafe =>
-        runtime.unsafe.run(GherkinParser.parseFeature(featureContents, featureFiles.head)).getOrThrowFiberFailure()
+  private def parseReporters(args: Array[String]): List[Reporter] =
+    args
+      .sliding(2)
+      .collect {
+        case Array("--reporter", "console") => ConsoleReporter
+        case Array("--reporter", "junitxml") =>
+          JUnitXMLReporter(
+            JUnitReporter.Format.JUnit5,
+            Ref.unsafe.make(List.empty[JUnitReporter.TestCase])(Unsafe.unsafe),
+            defaultTestResultDir
+          )
       }
-    } else {
-      Feature(
-        "Default Feature",
-        scenarios = Nil,
-        file = Some("unknown.feature"),
-        line = Some(1)
-      ) // Updated with defaults
+      .toList match {
+      case Nil       => List(ConsoleReporter)
+      case reporters => reporters
     }
 
-  private def reportResults(
-    results: List[StepResult],
-    eventHandler: EventHandler,
-    loggers: Array[Logger]
-  ): Unit = {
-    loggers.foreach(_.info(s"ZIOBDDTask: Reporting ${results.length} results"))
+  private def parseParallelism(args: Array[String]): Int =
+    args
+      .sliding(2)
+      .collectFirst { case Array("--parallelism", n) =>
+        n.toIntOption.getOrElse(1)
+      }
+      .getOrElse(1)
+
+  private def resolveFeatureFiles(config: TestConfig, className: String, loggers: Array[Logger]): List[String] =
+    if (config.featureFiles.nonEmpty) {
+      config.featureFiles.flatMap { path =>
+        val file = new File(path)
+        if (file.isDirectory) {
+          file.listFiles().filter(_.getName.endsWith(".feature")).map(_.getAbsolutePath).toList
+        } else if (file.exists() && file.getName.endsWith(".feature")) {
+          List(file.getAbsolutePath)
+        } else {
+          loggers.foreach(_.warn(s"Invalid feature file or directory: $path"))
+          Nil
+        }
+      }
+    } else {
+      val clazz      = testClassLoader.loadClass(className + "$")
+      val annotation = Option(clazz.getAnnotation(classOf[zio.bdd.core.Suite]))
+      val featureDir = annotation.map(_.featureDir()).getOrElse("src/test/resources/features")
+      val dir        = new File(featureDir)
+      if (dir.exists() && dir.isDirectory) {
+        dir.listFiles().filter(_.getName.endsWith(".feature")).map(_.getAbsolutePath).toList
+      } else {
+        loggers.foreach(_.warn(s"Feature directory '$featureDir' not found or not a directory"))
+        List()
+      }
+    }
+
+  private def discoverFeatures(steps: ZIOSteps[Any], featureFiles: List[String]): List[Feature] =
+    if (featureFiles.nonEmpty) {
+      featureFiles.map { path =>
+        val featureContent = scala.io.Source.fromFile(path).mkString
+        Unsafe.unsafe { implicit unsafe =>
+          runtime.unsafe.run(GherkinParser.parseFeature(featureContent, path)).getOrThrowFiberFailure()
+        }
+      }
+    } else {
+      List(
+        Feature(
+          name = "Default Feature",
+          background = Nil,
+          scenarios = Nil,
+          file = Some("unknown.feature"),
+          line = Some(1)
+        )
+      )
+    }
+
+  private def reportResults(results: List[StepResult], eventHandler: EventHandler, loggers: Array[Logger]): Unit = {
+    loggers.foreach(_.info(s"Reporting ${results.length} results"))
     if (results.isEmpty) {
-      loggers.foreach(_.warn("ZIOBDDTask: No results to report - test may have failed or produced no steps"))
+      loggers.foreach(_.warn("No results to report - test may have failed or produced no steps"))
       val event = new Event {
         override def fullyQualifiedName(): String   = taskDef.fullyQualifiedName()
         override def fingerprint(): Fingerprint     = taskDef.fingerprint()
@@ -185,9 +287,8 @@ class ZIOBDDTask(
         eventHandler.handle(event)
 
         loggers.foreach { logger =>
-          val logMsg = s"${result.step} - ${
-              if (result.succeeded) "PASSED" else "FAILED"
-            } (duration: ${result.duration.toMillis}ms, file: ${result.file}:${result.line})"
+          val logMsg = s"${result.step} - ${if (result.succeeded) "PASSED" else "FAILED"} " +
+            s"(duration: ${result.duration.toMillis}ms, file: ${result.file}:${result.line})"
           logger.info(logMsg)
           result.logs.foreach { case (msg, time) => logger.debug(s"[$time] $msg") }
           result.error.foreach { t =>
