@@ -44,12 +44,12 @@ case class ScenarioMetadata(
   isIgnored: Boolean = false
 )
 
-// Context to track file and content for line numbers
-case class ParseContext(file: String, content: String) {
-  def lineAt(index: Int): Int = content.take(index).count(_ == '\n') + 1
-}
-
 object GherkinParser {
+  // Context to track file and content for line numbers
+  case class ParseContext(file: String, content: String) {
+    def lineAt(index: Int): Int = content.take(index).count(_ == '\n') + 1
+  }
+
   // Whitespace parser: handles spaces, tabs, newlines, carriage returns
   def ws(using P[?]): P[Unit] = P(CharIn(" \t\n\r").rep)
 
