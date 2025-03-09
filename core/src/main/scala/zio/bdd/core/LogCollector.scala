@@ -69,7 +69,7 @@ object LogCollector {
    * stderr, others to stdout. This logger captures all ZIO log calls (e.g.,
    * ZIO.logInfo, ZIO.logError) and directs them to the collector.
    */
-  def customLogger(collector: LogCollector): ZLogger[String, Unit] = {
+  private def customLogger(collector: LogCollector): ZLogger[String, Unit] = {
     val formatLogger = LogFormat.default.toLogger
     (
       trace: Trace,
@@ -110,7 +110,7 @@ object LogCollector {
    * log calls (e.g., ZIO.logInfo, ZIO.logError) are captured by LogCollector,
    * replacing any console or SLF4J loggers.
    */
-  val loggingLayer: ZLayer[LogCollector, Nothing, Unit] = ZLayer.scoped {
+  private val loggingLayer: ZLayer[LogCollector, Nothing, Unit] = ZLayer.scoped {
     for {
       collector <- ZIO.service[LogCollector]
 
