@@ -25,9 +25,9 @@ case class CollectedLogs(stdout: List[LogEntry] = Nil, stderr: List[LogEntry] = 
 }
 
 /**
- * Defines the interface for collecting and managing logs during step execution
- * in a ZIO-based BDD framework. It separates logs into stdout and stderr
- * streams, allowing reporters (e.g., JUnit XML) to process them distinctly.
+ * Defines the interface for collecting and managing logs during step execution.
+ * It separates logs into stdout and stderr streams, allowing reporters (e.g.,
+ * JUnit XML) to process them distinctly.
  */
 trait LogCollector {
   def logStdout(scenarioId: String, message: String): ZIO[Any, Nothing, Unit]
@@ -45,13 +45,11 @@ trait LogCollector {
 object LogCollector {
 
   /**
-   * Implements the LogCollector service to store CollectedLogs. ZLayer.scoped
-   * is used because Ref/FiberRef.make requires a Scope to manage its lifecycle,
-   * ensuring proper cleanup.
+   * Implements the LogCollector service to store CollectedLogs.
    */
   val collectorImpl: ZLayer[Any, Nothing, LogCollector] = ZLayer.scoped {
     for {
-      ref <- Ref.make(Map.empty[String, CollectedLogs]) // Replace with FiberRef for fiber-specific logs
+      ref <- Ref.make(Map.empty[String, CollectedLogs])
     } yield new LogCollector {
       def logStdout(scenarioId: String, message: String): ZIO[Any, Nothing, Unit] =
         Clock.instant.flatMap(now =>
@@ -142,7 +140,7 @@ object LogCollector {
       _ <-
         FiberRef.currentLoggers.locallyScoped(
           Runtime.defaultLoggers -- Runtime.defaultLoggers ++ Chunk(customLogger(collector))
-        ) // Replace with Runtime.addLogger(customLogger(collector)) to add the custom logger instead of replacing all
+        ) // Use `Runtime.addLogger(customLogger(collector))` to add the custom logger without replacing all existing loggers
     } yield ()
   }
 

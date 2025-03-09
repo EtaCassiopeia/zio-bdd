@@ -20,14 +20,14 @@ object ParameterizedScenarioBuilder {
   /**
    * Builds a list of scenarios from a Gherkin Feature, parameterizing steps
    * with data from Examples tables if present. Each scenario is returned as a
-   * tuple of its steps and metadata.
+   * tuple of its name, steps and metadata.
    *
    * @param feature
    *   The Gherkin Feature containing scenarios, background steps, and optional
    *   Examples
    * @return
-   *   A ZIO effect producing a list of (steps, metadata) pairs, failing with
-   *   BuildError if parameterization fails
+   *   A ZIO effect producing a list of (name, steps, metadata) pairs, failing
+   *   with BuildError if parameterization fails
    */
   def buildScenarios(feature: Feature): ZIO[Any, BuildError, List[(String, List[GherkinStep], ScenarioMetadata)]] = {
     val allExamples = feature.scenarios.flatMap(_.examples)
@@ -53,7 +53,11 @@ object ParameterizedScenarioBuilder {
                 parameterizeStep(step, exampleData) // Replace placeholders with values from this row
               }
               .map { parameterizedSteps =>
-                (scenario.name, parameterizedSteps, scenario.metadata) // Pair the parameterized steps with metadata
+                (
+                  scenario.name,
+                  parameterizedSteps,
+                  scenario.metadata
+                ) // Pair the name and parameterized steps with metadata
               }
           }
         }
