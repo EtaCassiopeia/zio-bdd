@@ -1,7 +1,7 @@
 package zio.bdd.core.report
 
 import zio.*
-import zio.bdd.core.report.{JUnitReporter, JUnitXMLReporter, Reporter}
+import zio.bdd.core.report.{JUnitXMLFormatter, JUnitXMLReporter, Reporter}
 import zio.bdd.core.*
 import zio.bdd.gherkin.*
 import zio.stream.{ZPipeline, ZSink, ZStream}
@@ -25,7 +25,7 @@ object JUnitXMLReporterTest extends ZIOSpecDefault {
         }
       ) ++
       LogCollector.live ++
-      JUnitXMLReporter.live(JUnitReporter.Format.JUnit5, testResultPath)
+      JUnitXMLReporter.live(JUnitXMLFormatter.Format.JUnit5, testResultPath)
 
   def spec: Spec[TestEnvironment & Scope, Any] = suite("ScenarioRunner")(
     test("JUnitXMLReporter generates correct JUnit 5 XML report") {

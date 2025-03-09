@@ -1,7 +1,7 @@
 package zio.bdd.core
 
 import sbt.testing.*
-import zio.bdd.core.report.{ConsoleReporter, JUnitReporter, JUnitXMLReporter, Reporter}
+import zio.bdd.core.report.{ConsoleReporter, JUnitXMLFormatter, JUnitXMLReporter, Reporter}
 import zio.bdd.gherkin.{Feature, GherkinParser}
 import zio.{Ref, Runtime, Unsafe, ZIO, ZLayer}
 
@@ -159,8 +159,8 @@ class ZIOBDDTask(
               case "console" => ConsoleReporter
               case "junitxml" =>
                 JUnitXMLReporter(
-                  JUnitReporter.Format.JUnit5,
-                  Ref.unsafe.make(List.empty[JUnitReporter.TestCase])(Unsafe.unsafe),
+                  JUnitXMLFormatter.Format.JUnit5,
+                  Ref.unsafe.make(List.empty[JUnitXMLFormatter.TestCase])(Unsafe.unsafe),
                   defaultTestResultDir
                 )
               case other => ConsoleReporter
@@ -194,8 +194,8 @@ class ZIOBDDTask(
         case Array("--reporter", "console") => ConsoleReporter
         case Array("--reporter", "junitxml") =>
           JUnitXMLReporter(
-            JUnitReporter.Format.JUnit5,
-            Ref.unsafe.make(List.empty[JUnitReporter.TestCase])(Unsafe.unsafe),
+            JUnitXMLFormatter.Format.JUnit5,
+            Ref.unsafe.make(List.empty[JUnitXMLFormatter.TestCase])(Unsafe.unsafe),
             defaultTestResultDir
           )
       }
