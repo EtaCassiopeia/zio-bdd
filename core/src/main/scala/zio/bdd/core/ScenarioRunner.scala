@@ -7,6 +7,7 @@ object ScenarioRunner {
 
   // Runs a single scenario (list of steps) with the given step definitions
   def run[R](
+    scenarioName: String,
     steps: ZIOSteps[R],
     gherkinSteps: List[GherkinStep],
     metadata: ScenarioMetadata = ScenarioMetadata()
@@ -16,7 +17,7 @@ object ScenarioRunner {
       logCollector <- ZIO.service[LogCollector]
       stackRef     <- OutputStack.make // Initialize the output stack for tracking step results
       scenarioText  = gherkinSteps.mkString("\n")
-      _            <- reporter.startScenario(scenarioText)
+      _            <- reporter.startScenario(scenarioName)
       results <- if (metadata.isIgnored) {
                    // If scenario is ignored, report it and return an empty result list
                    reporter.reportIgnoredScenario(scenarioText).as(Nil)
@@ -26,7 +27,7 @@ object ScenarioRunner {
                    val scenarioExecutor = ScenarioExecutor(stepExecutor)
                    scenarioExecutor.runSteps(gherkinSteps)
                  }
-      _ <- reporter.endScenario(scenarioText, results)
+      _ <- reporter.endScenario(scenarioName, results)
     } yield results
 
   // Runs all scenarios in a feature, handling parallelism and parameterization
@@ -47,22 +48,22 @@ object ScenarioRunner {
       ignoredCountRef <- Ref.make(0)
       // Execute scenarios in parallel, respecting repeatCount
       results <- ZIO
-                   .foreachPar(scenariosWithMetadata) { case (gherkinSteps, metadata) =>
+                   .foreachPar(scenariosWithMetadata) { case (scenarioName, gherkinSteps, metadata) =>
                      val scenarioId = gherkinSteps.mkString("\n").hashCode.toString
                      if (metadata.isIgnored) {
                        // Increment ignored count and run (which will report and return empty results)
                        ignoredCountRef.update(_ + 1) *>
-                         run(steps, gherkinSteps, metadata)
+                         run(scenarioName, steps, gherkinSteps, metadata)
                      } else {
                        ZIO
                          .foreach(1 to metadata.repeatCount) { iteration =>
                            ZIO.logAnnotate("scenarioId", s"${scenarioId}_iteration_$iteration") {
                              // Retry the scenario up to retryCount times if it fails
-                             run(steps, gherkinSteps, metadata)
+                             run(scenarioName, steps, gherkinSteps, metadata)
                                .retryN(metadata.retryCount) // Retry if any step fails
                                .catchAll { error =>
                                  // After retries exhausted, run one last time to get the final failure result
-                                 run(steps, gherkinSteps, metadata)
+                                 run(scenarioName, steps, gherkinSteps, metadata)
                                }
                            }
                          }

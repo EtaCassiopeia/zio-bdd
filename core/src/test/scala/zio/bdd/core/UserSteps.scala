@@ -16,7 +16,8 @@ case class User(name: String, email: String)
 object UserSteps extends ZIOSteps.Default[UserRepo & EmailService & LogCollector] {
   Given("a user exists with name {name:String}") { (name: String) =>
     for {
-      _    <- ZIO.serviceWithZIO[LogCollector](_.logStdout(s"Creating user with name: $name"))
+      // We can use ZIO.log* or LogCollector.log* methods to log messages
+      _    <- ZIO.logInfo(s"Creating user with name: $name")
       repo <- ZIO.service[UserRepo]
       user <- repo.createUser(name)
     } yield user

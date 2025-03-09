@@ -29,7 +29,7 @@ object ParameterizedScenarioBuilder {
    *   A ZIO effect producing a list of (steps, metadata) pairs, failing with
    *   BuildError if parameterization fails
    */
-  def buildScenarios(feature: Feature): ZIO[Any, BuildError, List[(List[GherkinStep], ScenarioMetadata)]] = {
+  def buildScenarios(feature: Feature): ZIO[Any, BuildError, List[(String, List[GherkinStep], ScenarioMetadata)]] = {
     val allExamples = feature.scenarios.flatMap(_.examples)
 
     if (allExamples.isEmpty) {
@@ -38,7 +38,7 @@ object ParameterizedScenarioBuilder {
         feature.scenarios.map { scenario =>
           // Combine background steps (common to all scenarios) with scenario-specific steps
           val baseSteps = feature.background ++ scenario.steps
-          (baseSteps, scenario.metadata)
+          (scenario.name, baseSteps, scenario.metadata)
         }
       )
     } else {
@@ -53,7 +53,7 @@ object ParameterizedScenarioBuilder {
                 parameterizeStep(step, exampleData) // Replace placeholders with values from this row
               }
               .map { parameterizedSteps =>
-                (parameterizedSteps, scenario.metadata) // Pair the parameterized steps with metadata
+                (scenario.name, parameterizedSteps, scenario.metadata) // Pair the parameterized steps with metadata
               }
           }
         }
