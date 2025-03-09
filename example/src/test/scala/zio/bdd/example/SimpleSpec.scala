@@ -1,10 +1,10 @@
 package zio.bdd.example
 
 import zio.*
-import zio.bdd.core.{ZIOBDDTest, ZIOSteps}
+import zio.bdd.core.{Suite, ZIOSteps}
 import zio.bdd.example.Config
 
-@ZIOBDDTest(featureDir = "example/src/test/resources/features")
+@Suite(featureDir = "example/src/test/resources/features", reporters = Array("console", "junitxml"), parallelism = 1)
 object SimpleSpec extends ZIOSteps.Default[GreetingService] {
   Given[String, String]("a user named {string}") { name =>
     ZIO.succeed(name)
