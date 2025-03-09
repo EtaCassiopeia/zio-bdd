@@ -16,9 +16,10 @@ object ScenarioRunner {
     for {
       reporter     <- ZIO.service[Reporter]
       logCollector <- ZIO.service[LogCollector]
-      stackRef     <- OutputStack.make // Initialize the output stack for tracking step results
+      stackRef     <- OutputStack.make                 // Initialize the output stack for tracking step results
       scenarioText  = gherkinSteps.mkString("\n")
       _            <- reporter.startScenario(scenarioId)
+      _            <- steps.beforeScenario(scenarioId) // Run beforeScenario hook
       results <- if (metadata.isIgnored) {
                    // If scenario is ignored, report it and return an empty result list
                    reporter.reportIgnoredScenario(scenarioText).as(Nil)
@@ -28,6 +29,7 @@ object ScenarioRunner {
                    val scenarioExecutor = ScenarioExecutor(stepExecutor)
                    scenarioExecutor.runSteps(gherkinSteps)
                  }
+      _ <- steps.afterScenario(scenarioId) // Run afterScenario hook
       _ <- reporter.endScenario(scenarioId, results)
     } yield results
 
@@ -39,6 +41,7 @@ object ScenarioRunner {
   ): ZIO[R & LogCollector & Reporter, Throwable, List[List[StepResult]]] =
     for {
       reporter <- ZIO.service[Reporter]
+      _        <- steps.beforeFeature // Run beforeFeature hook
       _        <- reporter.startFeature(feature.name)
       // Build parameterized scenarios from the feature (e.g., expanding Examples)
       scenariosWithMetadata <-
@@ -75,5 +78,6 @@ object ScenarioRunner {
                    .map(_.toList)
       ignoredCount <- ignoredCountRef.get
       _            <- reporter.endFeature(feature.name, results, ignoredCount)
+      _            <- steps.afterFeature // Run afterFeature hook
     } yield results
 }
