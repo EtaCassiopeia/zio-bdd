@@ -8,6 +8,7 @@ import scala.io.Source
 
 case class Feature(
   name: String,
+  tags: List[String] = Nil,
   background: List[Step] = Nil,
   scenarios: List[Scenario],
   file: Option[String] = None,
@@ -16,6 +17,7 @@ case class Feature(
 
 case class Scenario(
   name: String,
+  tags: List[String] = Nil,
   steps: List[Step],
   examples: List[ExampleRow],
   metadata: ScenarioMetadata,
@@ -53,11 +55,7 @@ object GherkinParser {
   // Whitespace parser: handles spaces, tabs, newlines, carriage returns
   def ws(using P[?]): P[Unit] = P(CharIn(" \t\n\r").rep)
 
-  // Tag parser: captures tags like @retry(3), @flaky, @ignore
-  // TODO: Add support for Gherkin tags to organize scenarios and features.
-  // This change lets you:
-  // - Run only a specific subset of scenarios.
-  // - Limit hooks to a particular group of scenarios.
+  // Tag parser: captures tags like @retry(3), @flaky, @ignore or user-defined tags to organise features and scenarios
   def tag(using P[?]): P[String] = P("@" ~ CharsWhile(c => c.isLetterOrDigit || c == '_' || c == '(' || c == ')').!)
 
   // Keyword parser: handles Gherkin keywords with optional colon
@@ -109,14 +107,22 @@ object GherkinParser {
       ).rep ~ examples.?
     ).map { case (tags, idx, name, steps, examplesOpt) =>
       val metadata = parseMetadata(tags)
-      Scenario(name.trim, steps.toList, examplesOpt.getOrElse(Nil), metadata, Some(ctx.file), Some(ctx.lineAt(idx)))
+      Scenario(
+        name.trim,
+        tags,
+        steps.toList,
+        examplesOpt.getOrElse(Nil),
+        metadata,
+        Some(ctx.file),
+        Some(ctx.lineAt(idx))
+      )
     }
 
   // Feature parser: parses feature name, optional background, and one or more scenarios
   def feature(ctx: ParseContext)(using P[?]): P[Feature] =
-    P("Feature" ~ ":" ~/ Index ~ text ~ ws ~ background(ctx).? ~ scenario(ctx).rep(1)).map {
-      case (idx, name, bgOpt, scenarios) =>
-        Feature(name.trim, bgOpt.getOrElse(Nil), scenarios.toList, Some(ctx.file), Some(ctx.lineAt(idx)))
+    P(tags ~ "Feature" ~ ":" ~/ Index ~ text ~ ws ~ background(ctx).? ~ scenario(ctx).rep(1)).map {
+      case (tags, idx, name, bgOpt, scenarios) =>
+        Feature(name.trim, tags, bgOpt.getOrElse(Nil), scenarios.toList, Some(ctx.file), Some(ctx.lineAt(idx)))
     }
 
   // Top-level parser: parses the entire Gherkin content

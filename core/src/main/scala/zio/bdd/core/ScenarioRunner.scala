@@ -17,12 +17,11 @@ object ScenarioRunner {
       reporter     <- ZIO.service[Reporter]
       logCollector <- ZIO.service[LogCollector]
       stackRef     <- OutputStack.make                 // Initialize the output stack for tracking step results
-      scenarioText  = gherkinSteps.mkString("\n")
       _            <- reporter.startScenario(scenarioId)
       _            <- steps.beforeScenario(scenarioId) // Run beforeScenario hook
       results <- if (metadata.isIgnored) {
                    // If scenario is ignored, report it and return an empty result list
-                   reporter.reportIgnoredScenario(scenarioText).as(Nil)
+                   reporter.reportIgnoredScenario(scenarioId).as(Nil)
                  } else {
                    // Set up executors with dependencies and run the scenario
                    val stepExecutor     = StepExecutor(scenarioId, steps, stackRef, reporter, logCollector)

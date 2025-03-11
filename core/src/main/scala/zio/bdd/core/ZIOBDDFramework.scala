@@ -40,7 +40,9 @@ class ZIOBDDRunner(runnerArgs: Array[String], runnerRemoteArgs: Array[String], t
 case class TestConfig(
   featureFiles: List[String] = Nil,
   reporters: List[Reporter] = List(ConsoleReporter),
-  parallelism: Int = 1
+  parallelism: Int = 1,
+  includeTags: Set[String] = Set.empty, // Inclusive filter (e.g., run only these tags)
+  excludeTags: Set[String] = Set.empty  // Exclusive filter (e.g., skip these tags)
 )
 
 case class CompositeReporter(reporters: List[Reporter]) extends Reporter {
@@ -114,13 +116,12 @@ class ZIOBDDTask(
       }
     loggers.foreach(_.info(s"Parsed features: ${features.map(_.name).mkString(", ")}"))
 
-    val program = FeatureRunner.runFeatures(stepInstance, features, config.parallelism)
+    val program = FeatureRunner.runFeatures(stepInstance, features, config)
 
     val results =
       try {
         Unsafe.unsafe { implicit unsafe =>
           val result = runtime.unsafe.run(program.provideLayer(env))
-          loggers.foreach(_.info(s"Run result: $result"))
           result.getOrThrowFiberFailure()
         }
       } catch {
@@ -166,7 +167,9 @@ class ZIOBDDTask(
               case other => ConsoleReporter
             }
             .toList,
-          parallelism = a.parallelism()
+          parallelism = a.parallelism(),
+          includeTags = a.includeTags().toSet,
+          excludeTags = a.excludeTags().toSet
         )
       )
       .getOrElse(TestConfig())
@@ -174,15 +177,31 @@ class ZIOBDDTask(
     val cliConfig = TestConfig(
       featureFiles = parseFeatureFiles(args),
       reporters = parseReporters(args),
-      parallelism = parseParallelism(args)
+      parallelism = parseParallelism(args),
+      includeTags = parseIncludeTags(args),
+      excludeTags = parseExcludeTags(args)
     )
 
     TestConfig(
       featureFiles = if (cliConfig.featureFiles.nonEmpty) cliConfig.featureFiles else annoConfig.featureFiles,
       reporters = if (cliConfig.reporters.nonEmpty) cliConfig.reporters else annoConfig.reporters,
-      parallelism = if (cliConfig.parallelism != 1) cliConfig.parallelism else annoConfig.parallelism
+      parallelism = if (cliConfig.parallelism != 1) cliConfig.parallelism else annoConfig.parallelism,
+      includeTags = if (cliConfig.includeTags.nonEmpty) cliConfig.includeTags else annoConfig.includeTags,
+      excludeTags = if (cliConfig.excludeTags.nonEmpty) cliConfig.excludeTags else annoConfig.excludeTags
     )
   }
+
+  private def parseIncludeTags(args: Array[String]): Set[String] =
+    args
+      .sliding(2)
+      .collect { case Array("--include-tags", tags) => tags.split(",").map(_.trim).toSet }
+      .fold(Set.empty)(_ ++ _)
+
+  private def parseExcludeTags(args: Array[String]): Set[String] =
+    args
+      .sliding(2)
+      .collect { case Array("--exclude-tags", tags) => tags.split(",").map(_.trim).toSet }
+      .fold(Set.empty)(_ ++ _)
 
   private def parseFeatureFiles(args: Array[String]): List[String] =
     args.sliding(2).collect { case Array("--feature-file", path) => path }.toList

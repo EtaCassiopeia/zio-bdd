@@ -28,6 +28,7 @@ case class StepExecutor[R](
       expectedStepType    = if (isAnd) lastNonAndStepType else currentStepType
       stepDefOpt         <- findMatchingStepDef(expectedStepType, gherkinStep)
       start              <- Clock.instant
+      _                  <- reporter.startStep(line)
       result <- stepDefOpt match {
                   case Some(stepDef) =>
                     // If a step definition matches, execute it
@@ -40,6 +41,7 @@ case class StepExecutor[R](
       duration = Duration.fromInterval(start, end)
       finalResult =
         result.copy(duration = duration, startTime = start, file = gherkinStep.file, line = gherkinStep.line)
+      _ <- reporter.endStep(line, finalResult)
       // Record the step's result in the stack for use by subsequent steps
       _            <- OutputStack.push(stackRef, StepRecord(currentStepType, line, finalResult.output))
       updatedStack <- stackRef.get
@@ -86,10 +88,8 @@ case class StepExecutor[R](
       // Determine the input for the step (from params or previous outputs)
       input <- determineInput(params, currentStepType, isAnd)
       _     <- logCollector.logStdout(scenarioId, s"Selected Input for $line: $input")
-      _     <- reporter.startStep(line)
       // Execute the step function with the prepared input
       result <- executeStepFunction(fn, line, input, isAnd, start)
-      _      <- reporter.endStep(line, result)
     } yield result
   }
 
@@ -182,8 +182,6 @@ case class StepExecutor[R](
                  file = gherkinStep.file,
                  line = gherkinStep.line
                )
-      _ <- reporter.startStep(line)
-      _ <- reporter.endStep(line, result)
     } yield result
 
   // Combines previous output with step parameters into a single input value
