@@ -47,7 +47,7 @@ object LogCollector {
   /**
    * Implements the LogCollector service to store CollectedLogs.
    */
-  val collectorImpl: ZLayer[Any, Nothing, LogCollector] = ZLayer.scoped {
+  private val collectorImpl: ZLayer[Any, Nothing, LogCollector] = ZLayer.scoped {
     for {
       ref <- Ref.make(Map.empty[String, CollectedLogs])
     } yield new LogCollector {

@@ -11,4 +11,6 @@ public @interface Suite {
     String featureDir() default "src/test/resources/features";
     String[] reporters() default {"console"};
     int parallelism() default 1;
+    String[] includeTags() default {};
+    String[] excludeTags() default {};
 }
