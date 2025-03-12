@@ -1,3 +1,5 @@
+import xerial.sbt.Sonatype.sonatypeCentralHost
+
 inThisBuild(
   List(
     organization := "io.github.etacassiopeia",
@@ -12,7 +14,7 @@ inThisBuild(
         url = url("https://github.com/EtaCassiopeia")
       )
     ),
-    sonatypeCredentialHost := "s01.oss.sonatype.org",
+    sonatypeCredentialHost := sonatypeCentralHost,
     sonatypeRepository     := "https://s01.oss.sonatype.org/service/local"
   )
 )
