@@ -35,7 +35,7 @@
 - [X] Improve feature discovery and runner configurations
 - [X] Tag-based filtering for features and scenarios
 - [ ] Extend Gherkin syntax to support ZIO test generators in examples and scenario outlines
-- [ ] Publish artifacts on Sonatype
+- [X] Publish artifacts on Sonatype
 - [ ] Implement plugins for navigation between feature files and step definitions (e.g., IntelliJ, VSCode)
 - [ ] Add support for linting and code formatting
 - [ ] Introduce E2E testing with test flow support
@@ -46,7 +46,7 @@
 
 **Add Dependency**:
 ```scala
-libraryDependencies += "io.github.etacassiopeia" %% "zio-bdd" % "0.1.0" % Test // Not yet published, use local build
+libraryDependencies += "io.github.etacassiopeia" %% "zio-bdd" % "0.1.0" % Test
 libraryDependencies += "dev.zio" %% "zio" % "2.1.16" // Required for ZIO effects
 
 // Enable zio-bdd in sbt
