@@ -1,7 +1,6 @@
 package zio.bdd.core.report
 
 import zio.*
-import zio.bdd.core.report.Reporter
 import zio.bdd.core.{LogCollector, StepResult}
 
 object ConsoleReporter extends Reporter {
@@ -36,8 +35,11 @@ object ConsoleReporter extends Reporter {
   def endScenario(scenario: String, results: List[StepResult]): ZIO[LogCollector, Nothing, Unit] = {
     val passed = results.count(_.succeeded)
     val failed = results.length - passed
+
     Console
-      .printLine(s"${LightYellow}  ◉ Results: ${LightGreen}$passed passed${Reset}, ${LightRed}$failed failed${Reset}")
+      .printLine(
+        s"${LightYellow}  ◉ Results: ${LightGreen}$passed passed${Reset}, ${LightRed}$failed failed${Reset}"
+      )
       .orDie
   }
 
@@ -53,7 +55,8 @@ object ConsoleReporter extends Reporter {
       result.logs.map { case (msg, time) => s"${LightYellow}      ╰─ [$time] $msg${Reset}" }.mkString("\n")
     } else ""
     val timing =
-      s" (start: ${result.startTime}, duration: ${result.duration.toMillis}ms, file: ${result.file}:${result.line})"
+      s" (start: ${result.startTime}, duration: ${result.duration.toMillis}ms, file: ${result.file.getOrElse("unknown")}:${result.line
+          .getOrElse(-1)})"
     Console
       .printLine(
         s"${LightBlue}    ├─◑ [$status] $step$errorMsg$timing${Reset}" +

@@ -26,7 +26,8 @@ object UserSteps extends ZIOSteps.Default[UserRepo & EmailService & LogCollector
   When("the user requests a password reset") { (user: User) =>
     for {
       scenarioId <- ZIO.logAnnotations.map(_.getOrElse("scenarioId", "default"))
-      _          <- LogCollector.logStdout(scenarioId, s"Requesting reset for user: ${user.name}")
+      stepId     <- ZIO.logAnnotations.map(_.getOrElse("stepId", "default"))
+      _          <- LogCollector.logStdout(scenarioId, stepId, s"Requesting reset for user: ${user.name}")
       emailSvc   <- ZIO.service[EmailService]
       _          <- emailSvc.sendResetEmail(user.email)
     } yield ()
@@ -43,7 +44,8 @@ object UserSteps extends ZIOSteps.Default[UserRepo & EmailService & LogCollector
   And("the reset email is logged") { (prev: Any) =>
     for {
       scenarioId <- ZIO.logAnnotations.map(_.getOrElse("scenarioId", "default"))
-      _          <- LogCollector.logStdout(scenarioId, s"Logging reset email for previous output: $prev")
+      stepId     <- ZIO.logAnnotations.map(_.getOrElse("stepId", "default"))
+      _          <- LogCollector.logStdout(scenarioId, stepId, s"Logging reset email for previous output: $prev")
     } yield ("Logged", 42)
   }
 

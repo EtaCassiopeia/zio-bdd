@@ -56,7 +56,7 @@ case class JUnitXMLReporter(
                    .map(r => java.time.Duration.between(startTime, r.startTime.plusNanos(r.duration.toNanos)).toMillis)
                    .getOrElse(0L)
       scenarioId <- ZIO.logAnnotations.map(_.getOrElse("scenarioId", s"${scenario}_default"))
-      logs       <- LogCollector.getLogs(scenarioId)
+      logs       <- LogCollector.getScenarioLogs(scenarioId)
       succeeded   = results.forall(_.succeeded)
       assertions  = results.count(_.succeeded)
       testCase = TestCase(

@@ -33,6 +33,9 @@ enum StepType {
 }
 
 case class Step(stepType: StepType, pattern: String, file: Option[String] = None, line: Option[Int] = None) {
+
+  def id: String = file.zip(line).map { case (f, l) => s"$f:$l" }.getOrElse("unknown")
+
   override def toString: String =
     s"${stepType.toString.replace("Step", "")} $pattern ${file.zip(line).map { case (f, l) => s"($f:$l)" }.getOrElse("")}"
 }
