@@ -136,10 +136,26 @@ object OutputStackSpec extends ZIOSpecDefault {
             case ((), 42)     => 42
             case ("data", 42) => ("data", 42)
             case ()           => ()
-            case _            => input
+            case other        => other
           }
           assertTrue(result == expected)
         }
+      },
+      test("combine flattens previous output with new outputs") {
+        val prev    = (1, "prev")
+        val outputs = List("new", 42)
+        val result  = OutputStack.combine(prev, outputs)
+        assertTrue(result == (1, "prev", "new", 42))
+      },
+      test("flattenOutput removes nested Unit values") {
+        val input  = (((), "data"), (42, ()))
+        val result = OutputStack.flattenOutput(input)
+        assertTrue(result == ("data", 42))
+      },
+      test("flattenOutput handles deeply nested tuples") {
+        val input  = ((((), 1), ()), ("data", (42, ())))
+        val result = OutputStack.flattenOutput(input)
+        assertTrue(result == (1, "data", 42))
       }
     )
 }

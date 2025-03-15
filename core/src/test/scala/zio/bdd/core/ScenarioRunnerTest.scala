@@ -6,80 +6,77 @@ import zio.bdd.gherkin.*
 import zio.test.*
 
 object ScenarioRunnerTest extends ZIOSpecDefault {
-  val testEnv: ZLayer[Any, Nothing, UserRepo & EmailService & LogCollector & Reporter] =
-    ZLayer.succeed(new UserRepo {
-      def createUser(name: String) = ZIO.succeed(User(name, s"$name@example.com".toLowerCase))
-    }) ++
-      ZLayer.fromZIO(
-        Ref.make(List.empty[String]).map { emailsRef =>
-          new EmailService {
-            def sendResetEmail(email: String) = emailsRef.update(email :: _)
-
-            def getSentEmails = emailsRef.get
-          }
-        }
-      ) ++
+  val testEnv
+    : ZLayer[Any, Nothing, ProductCatalog & ShoppingCart & OrderService & PaymentGateway & LogCollector & Reporter] =
+    TestProductCatalog.layer ++
+      TestShoppingCart.layer ++
+      (TestProductCatalog.layer >>> TestOrderService.layer) ++
+      TestPaymentGateway.layer ++
       LogCollector.live ++
       ZLayer.succeed(ConsoleReporter)
 
   def spec: Spec[TestEnvironment & Scope, Any] = suite("ScenarioRunner")(
     test("run valid scenario with background") {
       val content = """
-                      |Feature: User Management
+                      |Feature: Shopping Cart Management
                       |  Background:
-                      |    Given a user exists with name {name:String}
-                      |  Scenario: Successful password reset with logging
-                      |    When the user requests a password reset
-                      |    And the reset email is logged
-                      |    Then an email should be sent to {email:String}
-                      |  Examples:
-                      |    | name    | email             |
-                      |    | Default | default@example.com |
-                    """.stripMargin
+                      |    Given a product "P1" exists with name "Book" price 15.99 and stock 10
+                      |    Given an empty shopping cart exists
+                      |  Scenario: Adding items and placing order
+                      |    When the user adds 2 of product "P1" to the cart
+                      |    When the user places the order
+                      |    And the payment is processed
+                      |    Then the order total should be 31.98
+                """.stripMargin
       for {
         feature <- GherkinParser.parseFeature(content)
-        _       <- ZIO.logInfo(s"Feature: ${feature}")
-        results <- ScenarioRunner.runScenarios(UserSteps, feature, 1)
+        results <- ScenarioRunner.runScenarios(ShoppingCartSteps, feature, 1)
       } yield assertTrue(
         results.length == 1,
-        results.head.length == 4,
+        results.head.length == 6,
         results.head.forall(_.succeeded),
-        results.head(0).step == "a user exists with name Default",
-        results.head(0).output.isInstanceOf[User],
-        results.head(1).step == "the user requests a password reset",
-        results.head(1).output == (),
-        results.head(2).step == "the reset email is logged",
-        results.head(2).output == ("Logged", 42),
-        results.head(3).step == "an email should be sent to default@example.com",
-        results.head(3).output == ()
+        results.head(0).step == """a product "P1" exists with name "Book" price 15.99 and stock 10""",
+        results.head(0).output == (),
+        results.head(1).step == "an empty shopping cart exists",
+        results.head(1).output.isInstanceOf[Cart],
+        results.head(2).step == """the user adds 2 of product "P1" to the cart""",
+        results.head(2).output.isInstanceOf[Cart],
+        results.head(3).step == "the user places the order",
+        results.head(3).output.isInstanceOf[Order],
+        results.head(4).step == "the payment is processed",
+        results.head(4).output.isInstanceOf[Payment],
+        results.head(5).step == "the order total should be 31.98",
+        results.head(5).output == ()
       )
     },
     test("run scenario outline with examples") {
       val content = """
-                      |Feature: User Validation
-                      |  Scenario Outline: Validate reset emails
-                      |    Given a user exists with name {name:String}
-                      |    When the user requests a password reset
-                      |    Then an email should be sent to {email:String}
+                      |Feature: Product Catalog
+                      |  Scenario Outline: Adding multiple products
+                      |    Given a product "P1" exists with name "Book" price 10.00 and stock 5
+                      |    Given an empty shopping cart exists
+                      |    When the user adds {quantity:Int} of product "P1" to the cart
+                      |    Then the order total should be {total:Float}
                       |  Examples:
-                      |    | name  | email             |
-                      |    | Alice | alice@example.com |
-                      |    | Bob   | bob@example.com   |
+                      |    | quantity | total |
+                      |    | 2        | 20.00 |
+                      |    | 3        | 30.00 |
                 """.stripMargin
       for {
         feature <- GherkinParser.parseFeature(content)
-        results <- ScenarioRunner.runScenarios(UserSteps, feature, 2)
+        results <- ScenarioRunner.runScenarios(ShoppingCartSteps, feature, 2)
       } yield assertTrue(
         results.length == 2,
-        results.forall(_.length == 3),
+        results.forall(_.length == 4),
         results.forall(_.forall(_.succeeded)),
-        results.head(0).step == "a user exists with name Alice",
-        results.head(0).output.isInstanceOf[User],
-        results.head(1).step == "the user requests a password reset",
-        results.head(2).step == "an email should be sent to alice@example.com",
-        results(1).head.step == "a user exists with name Bob",
-        results(1)(1).step == "the user requests a password reset",
-        results(1)(2).step == "an email should be sent to bob@example.com"
+        results.head(0).step == """a product "P1" exists with name "Book" price 10.00 and stock 5""",
+        results.head(1).step == "an empty shopping cart exists",
+        results.head(2).step == """the user adds 2 of product "P1" to the cart""",
+        results.head(3).step == "the order total should be 20.00",
+        results(1)(0).step == """a product "P1" exists with name "Book" price 10.00 and stock 5""",
+        results(1)(1).step == "an empty shopping cart exists",
+        results(1)(2).step == """the user adds 3 of product "P1" to the cart""",
+        results(1)(3).step == "the order total should be 30.00"
       )
     },
     test("run scenario with retry on failure") {
@@ -87,35 +84,20 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
                       |Feature: Retry Test
                       |  @retry(3)
                       |  Scenario: Retry on failure
-                      |    Given a user exists with name {name:String}
-                      |    When the user requests a password reset
-                      |    Then an email should be sent to {email:String}
-                      |  Examples:
-                      |    | name | email            |
-                      |    | Fail | fail@example.com |
+                      |    Given a product "P1" exists with name "Book" price 10.00 and stock 5
+                      |    Given an empty shopping cart exists
+                      |    When the user adds 10 of product "P1" to the cart
                 """.stripMargin
-      val failingSteps = new ZIOSteps.Default[UserRepo & EmailService & LogCollector] {
-        Given("a user exists with name {name:String}") { (name: String) =>
-          ZIO.succeed(User(name, s"$name@example.com"))
-        }
-        When("the user requests a password reset") { (user: User) =>
-          ZIO.fail(new Exception("Reset failed"))
-        }
-        Then("an email should be sent to {email:String}") { (email: String) =>
-          ZIO.unit
-        }
-      }
       for {
         feature <- GherkinParser.parseFeature(content)
-        results <- ScenarioRunner.runScenarios(failingSteps, feature, 1)
+        results <- ScenarioRunner.runScenarios(ShoppingCartSteps, feature, 1)
       } yield assertTrue(
         results.length == 1,
         results.head.length == 3,
         results.head(0).succeeded,
-        !results.head(1).succeeded,
-        results.head(1).error.map(_.getMessage).contains("Reset failed"),
+        results.head(1).succeeded,
         !results.head(2).succeeded,
-        results.head(2).error.map(_.getMessage).contains("Skipped due to prior failure"),
+        results.head(2).error.map(_.getMessage).contains("Insufficient stock for P1"),
         feature.scenarios.head.metadata.retryCount == 3
       )
     },
@@ -124,23 +106,23 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
                       |Feature: Repeat Test
                       |  @repeat(2)
                       |  Scenario: Repeat execution
-                      |    Given a user exists with name {name:String}
-                      |    When the user requests a password reset
-                      |  Examples:
-                      |    | name   |
-                      |    | Repeat |
+                      |    Given a product "P1" exists with name "Book" price 10.00 and stock 5
+                      |    Given an empty shopping cart exists
+                      |    When the user adds 1 of product "P1" to the cart
                 """.stripMargin
       for {
         feature <- GherkinParser.parseFeature(content)
-        results <- ScenarioRunner.runScenarios(UserSteps, feature, 1)
+        results <- ScenarioRunner.runScenarios(ShoppingCartSteps, feature, 1)
       } yield assertTrue(
         results.length == 1,
-        results.head.length == 4,
+        results.head.length == 6, // 3 steps x 2 repeats
         results.head.forall(_.succeeded),
-        results.head(0).step == "a user exists with name Repeat",
-        results.head(1).step == "the user requests a password reset",
-        results.head(2).step == "a user exists with name Repeat",
-        results.head(3).step == "the user requests a password reset",
+        results.head(0).step == """a product "P1" exists with name "Book" price 10.00 and stock 5""",
+        results.head(1).step == "an empty shopping cart exists",
+        results.head(2).step == """the user adds 1 of product "P1" to the cart""",
+        results.head(3).step == """a product "P1" exists with name "Book" price 10.00 and stock 5""",
+        results.head(4).step == "an empty shopping cart exists",
+        results.head(5).step == """the user adds 1 of product "P1" to the cart""",
         feature.scenarios.head.metadata.repeatCount == 2
       )
     },
@@ -149,38 +131,32 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
                       |Feature: Ignore Test
                       |  @ignore
                       |  Scenario: Ignored scenario
-                      |    Given a user exists with name {name:String}
-                      |    When the user requests a password reset
-                      |    Then an email should be sent to {email:String}
-                      |  Examples:
-                      |    | name    | email             |
-                      |    | Ignored | ignored@example.com |
+                      |    Given a product "P1" exists with name "Book" price 10.00 and stock 5
+                      |    Given an empty shopping cart exists
+                      |    When the user adds 1 of product "P1" to the cart
                   """.stripMargin
       for {
         feature <- GherkinParser.parseFeature(content)
-        results <- ScenarioRunner.runScenarios(UserSteps, feature, 1)
+        results <- ScenarioRunner.runScenarios(ShoppingCartSteps, feature, 1)
       } yield assertTrue(
         feature.scenarios.length == 1,
         feature.scenarios.head.metadata.isIgnored,
         feature.scenarios.head.name == "Ignored scenario",
-        feature.scenarios.head.steps.length == 3, // Steps are parsed but not executed
+        feature.scenarios.head.steps.length == 3,
         results.length == 1,
-        results.head.isEmpty // No steps executed, empty result list
+        results.head.isEmpty
       )
     },
     test("fail on unmatched step") {
       val content = """
                       |Feature: Unmatched Step Test
                       |  Scenario: Unmatched step
-                      |    Given a user exists with name {name:String}
+                      |    Given a product "P1" exists with name "Book" price 10.00 and stock 5
                       |    When an undefined step runs
-                      |  Examples:
-                      |    | name    |
-                      |    | Default |
                 """.stripMargin
       for {
         feature <- GherkinParser.parseFeature(content)
-        results <- ScenarioRunner.runScenarios(UserSteps, feature, 1)
+        results <- ScenarioRunner.runScenarios(ShoppingCartSteps, feature, 1)
       } yield assertTrue(
         results.length == 1,
         results.head.length == 2,
@@ -190,28 +166,25 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
         results.head(1).step == "an undefined step runs"
       )
     },
-    test("fail on invalid input type") {
+    test("fail on invalid input") {
       val content = """
                       |Feature: Invalid Input Test
                       |  Scenario: Invalid input type
-                      |    Given a user exists with name {name:String}
-                      |    When the user requests a password reset
-                      |    Then an email should be sent to {email:String}
-                      |  Examples:
-                      |    | name    | email |
-                      |    | Default | 123   |
+                      |    Given a product "P1" exists with name "Book" price 10.00 and stock 5
+                      |    Given an empty shopping cart exists
+                      |    When the user adds -1 of product "P1" to the cart
                 """.stripMargin
       for {
         feature <- GherkinParser.parseFeature(content)
-        results <- ScenarioRunner.runScenarios(UserSteps, feature, 1)
+        results <- ScenarioRunner.runScenarios(ShoppingCartSteps, feature, 1)
       } yield assertTrue(
         results.length == 1,
         results.head.length == 3,
         results.head(0).succeeded,
         results.head(1).succeeded,
         !results.head(2).succeeded,
-        results.head(2).error.map(_.getMessage).contains("Invalid input for Then step: expected a valid email address"),
-        results.head(2).step == "an email should be sent to 123"
+        results.head(2).error.map(_.getMessage).contains("Insufficient stock for P1"),
+        results.head(2).step == """the user adds -1 of product "P1" to the cart"""
       )
     },
     test("run empty scenario") {
@@ -221,7 +194,7 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
                     """.stripMargin
       for {
         feature <- GherkinParser.parseFeature(content)
-        results <- ScenarioRunner.runScenarios(UserSteps, feature, 1)
+        results <- ScenarioRunner.runScenarios(ShoppingCartSteps, feature, 1)
       } yield assertTrue(
         results.length == 1,
         results.head.isEmpty
@@ -232,21 +205,20 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
                       |Feature: Flaky Test
                       |  @flaky
                       |  Scenario: Flaky scenario
-                      |    Given a user exists with name {name:String}
-                      |    When the user requests a password reset
-                      |  Examples:
-                      |    | name  |
-                      |    | Flaky |
+                      |    Given a product "P1" exists with name "Book" price 10.00 and stock 5
+                      |    Given an empty shopping cart exists
+                      |    When the user adds 1 of product "P1" to the cart
                 """.stripMargin
       for {
         feature <- GherkinParser.parseFeature(content)
-        results <- ScenarioRunner.runScenarios(UserSteps, feature, 1)
+        results <- ScenarioRunner.runScenarios(ShoppingCartSteps, feature, 1)
       } yield assertTrue(
         results.length == 1,
-        results.head.length == 2,
+        results.head.length == 3,
         results.head.forall(_.succeeded),
-        results.head(0).step == "a user exists with name Flaky",
-        results.head(1).step == "the user requests a password reset",
+        results.head(0).step == """a product "P1" exists with name "Book" price 10.00 and stock 5""",
+        results.head(1).step == "an empty shopping cart exists",
+        results.head(2).step == """the user adds 1 of product "P1" to the cart""",
         feature.scenarios.head.metadata.isFlaky
       )
     },
@@ -254,224 +226,178 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
       val content = """
                       |Feature: Multi Scenario Test
                       |  Background:
-                      |    Given a user exists with name {name:String}
-                      |  Scenario: Reset scenario
-                      |    When the user requests a password reset
-                      |    Then an email should be sent to {email:String}
-                      |  Scenario: Another reset scenario
-                      |    When the user requests a password reset
-                      |    And the reset email is logged
-                      |  Examples:
-                      |    | name    | email             |
-                      |    | Default | default@example.com |
+                      |    Given a product "P1" exists with name "Book" price 10.00 and stock 5
+                      |    Given an empty shopping cart exists
+                      |  Scenario: Simple order
+                      |    When the user adds 2 of product "P1" to the cart
+                      |    Then the order total should be 20.00
+                      |  Scenario: Complex order
+                      |    When the user adds 1 of product "P1" to the cart
+                      |    When the user places the order
+                      |    And the payment is processed
                 """.stripMargin
       for {
         feature <- GherkinParser.parseFeature(content)
-        results <- ScenarioRunner.runScenarios(UserSteps, feature, 2)
+        results <- ScenarioRunner.runScenarios(ShoppingCartSteps, feature, 2)
       } yield assertTrue(
         results.length == 2,
-        results.head.length == 3,
-        results(1).length == 3,
+        results.head.length == 4, // Simple order: 2 background + 2 scenario steps
+        results(1).length == 5,   // Complex order: 2 background + 3 scenario steps
         results.forall(_.forall(_.succeeded)),
-        results.head(0).step == "a user exists with name Default",
-        results.head(1).step == "the user requests a password reset",
-        results.head(2).step == "an email should be sent to default@example.com",
-        results(1).head.step == "a user exists with name Default",
-        results(1)(1).step == "the user requests a password reset",
-        results(1)(2).step == "the reset email is logged"
+        results.head(0).step == """a product "P1" exists with name "Book" price 10.00 and stock 5""",
+        results.head(1).step == "an empty shopping cart exists",
+        results.head(2).step == """the user adds 2 of product "P1" to the cart""",
+        results.head(3).step == "the order total should be 20.00",
+        results(1)(0).step == """a product "P1" exists with name "Book" price 10.00 and stock 5""",
+        results(1)(1).step == "an empty shopping cart exists",
+        results(1)(2).step == """the user adds 1 of product "P1" to the cart""",
+        results(1)(3).step == "the user places the order",
+        results(1)(4).step == "the payment is processed"
       )
     },
     test("run simple given-when-then without placeholders") {
       val content = """
                       |Feature: Simple Test
-                      |  Scenario: Basic user action
-                      |    Given a user exists with name Simple
-                      |    When the user requests a password reset
-                      |    Then an email should be sent to simple@example.com
+                      |  Scenario: Basic cart action
+                      |    Given a product "P1" exists with name "Book" price 10.00 and stock 5
+                      |    Given an empty shopping cart exists
+                      |    When the user adds 1 of product "P1" to the cart
                     """.stripMargin
       for {
         feature <- GherkinParser.parseFeature(content)
-        results <- ScenarioRunner.runScenarios(UserSteps, feature, 1)
+        results <- ScenarioRunner.runScenarios(ShoppingCartSteps, feature, 1)
       } yield assertTrue(
         results.length == 1,
         results.head.length == 3,
         results.head.forall(_.succeeded),
-        results.head(0).step == "a user exists with name Simple",
-        results.head(1).step == "the user requests a password reset",
-        results.head(2).step == "an email should be sent to simple@example.com"
-      )
-    },
-    test("run scenario with given-and-when") {
-      val content = """
-                      |Feature: Given-And-When Test
-                      |  Scenario: User setup and action
-                      |    Given a user exists with name {name:String}
-                      |    And the user requests a password reset
-                      |    When the user requests a password reset
-                      |  Examples:
-                      |    | name   |
-                      |    | Tester |
-                    """.stripMargin
-      for {
-        feature <- GherkinParser.parseFeature(content)
-        results <- ScenarioRunner.runScenarios(UserSteps, feature, 1)
-      } yield assertTrue(
-        results.length == 1,
-        results.head.length == 3,
-        results.head.forall(_.succeeded),
-        results.head(0).step == "a user exists with name Tester",
-        results.head(1).step == "the user requests a password reset",
-        results.head(2).step == "the user requests a password reset"
-      )
-    },
-    test("run scenario with given-when-and") {
-      val content = """
-                      |Feature: Given-When-And Test
-                      |  Scenario: User action with logging
-                      |    Given a user exists with name {name:String}
-                      |    When the user requests a password reset
-                      |    And the reset email is logged
-                      |  Examples:
-                      |    | name   |
-                      |    | Logger |
-                    """.stripMargin
-      for {
-        feature <- GherkinParser.parseFeature(content)
-        results <- ScenarioRunner.runScenarios(UserSteps, feature, 1)
-      } yield assertTrue(
-        results.length == 1,
-        results.head.length == 3,
-        results.head.forall(_.succeeded),
-        results.head(0).step == "a user exists with name Logger",
-        results.head(1).step == "the user requests a password reset",
-        results.head(2).step == "the reset email is logged",
-        results.head(2).output == ("Logged", 42)
+        results.head(0).step == """a product "P1" exists with name "Book" price 10.00 and stock 5""",
+        results.head(1).step == "an empty shopping cart exists",
+        results.head(2).step == """the user adds 1 of product "P1" to the cart"""
       )
     },
     test("run scenario with given-and-when-and-then") {
       val content = """
                       |Feature: Given-And-When-And-Then Test
-                      |  Scenario: Full user flow
-                      |    Given a user exists with name {name:String}
-                      |    And the user requests a password reset
-                      |    When the user requests a password reset
-                      |    And the reset email is logged
-                      |    Then an email should be sent to {email:String}
-                      |  Examples:
-                      |    | name  | email            |
-                      |    | Full  | full@example.com |
-                    """.stripMargin
+                      |  Scenario: Full cart flow
+                      |    Given a product "P1" exists with name "Book" price 10.00 and stock 5
+                      |    Given an empty shopping cart exists
+                      |    When the user adds 1 of product "P1" to the cart
+                      |    And the user places the order
+                      |    And the payment is processed
+                      |    Then the order total should be 10.00
+                """.stripMargin
       for {
         feature <- GherkinParser.parseFeature(content)
-        results <- ScenarioRunner.runScenarios(UserSteps, feature, 1)
+        results <- ScenarioRunner.runScenarios(ShoppingCartSteps, feature, 1)
       } yield assertTrue(
         results.length == 1,
-        results.head.length == 5,
+        results.head.length == 6,
         results.head.forall(_.succeeded),
-        results.head(0).step == "a user exists with name Full",
-        results.head(1).step == "the user requests a password reset",
-        results.head(2).step == "the user requests a password reset",
-        results.head(3).step == "the reset email is logged",
-        results.head(3).output == ("Logged", 42),
-        results.head(4).step == "an email should be sent to full@example.com"
-      )
-    },
-    test("run scenario with multiple and steps") {
-      val content = """
-                      |Feature: Multiple And Test
-                      |  Scenario: Complex user flow
-                      |    Given a user exists with name {name:String}
-                      |    And the user requests a password reset
-                      |    And the reset email is logged
-                      |    When the user requests a password reset
-                      |    And the reset email is logged
-                      |    Then an email should be sent to {email:String}
-                      |    And the reset email is logged
-                      |  Examples:
-                      |    | name   | email            |
-                      |    | Multi  | multi@example.com |
-                    """.stripMargin
-      for {
-        feature <- GherkinParser.parseFeature(content)
-        results <- ScenarioRunner.runScenarios(UserSteps, feature, 1)
-      } yield assertTrue(
-        results.length == 1,
-        results.head.length == 7,
-        results.head.forall(_.succeeded),
-        results.head(0).step == "a user exists with name Multi",
-        results.head(1).step == "the user requests a password reset",
-        results.head(2).step == "the reset email is logged",
-        results.head(2).output == ("Logged", 42),
-        results.head(3).step == "the user requests a password reset",
-        results.head(4).step == "the reset email is logged",
-        results.head(4).output == ("Logged", 42),
-        results.head(5).step == "an email should be sent to multi@example.com",
-        results.head(6).step == "the reset email is logged",
-        results.head(6).output == ("Logged", 42)
+        results.head(0).step == """a product "P1" exists with name "Book" price 10.00 and stock 5""",
+        results.head(1).step == "an empty shopping cart exists",
+        results.head(2).step == """the user adds 1 of product "P1" to the cart""",
+        results.head(3).step == "the user places the order",
+        results.head(4).step == "the payment is processed",
+        results.head(5).step == "the order total should be 10.00"
       )
     },
     test("run scenario with background and multiple examples") {
       val content = """
                       |Feature: Background Multi Example Test
                       |  Background:
-                      |    Given a user exists with name {name:String}
-                      |  Scenario Outline: Reset with tags
-                      |    When the user requests a password reset
-                      |    Then an email should be sent to {email:String}
+                      |    Given a product "P1" exists with name "Book" price 10.00 and stock 5
+                      |    Given an empty shopping cart exists
+                      |  Scenario Outline: Multi cart actions
+                      |    When the user adds {quantity:Int} of product "P1" to the cart
+                      |    Then the order total should be {total:Float}
                       |  Examples:
-                      |    | name  | email             |
-                      |    | User1 | user1@example.com |
-                      |    | User2 | user2@example.com |
-                    """.stripMargin
+                      |    | quantity | total |
+                      |    | 2        | 20.00 |
+                      |    | 3        | 30.00 |
+                """.stripMargin
       for {
         feature <- GherkinParser.parseFeature(content)
-        results <- ScenarioRunner.runScenarios(UserSteps, feature, 2)
+        results <- ScenarioRunner.runScenarios(ShoppingCartSteps, feature, 2)
       } yield assertTrue(
         results.length == 2,
-        results.forall(_.length == 3),
+        results.forall(_.length == 4),
         results.forall(_.forall(_.succeeded)),
-        results.head(0).step == "a user exists with name User1",
-        results.head(1).step == "the user requests a password reset",
-        results.head(2).step == "an email should be sent to user1@example.com",
-        results(1).head.step == "a user exists with name User2",
-        results(1)(1).step == "the user requests a password reset",
-        results(1)(2).step == "an email should be sent to user2@example.com"
+        results.head(0).step == """a product "P1" exists with name "Book" price 10.00 and stock 5""",
+        results.head(1).step == "an empty shopping cart exists",
+        results.head(2).step == """the user adds 2 of product "P1" to the cart""",
+        results.head(3).step == "the order total should be 20.00",
+        results(1)(0).step == """a product "P1" exists with name "Book" price 10.00 and stock 5""",
+        results(1)(1).step == "an empty shopping cart exists",
+        results(1)(2).step == """the user adds 3 of product "P1" to the cart""",
+        results(1)(3).step == "the order total should be 30.00"
       )
     },
-    test("run complex scenario with all features") {
+    test("run complex scenario") {
       val content = """
                       |Feature: Complex Test
                       |  Background:
-                      |    Given a user exists with name {name:String}
-                      |    And the user requests a password reset
+                      |    Given a product "P1" exists with name "Book" price 10.00 and stock 5
+                      |    And an empty shopping cart exists
                       |  @retry(2) @flaky @repeat(3)
                       |  Scenario Outline: Full feature test
-                      |    When the user requests a password reset
-                      |    And the reset email is logged
-                      |    Then an email should be sent to {email:String}
+                      |    When the user adds {quantity:Int} of product "P1" to the cart
+                      |    And the user places the order
+                      |    Then the order total should be {total:Float}
                       |  Examples:
-                      |    | name    | email             |
-                      |    | Complex | complex@example.com |
+                      |    | quantity | total |
+                      |    | 2        | 20.00 |
                     """.stripMargin
       for {
         feature <- GherkinParser.parseFeature(content)
-        results <- ScenarioRunner.runScenarios(UserSteps, feature, 1)
+        results <- ScenarioRunner.runScenarios(ShoppingCartSteps, feature, 1)
       } yield assertTrue(
         results.length == 1,
         results.head.length == 15, // 5 steps x 3 repeats
         results.head.forall(_.succeeded),
-        results.head(0).step == "a user exists with name Complex",
-        results.head(1).step == "the user requests a password reset",
-        results.head(2).step == "the user requests a password reset",
-        results.head(3).step == "the reset email is logged",
-        results.head(4).step == "an email should be sent to complex@example.com",
-        results.head(5).step == "a user exists with name Complex",                 // Repeat 2
-        results.head(9).step == "an email should be sent to complex@example.com",  // Repeat 2 end
-        results.head(10).step == "a user exists with name Complex",                // Repeat 3
-        results.head(14).step == "an email should be sent to complex@example.com", // Repeat 3 end
+        results.head(0).step == """a product "P1" exists with name "Book" price 10.00 and stock 5""",
+        results.head(1).step == "an empty shopping cart exists",
+        results.head(2).step == """the user adds 2 of product "P1" to the cart""",
+        results.head(3).step == "the user places the order",
+        results.head(4).step == "the order total should be 20.00",
+        results.head(5).step == """a product "P1" exists with name "Book" price 10.00 and stock 5""",  // Repeat 2
+        results.head(9).step == "the order total should be 20.00",                                     // Repeat 2 end
+        results.head(10).step == """a product "P1" exists with name "Book" price 10.00 and stock 5""", // Repeat 3
+        results.head(14).step == "the order total should be 20.00",                                    // Repeat 3 end
         feature.scenarios.head.metadata.retryCount == 2,
         feature.scenarios.head.metadata.isFlaky,
         feature.scenarios.head.metadata.repeatCount == 3
+      )
+    },
+    test("run scenario with ScenarioContext production and consumption") {
+      val content = """
+                      |Feature: Context Transition Test
+                      |  Scenario: Cart to Context Transition
+                      |    Given a product "P1" exists with name "Book" price 10.00 and stock 5
+                      |    Given an empty shopping cart exists
+                      |    When the user adds 1 of product "P1" to the cart
+                      |    And the current cart is set in the context
+                      |    And the cart contains 2 of product "P1"
+                      |    And the cart is retrieved from the context
+                      |    When the user places the order
+                      |    Then the order total should be 30.00
+                """.stripMargin
+      for {
+        feature <- GherkinParser.parseFeature(content)
+        results <- ScenarioRunner.runScenarios(ShoppingCartSteps, feature, 1)
+      } yield assertTrue(
+        results.length == 1,
+        results.head.length == 8,
+        results.head.forall(_.succeeded),
+        results.head(0).step == """a product "P1" exists with name "Book" price 10.00 and stock 5""",
+        results.head(1).step == "an empty shopping cart exists",
+        results.head(2).step == """the user adds 1 of product "P1" to the cart""",
+        results.head(3).step == "the current cart is set in the context",
+        results.head(3).output.isInstanceOf[ScenarioContext],
+        results.head(4).step == """the cart contains 2 of product "P1"""",
+        results.head(4).output.isInstanceOf[ScenarioContext],
+        results.head(5).step == "the cart is retrieved from the context",
+        results.head(6).step == "the user places the order",
+        results.head(7).step == "the order total should be 30.00"
       )
     }
   ).provideLayer(testEnv)
