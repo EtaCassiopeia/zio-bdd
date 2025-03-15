@@ -129,6 +129,11 @@ object ParameterizedScenarioBuilder {
         ZIO
           .attempt(rawValue.toInt.toString)
           .mapError(e => InvalidFormat(placeholderName, placeholderType, rawValue, stepPattern, e))
+      case "float" =>
+        // Validate it's a valid Float, but preserve the original string representation
+        ZIO
+          .attempt(rawValue.toFloat)
+          .mapBoth(e => InvalidFormat(placeholderName, placeholderType, rawValue, stepPattern, e), _ => rawValue)
       case "double" =>
         ZIO
           .attempt(rawValue.toDouble.toString)

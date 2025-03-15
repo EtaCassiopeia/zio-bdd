@@ -4,18 +4,22 @@ import zio.*
 import zio.bdd.gherkin.StepType
 
 import scala.quoted.*
-import scala.util.matching.Regex
 
 trait ZIOSteps[R] extends Hooks[R] {
   type Step[I, O] = I => ZIO[R, Throwable, O]
 
-  final case class StepDef[I, O](stepType: StepType, pattern: Regex, fn: Step[I, O])
+  final case class StepDef[I, O](stepType: StepType, pattern: String, fn: Step[I, O])
 
   def getSteps: List[StepDef[?, ?]]
 
   protected def register[I, O](stepType: StepType, pattern: String, fn: Step[I, O]): Unit
 
   def environment: ZLayer[Any, Any, R]
+
+  // Note: Step functions receive inputs from previous step outputs and/or pattern parameters.
+  // Given steps don’t receive prior step outputs; they start with statement parameters only.
+  // And steps inherit the type of the last non-And step (Given, When, Then) for matching.
+  // When both prior output and parameters are present, inputs are combined into a flat tuple with params last.
 
   inline def Given[I, O](pattern: String)(fn: Step[I, O]): Unit =
     ${ ZIOSteps.givenImpl[R, I, O]('pattern, 'fn, 'this) }
@@ -36,15 +40,8 @@ object ZIOSteps {
 
     override def getSteps: List[StepDef[?, ?]] = steps.reverse
 
-    override protected def register[I, O](stepType: StepType, pattern: String, fn: Step[I, O]): Unit = {
-      val regexPattern = pattern
-        .replace("{string}", "(.+)")
-        .replace("{int}", "(\\d+)")
-        .replace("{float}", "(\\d+\\.\\d+)")
-        .replaceAll("\\{[^:]+:[^}]+\\}", "(.+)")
-        .r
-      steps = StepDef(stepType, regexPattern, fn) :: steps
-    }
+    override protected def register[I, O](stepType: StepType, pattern: String, fn: Step[I, O]): Unit =
+      steps = StepDef(stepType, pattern, fn) :: steps
 
     override def environment: ZLayer[Any, Any, R] = ZLayer.empty.asInstanceOf[ZLayer[Any, Any, R]]
   }

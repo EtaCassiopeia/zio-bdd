@@ -1,6 +1,7 @@
 package zio.bdd.example
 
 import zio.*
+import zio.bdd.core.Assertions.assertTrue
 import zio.bdd.core.{Suite, ZIOSteps}
 import zio.bdd.example.Config
 
@@ -19,12 +20,8 @@ object SimpleSpec extends ZIOSteps.Default[GreetingService] {
     ZIO.serviceWithZIO[GreetingService](_.greet(name))
   }
 
-  Then[String, Unit]("the greeting should be {string}") { expectedGreeting =>
-    for {
-      name <- ZIO.succeed(expectedGreeting.split(", ").last.dropRight(1)) // Extract name from "Hello, Name!"
-      actualGreeting <- ZIO.serviceWithZIO[GreetingService](_.greet(name))
-      _ <- ZIO.succeed(assert(actualGreeting == expectedGreeting))
-    } yield ()
+  Then[(String, String), Unit]("the greeting should be {string}") { case (actualGreeting: String, expectedGreeting: String) =>
+    ZIO.succeed(assertTrue(actualGreeting == expectedGreeting, s"Expected '$expectedGreeting', but got '$actualGreeting'"))
   }
 
   override def environment: ZLayer[Any, Any, GreetingService] =

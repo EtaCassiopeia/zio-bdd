@@ -1,7 +1,6 @@
 package zio.bdd.core.report
 
 import zio.*
-import zio.bdd.core.report.{JUnitXMLFormatter, JUnitXMLReporter, Reporter}
 import zio.bdd.core.*
 import zio.bdd.gherkin.*
 import zio.stream.{ZPipeline, ZSink, ZStream}
@@ -13,14 +12,13 @@ object JUnitXMLReporterTest extends ZIOSpecDefault {
 
   val testEnv: ZLayer[Any, Nothing, UserRepo & EmailService & LogCollector & Reporter] =
     ZLayer.succeed(new UserRepo {
-      def createUser(name: String) = ZIO.succeed(User(name, s"$name@example.com".toLowerCase))
+      def createUser(name: String) = ZIO.succeed(UserSteps.User(name, s"$name@example.com".toLowerCase))
     }) ++
       ZLayer.fromZIO(
         Ref.make(List.empty[String]).map { emailsRef =>
           new EmailService {
             def sendResetEmail(email: String) = emailsRef.update(email :: _)
-
-            def getSentEmails = emailsRef.get
+            def getSentEmails                 = emailsRef.get
           }
         }
       ) ++
@@ -37,9 +35,9 @@ object JUnitXMLReporterTest extends ZIOSpecDefault {
           |    When the user requests a password reset
           |    Then an email should be sent to {email:String}
           |  Examples:
-          |    | name   | email           |
+          |    | name   | email             |
           |    | JUnit  | junit@example.com |
-              """.stripMargin
+        """.stripMargin
       for {
         feature <- GherkinParser.parseFeature(content)
         _       <- ZIO.logInfo(s"Feature: ${feature}")

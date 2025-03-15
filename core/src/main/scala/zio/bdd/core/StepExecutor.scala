@@ -33,7 +33,7 @@ case class StepExecutor[R](
         result <- stepDefOpt match {
                     case Some(stepDef) =>
                       // If a step definition matches, execute it
-                      executeMatchedStep(stepDef, gherkinStep, line, isAnd, currentStepType, start)
+                      executeMatchedStep(stepDef, gherkinStep, line, currentStepType, start)
                     case None =>
                       // If no match, report a failure
                       executeUnmatchedStep(gherkinStep, line, currentStepType, start)
@@ -64,7 +64,8 @@ case class StepExecutor[R](
         } else {
           stepDef.stepType == expectedStepType
         }
-        val patternMatches = stepDef.pattern.findFirstIn(gherkinStep.pattern).isDefined
+        val patternRegex   = convertToRegex(stepDef.pattern)
+        val patternMatches = patternRegex.findFirstIn(gherkinStep.pattern).isDefined
         matchesStepType && patternMatches
       }
     }
@@ -74,45 +75,46 @@ case class StepExecutor[R](
     stepDef: ZIOSteps[R]#StepDef[?, ?],
     gherkinStep: GherkinStep,
     line: String,
-    isAnd: Boolean,
     currentStepType: StepType,
     start: Instant
   ): ZIO[R, Throwable, StepResult] = {
     val stepId  = gherkinStep.id
-    val pattern = stepDef.pattern
+    val pattern = convertToRegex(stepDef.pattern)
     // Cast fn to Any => ZIO[R, Throwable, Any] to match executeStepFunction's expected type
     // This is safe because I => O is compatible with Any => Any in this dynamic context
     val fn     = stepDef.fn.asInstanceOf[Any => ZIO[R, Throwable, Any]]
-    val params = extractParams(pattern, gherkinStep.pattern)
+    val params = extractParams(pattern, gherkinStep.pattern, stepDef.pattern)
 
     for {
       currentStack <- stackRef.get
       _            <- logCollector.logStdout(scenarioId, stepId, s"Step: $line, OutputStack: $currentStack, Params: $params")
       // Determine the input for the step (from params or previous outputs)
-      input <- determineInput(params, currentStepType, isAnd)
-      _     <- logCollector.logStdout(scenarioId, stepId, s"Selected Input for $line: $input")
+      input <- determineInput(params, currentStepType)
+      _     <- logCollector.logStdout(scenarioId, stepId, s"Selected Input for $line: ${input.toString}")
       // Execute the step function with the prepared input
-      result <- executeStepFunction(fn, line, input, isAnd, start, stepId)
+      result <- executeStepFunction(fn, line, input, start, stepId)
     } yield result
   }
 
   // Determines the input for a step, either from parameters or the stack
   private def determineInput(
-    params: List[String],
-    currentStepType: StepType,
-    isAnd: Boolean
+    params: List[Any],
+    currentStepType: StepType
   ): ZIO[Any, Nothing, Any] =
-    if (params.nonEmpty) {
-      // If parameters are provided, combine them into a single value or tuple
-      ZIO.succeed(combine((), params))
-    } else {
-      // Otherwise, use the last relevant output from the stack (e.g., Given for When/And)
-      stackRef.get.map { stack =>
-        if (currentStepType == StepType.WhenStep || isAnd) {
-          stack.find(_.stepType == StepType.GivenStep).map(_.output).getOrElse(())
-        } else {
-          OutputStack.flattenOutput(stack.headOption.map(_.output).getOrElse(()))
+    stackRef.get.map { stack =>
+      val priorOutput = if (currentStepType == StepType.GivenStep) {
+        () // Given starts with no prior input
+      } else {
+        stack.headOption.map(_.output).getOrElse(()) // Use previous step's output as-is
+      }
+      if (params.nonEmpty) {
+        // Combine prior output with params without flattening the prior output
+        priorOutput match {
+          case ()    => if (params.length == 1) params.head else Tuple.fromArray(params.toArray)
+          case prior => Tuple.fromArray((prior :: params).toArray)
         }
+      } else {
+        priorOutput
       }
     }
 
@@ -121,48 +123,35 @@ case class StepExecutor[R](
     fn: Any => ZIO[R, Throwable, Any],
     line: String,
     input: Any,
-    isAnd: Boolean,
     start: Instant,
     stepId: String
   ): ZIO[R, Throwable, StepResult] =
     (for {
-      _      <- logCollector.logStdout(scenarioId, stepId, s"Executing: $line with input: $input")
-      output <- fn(input) // Execute the step's logic
+      _      <- logCollector.logStdout(scenarioId, stepId, s"Executing: $line with input: ${input.toString}")
+      output <- fn(input)
       logs   <- logCollector.getLogs(scenarioId, stepId)
-      // For "And" steps, combine with previous non-unit output if applicable
-      finalOutput <- if (isAnd && OutputStack.flattenOutput(output) != ()) {
-                       OutputStack.peek(stackRef).flatMap {
-                         case Some(prev) if OutputStack.flattenOutput(prev.output) != () =>
-                           ZIO.succeed((prev.output, output))
-                         case _ => ZIO.succeed(output)
-                       }
-                     } else {
-                       ZIO.succeed(output)
-                     }
     } yield StepResult(
       line,
       succeeded = true,
       error = None,
-      output = finalOutput,
+      output = output,
       logs = logs.toStepResultLogs,
       duration = Duration.Zero,
       startTime = start
     )).catchAll { error =>
-      // On failure, capture logs and report the error
-      logCollector.logStderr(scenarioId, stepId, s"Step failed: $line - ${error.getMessage}") *>
-        logCollector.getLogs(scenarioId, stepId).flatMap { logs =>
-          logCollector.clearLogs.as {
-            StepResult(
-              line,
-              succeeded = false,
-              error = Some(error),
-              output = (),
-              logs = logs.toStepResultLogs,
-              duration = Duration.Zero,
-              startTime = start
-            )
-          }
+      logCollector.getLogs(scenarioId, stepId).flatMap { logs =>
+        logCollector.clearLogs.as {
+          StepResult(
+            line,
+            succeeded = false,
+            error = Some(error),
+            output = (),
+            logs = logs.toStepResultLogs,
+            duration = Duration.Zero,
+            startTime = start
+          )
         }
+      }
     }
 
   // Handles the case where no step definition matches the Gherkin step
@@ -190,27 +179,49 @@ case class StepExecutor[R](
     } yield result
   }
 
-  // Combines previous output with step parameters into a single input value
-  private def combine(prev: Any, params: List[String]): Any = {
-    val flattenedPrev = OutputStack.flattenOutput(prev)
-    params match {
-      case Nil => flattenedPrev
-      case head :: Nil =>
-        flattenedPrev match {
-          case ()     => parseParam(head)
-          case single => (single, parseParam(head))
+  // Extracts parameters from a step's pattern match
+  private def extractParams(pattern: Regex, line: String, patternString: String): List[Any] = {
+    val trimmedLine  = line.trim
+    val matchResult  = pattern.findFirstMatchIn(trimmedLine)
+    val subgroups    = matchResult.map(_.subgroups).getOrElse(Nil)
+    val placeholders = patternString.split("\\s+").filter(_.startsWith("{")).toList
+
+    if (placeholders.isEmpty) {
+      List()
+    } else {
+      if (subgroups.length != placeholders.length || subgroups.isEmpty) {
+        List()
+      } else {
+        subgroups.zip(placeholders).map { case (param, placeholder) =>
+          parseParam(param, placeholder)
         }
-      case many =>
-        flattenedPrev match {
-          case ()     => Tuple.fromArray(many.map(parseParam).toArray)
-          case single => Tuple.fromArray((single :: many.map(parseParam)).toArray)
-        }
+      }
     }
   }
 
-  // Extracts parameters from a step's pattern match
-  private def extractParams(pattern: Regex, line: String): List[String] =
-    pattern.findFirstMatchIn(line).map(_.subgroups).getOrElse(Nil)
+  private def parseParam(param: String, placeholder: String): Any = {
+    val placeholderType = placeholder.stripPrefix("{").stripSuffix("}").split(":").last.toLowerCase
+    placeholderType match {
+      case "int"     => param.toInt
+      case "float"   => param.toFloat
+      case "double"  => param.toDouble
+      case "boolean" => param.toBoolean
+      case "string"  => param.trim
+      case _         => param.trim
+    }
+  }
 
-  private def parseParam(param: String): Any = param.trim
+  private def convertToRegex(pattern: String): Regex =
+    if (pattern.contains("{") || pattern.contains("}")) {
+      pattern
+        .replace("{string}", "(.+)")
+        .replace("{int}", "(\\d+)")
+        .replace("{float}", "(\\d+\\.\\d+)")
+        .replace("{double}", "([-+]?\\d*\\.\\d+([eE][-+]?\\d+)?)") // Handles scientific notation
+        .replace("{boolean}", "(true|false)")
+        .replaceAll("\\{[^:]+:[^}]+\\}", "(.+)")
+        .r
+    } else {
+      pattern.r
+    }
 }

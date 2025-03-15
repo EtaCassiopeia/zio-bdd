@@ -43,15 +43,39 @@ object OutputStack {
       chunk.find(_.stepType != StepType.AndStep).map(_.stepType).getOrElse(StepType.GivenStep)
     }
 
+  // Combines previous output with step parameters into a single input value
+  private[core] def combine(prev: Any, params: List[Any]): Any = {
+    val flattenedPrev = flattenOutput(prev) match {
+      case ()             => Nil
+      case tuple: Product => tuple.productIterator.toList
+      case single         => List(single)
+    }
+    val allElements = flattenedPrev ++ params.filter(_ != ()) // Filter out Unit from new outputs
+    allElements match {
+      case Nil           => ()
+      case single :: Nil => single // Return single value without wrapping in Tuple1
+      case multiple      => Tuple.fromArray(multiple.toArray)
+    }
+  }
+
   // Flattens nested outputs, collapsing unit values
   private[core] def flattenOutput(value: Any): Any = value match {
-    case () => ()
-    case (a, b) =>
-      (flattenOutput(a), flattenOutput(b)) match {
-        case ((), ()) => ()
-        case ((), b)  => b
-        case (a, ())  => a
-        case (a, b)   => (a, b)
+    case ()             => ()
+    case tuple: Product =>
+      // Recursively flatten all elements into a single list
+      val elements = tuple.productIterator
+        .map(flattenOutput)
+        .flatMap {
+          case ()              => Nil
+          case nested: Product => nested.productIterator.toList
+          case other           => List(other)
+        }
+        .filter(_ != ())
+        .toList
+      elements match {
+        case Nil           => ()
+        case single :: Nil => single
+        case multiple      => Tuple.fromArray(multiple.toArray)
       }
     case other => other
   }
