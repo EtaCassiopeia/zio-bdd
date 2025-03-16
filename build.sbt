@@ -22,7 +22,7 @@ inThisBuild(
 lazy val commonDependencies = Seq(
   "dev.zio" %% "zio"          % "2.1.16",
   "dev.zio" %% "zio-logging"  % "2.5.0",
-  "dev.zio" %% "zio-test"     % "2.1.16" % Test,
+  "dev.zio" %% "zio-test"     % "2.1.16",
   "dev.zio" %% "zio-test-sbt" % "2.1.16" % Test
 )
 
