@@ -1,11 +1,11 @@
 package zio.bdd.core
 
 import zio.*
+import zio.bdd.core.StepUtils.{convertToRegex, extractParams}
 import zio.bdd.core.report.Reporter
 import zio.bdd.gherkin.{StepType, Step as GherkinStep}
 
 import java.time.Instant
-import scala.util.matching.Regex
 
 // Executes individual Gherkin steps by matching them to step definitions
 case class StepExecutor[R](
@@ -102,11 +102,9 @@ case class StepExecutor[R](
     currentStepType: StepType
   ): ZIO[Any, Nothing, Any] =
     stackRef.get.map { stack =>
-      val priorOutput = if (currentStepType == StepType.GivenStep) {
-        () // Given starts with no prior input
-      } else {
-        stack.headOption.map(_.output).getOrElse(()) // Use previous step's output as-is
-      }
+      val priorOutput =
+        stack.headOption.map(_.output).getOrElse(()) // Use previous step's output
+
       if (params.nonEmpty) {
         // Combine prior output with params without flattening the prior output
         priorOutput match {
@@ -178,50 +176,4 @@ case class StepExecutor[R](
                )
     } yield result
   }
-
-  // Extracts parameters from a step's pattern match
-  private def extractParams(pattern: Regex, line: String, patternString: String): List[Any] = {
-    val trimmedLine  = line.trim
-    val matchResult  = pattern.findFirstMatchIn(trimmedLine)
-    val subgroups    = matchResult.map(_.subgroups).getOrElse(Nil)
-    val placeholders = patternString.split("\\s+").filter(_.startsWith("{")).toList
-
-    if (placeholders.isEmpty) {
-      List()
-    } else {
-      if (subgroups.length != placeholders.length || subgroups.isEmpty) {
-        List()
-      } else {
-        subgroups.zip(placeholders).map { case (param, placeholder) =>
-          parseParam(param, placeholder)
-        }
-      }
-    }
-  }
-
-  private def parseParam(param: String, placeholder: String): Any = {
-    val placeholderType = placeholder.stripPrefix("{").stripSuffix("}").split(":").last.toLowerCase
-    placeholderType match {
-      case "int"     => param.toInt
-      case "float"   => param.toFloat
-      case "double"  => param.toDouble
-      case "boolean" => param.toBoolean
-      case "string"  => param.trim
-      case _         => param.trim
-    }
-  }
-
-  private def convertToRegex(pattern: String): Regex =
-    if (pattern.contains("{") || pattern.contains("}")) {
-      pattern
-        .replace("{string}", "(.+)")
-        .replace("{int}", "(\\d+)")
-        .replace("{float}", "(\\d+\\.\\d+)")
-        .replace("{double}", "([-+]?\\d*\\.\\d+([eE][-+]?\\d+)?)") // Handles scientific notation
-        .replace("{boolean}", "(true|false)")
-        .replaceAll("\\{[^:]+:[^}]+\\}", "(.+)")
-        .r
-    } else {
-      pattern.r
-    }
 }

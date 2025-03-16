@@ -8,11 +8,25 @@ object ShoppingCartSteps
 
   Given(
     "a product {productId:String} exists with name {name:String} price {price:Float} and stock {stock:Int}"
-  ) { case (productId: String, name: String, price: Float, stock: Int) =>
-    for {
-      catalog <- ZIO.service[ProductCatalog]
-      _       <- catalog.updateProduct(productId, name, price.toDouble, stock)
-    } yield ScenarioContext(products = Map(productId -> Product(productId, name, price.toDouble, stock)))
+  ) {
+    case (productId: String, name: String, price: Float, stock: Int) =>
+      for {
+        catalog <- ZIO.service[ProductCatalog]
+        _       <- catalog.updateProduct(productId, name, price.toDouble, stock)
+      } yield ScenarioContext(products = Map(productId -> Product(productId, name, price.toDouble, stock)))
+    case other =>
+      val fields = tupleFields(other.asInstanceOf[Tuple])
+
+      fields.foreach(f => println(s"${f.name}: ${f.fieldType}"))
+      ZIO.fail(new Exception(s"Invalid arguments: $other"))
+  }
+
+  case class NamedTupleField(name: String, fieldType: String)
+
+  def tupleFields[T <: Tuple](tuple: T): List[NamedTupleField] = {
+    val fieldNames = List("_1", "_2", "_3", "_4") // Tuple field names (manual)
+    val fieldTypes = tuple.toList.map(_.getClass.getSimpleName)
+    fieldNames.zip(fieldTypes).map { case (name, fieldType) => NamedTupleField(name, fieldType) }
   }
 
   Given("an empty shopping cart exists") { _ =>

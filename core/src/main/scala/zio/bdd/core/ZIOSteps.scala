@@ -69,4 +69,11 @@ object ZIOSteps {
     fn: Expr[I => ZIO[R, Throwable, O]],
     self: Expr[ZIOSteps[R]]
   )(using Quotes): Expr[Unit] = '{ $self.register(StepType.AndStep, $pattern, $fn) }
+
+  // empty method for testing purposes
+  def empty[R]: ZIOSteps[R] = new ZIOSteps[R] {
+    override def getSteps: List[StepDef[?, ?]]                                                       = Nil
+    override protected def register[I, O](stepType: StepType, pattern: String, fn: Step[I, O]): Unit = ()
+    override def environment: ZLayer[Any, Any, R]                                                    = ZLayer.empty.asInstanceOf[ZLayer[Any, Any, R]]
+  }
 }
