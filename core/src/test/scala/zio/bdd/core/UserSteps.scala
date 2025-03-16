@@ -6,7 +6,7 @@ import zio.bdd.core.Assertions.assertTrue
 object UserSteps extends ZIOSteps.Default[UserRepo & EmailService & LogCollector] {
   case class User(name: String, email: String)
 
-  Given[(String), User]("a user exists with name {name:String}") { (name: String) =>
+  Given("a user exists with name {name:String}") { (name: String) =>
     for {
       userRepo <- ZIO.service[UserRepo]
       user     <- userRepo.createUser(name)
@@ -14,14 +14,14 @@ object UserSteps extends ZIOSteps.Default[UserRepo & EmailService & LogCollector
     } yield user
   }
 
-  When[User, Unit]("the user requests a password reset") { (user: User) =>
+  When("the user requests a password reset") { (user: User) =>
     for {
       emailService <- ZIO.service[EmailService]
       _            <- emailService.sendResetEmail(user.email)
     } yield ()
   }
 
-  Then[String, Unit]("an email should be sent to {email:String}") { (email: String) =>
+  Then("an email should be sent to {email:String}") { (email: String) =>
     for {
       emailService <- ZIO.service[EmailService]
       sentEmails   <- emailService.getSentEmails
