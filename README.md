@@ -36,8 +36,6 @@
 - [X] Tag-based filtering for features and scenarios
 - [ ] Extend Gherkin syntax to support ZIO test generators in examples and scenario outlines
 - [X] Publish artifacts on Sonatype
-- [ ] Implement plugins for navigation between feature files and step definitions (e.g., IntelliJ, VSCode)
-- [ ] Add support for linting and code formatting
 - [ ] Introduce E2E testing with test flow support
 - [ ] Expand Gherkin to handle event-driven scenarios with event and trigger mechanisms
 - [ ] Create comprehensive documentation
@@ -64,19 +62,19 @@ import zio.bdd.core.{ZIOSteps, Suite}
 
 @Suite(featureDir = "example/src/test/resources/features", reporters = Array("console", "junitxml"), parallelism = 2)
 object UserSpec extends ZIOSteps.Default[UserService] {
-  Given[String, User]("a user named {string}") { name =>
+  Given("a user named {string}") { (name: String) =>
     ZIO.serviceWithZIO[UserService](_.createUser(name))
   }
 
-  Given[User, Unit]("the user has an account") { user =>
+  Given("the user has an account") { (user: User) =>
     ZIO.serviceWithZIO[UserService](_.activateAccount(user))
   }
 
-  When[User, String]("the user requests a greeting") { user =>
+  When("the user requests a greeting") { (user: User) =>
     ZIO.serviceWithZIO[UserService](_.greet(user))
   }
 
-  Then[String, Unit]("the greeting should be {string}") { expectedGreeting =>
+  Then("the greeting should be {string}") { (expectedGreeting: String) =>
     for {
       actualGreeting <- ZIO.serviceWithZIO[UserService](_.greet(User("World")))
       _              <- ZIO.succeed(assert(actualGreeting == expectedGreeting))

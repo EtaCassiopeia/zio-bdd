@@ -4,7 +4,7 @@ inThisBuild(
   List(
     organization := "io.github.etacassiopeia",
     homepage     := Some(url("https://github.com/EtaCassiopeia/zio-bdd")),
-    scalaVersion := "3.6.4",
+    scalaVersion := "3.3.4",
     licenses     := List("Apache-2.0" -> url("http://www.apache.org/licenses/LICENSE-2.0")),
     developers := List(
       Developer(

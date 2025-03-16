@@ -12,15 +12,15 @@ import zio.bdd.example.Config
   includeTags = Array("positive") // Pre-filter to only run @positive scenarios
 )
 object SimpleSpec extends ZIOSteps.Default[GreetingService] {
-  Given[String, String]("a user named {string}") { name =>
+  Given("a user named {string}") { name =>
     ZIO.succeed(name)
   }
 
-  When[String, String]("the user is greeted") { name =>
+  When("the user is greeted") { (name: String) =>
     ZIO.serviceWithZIO[GreetingService](_.greet(name))
   }
 
-  Then[(String, String), Unit]("the greeting should be {string}") { case (actualGreeting: String, expectedGreeting: String) =>
+  Then("the greeting should be {string}") { case (actualGreeting: String, expectedGreeting: String) =>
     ZIO.succeed(assertTrue(actualGreeting == expectedGreeting, s"Expected '$expectedGreeting', but got '$actualGreeting'"))
   }
 
