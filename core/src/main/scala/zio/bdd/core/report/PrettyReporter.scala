@@ -4,18 +4,23 @@ import zio.*
 import zio.bdd.core.{CollectedLogs, LogCollector, StepResult}
 
 case class PrettyReporter(
-  resultsRef: Ref[Map[String, (List[List[StepResult]], Int)]] // feature -> (results, ignoredCount)
+  resultsRef: Ref[
+    Map[String, (List[(String, List[StepResult])], Int)]
+  ],                                               // feature -> (List[(scenarioName, results)], ignoredCount)
+  currentScenarios: Ref[Map[String, List[String]]] // feature -> List[scenarioName]
 ) extends Reporter {
-  // Reuse ConsoleReporter's ANSI colors
-  private val LightGreen  = "\u001b[92m" // Bright green for passed
-  private val LightRed    = "\u001b[91m" // Bright red for failed
-  private val LightBlue   = "\u001b[94m" // Bright blue for features and steps
-  private val LightYellow = "\u001b[93m" // Bright yellow for scenarios and logs
-  private val LightGray   = "\u001b[90m" // Gray for ignored scenarios
+  private val LightGreen  = "\u001b[92m"
+  private val LightRed    = "\u001b[91m"
+  private val LightBlue   = "\u001b[94m"
+  private val LightYellow = "\u001b[93m"
+  private val LightGray   = "\u001b[90m"
   private val Reset       = "\u001b[0m"
 
   override def startFeature(feature: String): ZIO[Any, Nothing, Unit] =
-    resultsRef.update(_.updated(feature, (Nil, 0)))
+    for {
+      _ <- resultsRef.update(_.updated(feature, (Nil, 0)))
+      _ <- currentScenarios.update(_.updated(feature, Nil))
+    } yield ()
 
   override def endFeature(
     feature: String,
@@ -23,18 +28,29 @@ case class PrettyReporter(
     ignoredCount: Int
   ): ZIO[LogCollector, Nothing, Unit] =
     for {
-      _          <- resultsRef.update(_.updated(feature, (results, ignoredCount)))
-      allResults <- resultsRef.get
-      _ <- ZIO.when(allResults.forall(_._2._1.nonEmpty)) { // All features have results
+      scenarioNames <- currentScenarios.get.map(_.getOrElse(feature, Nil))
+      // Pair scenario names with results, falling back to "Unknown Scenario" if names are missing
+      pairedResults = scenarioNames.reverse.zipAll(results, "Unknown Scenario", Nil)
+      _            <- resultsRef.update(_.updated(feature, (pairedResults, ignoredCount)))
+      allResults   <- resultsRef.get
+      _ <- ZIO.when(allResults.forall(_._2._1.nonEmpty)) {
              for {
                _ <- printReport(allResults)
-               _ <- resultsRef.set(Map.empty) // Clear after printing
+               _ <- resultsRef.set(Map.empty)
+               _ <- currentScenarios.set(Map.empty)
                _ <- ZIO.serviceWithZIO[LogCollector](_.clearLogs)
              } yield ()
            }
     } yield ()
 
-  override def startScenario(scenario: String): ZIO[Any, Nothing, Unit] = ZIO.unit
+  override def startScenario(scenario: String): ZIO[Any, Nothing, Unit] =
+    // Assuming the last started feature is the current one; this assumes single-threaded feature execution
+    resultsRef.get.flatMap { map =>
+      val currentFeature = map.keys.lastOption.getOrElse("Unknown Feature")
+      currentScenarios.update { scenarios =>
+        scenarios.updated(currentFeature, scenario :: scenarios.getOrElse(currentFeature, Nil))
+      }
+    }
 
   override def endScenario(scenario: String, results: List[StepResult]): ZIO[LogCollector, Nothing, Unit] = ZIO.unit
 
@@ -50,20 +66,20 @@ case class PrettyReporter(
     }
 
   private def printReport(
-    results: Map[String, (List[List[StepResult]], Int)]
+    results: Map[String, (List[(String, List[StepResult])], Int)]
   ): ZIO[LogCollector, Nothing, Unit] =
     ZIO.foreachDiscard(results.toList.sortBy(_._1)) { case (feature, (scenarioResults, ignoredCount)) =>
       for {
         _ <- Console.printLine(s"${LightBlue}* Feature: $feature${Reset}").orDie
-        _ <- ZIO.foreachDiscard(scenarioResults.zipWithIndex) { case (results, idx) =>
-               val scenarioId = s"$feature-scenario-$idx"
+        _ <- ZIO.foreachDiscard(scenarioResults) { case (scenarioName, results) =>
+               val scenarioId = s"$feature-$scenarioName"
                for {
                  logs <- LogCollector.getScenarioLogs(scenarioId)
-                 _    <- printScenario(s"Scenario $idx", results, logs)
+                 _    <- printScenario(scenarioName, results, logs)
                } yield ()
              }
-        passed = scenarioResults.flatten.count(_.succeeded)
-        failed = scenarioResults.flatten.length - passed
+        passed = scenarioResults.flatMap(_._2).count(_.succeeded)
+        failed = scenarioResults.flatMap(_._2).length - passed
         _ <-
           Console
             .printLine(
@@ -93,12 +109,10 @@ case class PrettyReporter(
              val logOutput = if (stepLogs.nonEmpty) {
                stepLogs.map { case (msg, time) => s"${LightYellow}      ╰─ [$time] $msg${Reset}" }.mkString("\n")
              } else ""
-             // Extract just the file name from the full path
              val fileName = result.file.getOrElse("unknown").split("[/\\\\]").last
              val timing =
                s" (start: ${result.startTime}, duration: ${result.duration.toMillis}ms, file: $fileName:${result.line
                    .getOrElse(-1)})"
-
              Console
                .printLine(
                  s"${LightBlue}    ├─◑ [$status] ${result.step}$errorMsg$timing${Reset}" +
@@ -119,6 +133,9 @@ case class PrettyReporter(
 object PrettyReporter {
   def live: ZLayer[Any, Nothing, Reporter] =
     ZLayer.fromZIO(
-      Ref.make(Map.empty[String, (List[List[StepResult]], Int)]).map(PrettyReporter(_))
+      for {
+        resultsRef   <- Ref.make(Map.empty[String, (List[(String, List[StepResult])], Int)])
+        scenariosRef <- Ref.make(Map.empty[String, List[String]])
+      } yield PrettyReporter(resultsRef, scenariosRef)
     )
 }
