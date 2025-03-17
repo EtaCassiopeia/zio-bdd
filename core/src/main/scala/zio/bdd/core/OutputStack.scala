@@ -1,5 +1,6 @@
 package zio.bdd.core
 
+import izumi.reflect.Tag
 import zio.*
 import zio.bdd.gherkin.StepType
 
@@ -31,52 +32,34 @@ object OutputStack {
   def isEmpty(stackRef: Ref[Chunk[StepRecord]]): UIO[Boolean] =
     stackRef.get.map(_.isEmpty)
 
-  // Finds the first non-unit output in the stack
-  def findNonUnitOutput(stackRef: Ref[Chunk[StepRecord]]): UIO[Option[Any]] =
-    stackRef.get.map { chunk =>
-      chunk.find(record => flattenOutput(record.output) != ()).map(_.output)
-    }
-
   // Finds the last non-"And" step type (used to determine expected type for "And" steps)
   def findLastNonAndStepType(stackRef: Ref[Chunk[StepRecord]]): UIO[StepType] =
     stackRef.get.map { chunk =>
       chunk.find(_.stepType != StepType.AndStep).map(_.stepType).getOrElse(StepType.GivenStep)
     }
 
-  // Combines previous output with step parameters into a single input value
-  private[core] def combine(prev: Any, params: List[Any]): Any = {
-    val flattenedPrev = flattenOutput(prev) match {
-      case ()             => Nil
-      case tuple: Product => tuple.productIterator.toList
-      case single         => List(single)
+  // Type-safe combine previous output with step parameters into a single input value with runtime validation
+  private[core] def combineTyped[I](prev: Any, params: List[Any])(implicit iTag: Tag[I]): ZIO[Any, Throwable, I] = {
+    val combined = (prev, params) match {
+      case ((), Nil)           => ()
+      case ((), single :: Nil) => single
+      case ((), multiple)      => Tuple.fromArray(multiple.toArray)
+      case (prior, Nil)        => prior // Return prior output as-is when no params
+      case (prior: Tuple, nonEmpty) =>
+        Tuple.fromArray((prior.productIterator.toList.filter(_ != ()) ++ nonEmpty.filter(_ != ())).toArray)
+      case (prior, nonEmpty) => Tuple.fromArray((prior :: nonEmpty.filter(_ != ())).toArray)
     }
-    val allElements = flattenedPrev ++ params.filter(_ != ()) // Filter out Unit from new outputs
-    allElements match {
-      case Nil           => ()
-      case single :: Nil => single // Return single value without wrapping in Tuple1
-      case multiple      => Tuple.fromArray(multiple.toArray)
-    }
-  }
-
-  // Flattens nested outputs, collapsing unit values
-  private[core] def flattenOutput(value: Any): Any = value match {
-    case ()             => ()
-    case tuple: Product =>
-      // Recursively flatten all elements into a single list
-      val elements = tuple.productIterator
-        .map(flattenOutput)
-        .flatMap {
-          case ()              => Nil
-          case nested: Product => nested.productIterator.toList
-          case other           => List(other)
-        }
-        .filter(_ != ())
-        .toList
-      elements match {
-        case Nil           => ()
-        case single :: Nil => single
-        case multiple      => Tuple.fromArray(multiple.toArray)
+    ZIO.attempt {
+      val expectedTag = iTag.tag
+      combined match {
+        case i: I => i
+        case _ =>
+          val combinedStr = combined match {
+            case tuple: Product => s"Tuple${tuple.productArity}(${tuple.productIterator.mkString(", ")})"
+            case other          => other.toString
+          }
+          throw new Exception(s"Type mismatch: expected $expectedTag, got $combinedStr")
       }
-    case other => other
+    }
   }
 }

@@ -1,10 +1,9 @@
 package zio.bdd.core
 
+import izumi.reflect.Tag
 import zio.*
-import zio.bdd.core.StepUtils.{convertToRegex, extractParams}
-import zio.bdd.core.report.Reporter
 import zio.bdd.gherkin.{StepType, Step as GherkinStep}
-
+import zio.bdd.core.report.Reporter
 import java.time.Instant
 
 // Executes individual Gherkin steps by matching them to step definitions
@@ -18,25 +17,26 @@ case class StepExecutor[R](
 
   // Main method to execute a single Gherkin step
   def executeStep(gherkinStep: GherkinStep): ZIO[R, Throwable, StepResult] = {
-    val line            = gherkinStep.pattern
-    val stepId          = gherkinStep.id
-    val isAnd           = gherkinStep.stepType == StepType.AndStep
-    val currentStepType = gherkinStep.stepType
+    val line   = gherkinStep.pattern
+    val stepId = gherkinStep.id
     ZIO.logAnnotate("stepId", stepId) {
       for {
         // Determine the expected step type for matching (e.g., "And" inherits from last non-"And")
         lastNonAndStepType <- OutputStack.findLastNonAndStepType(stackRef)
-        expectedStepType    = if (isAnd) lastNonAndStepType else currentStepType
+        expectedStepType    = if (gherkinStep.stepType == StepType.AndStep) lastNonAndStepType else gherkinStep.stepType
         stepDefOpt         <- findMatchingStepDef(expectedStepType, gherkinStep)
         start              <- Clock.instant
         _                  <- reporter.startStep(line)
         result <- stepDefOpt match {
                     case Some(stepDef) =>
                       // If a step definition matches, execute it
-                      executeMatchedStep(stepDef, gherkinStep, line, currentStepType, start)
+                      executeMatchedStep(stepDef, gherkinStep, line, gherkinStep.stepType, start)(
+                        stepDef.iTag,
+                        stepDef.oTag
+                      )
                     case None =>
                       // If no match, report a failure
-                      executeUnmatchedStep(gherkinStep, line, currentStepType, start)
+                      executeUnmatchedStep(gherkinStep, line, gherkinStep.stepType, start)
                   }
         end     <- Clock.instant
         duration = Duration.fromInterval(start, end)
@@ -44,7 +44,7 @@ case class StepExecutor[R](
           result.copy(duration = duration, startTime = start, file = gherkinStep.file, line = gherkinStep.line)
         _ <- reporter.endStep(line, finalResult)
         // Record the step's result in the stack for use by subsequent steps
-        _            <- OutputStack.push(stackRef, StepRecord(currentStepType, line, finalResult.output))
+        _            <- OutputStack.push(stackRef, StepRecord(gherkinStep.stepType, line, finalResult.output))
         updatedStack <- stackRef.get
         _            <- logCollector.logStdout(scenarioId, stepId, s"After $line, NewStack: $updatedStack, Duration: $duration")
       } yield finalResult
@@ -64,63 +64,52 @@ case class StepExecutor[R](
         } else {
           stepDef.stepType == expectedStepType
         }
-        val patternRegex   = convertToRegex(stepDef.pattern)
+        val patternRegex   = StepUtils.convertToRegex(stepDef.pattern)
         val patternMatches = patternRegex.findFirstIn(gherkinStep.pattern).isDefined
         matchesStepType && patternMatches
       }
     }
 
   // Executes a matched step definition with its parameters and input
-  private def executeMatchedStep(
-    stepDef: ZIOSteps[R]#StepDef[?, ?],
+  private def executeMatchedStep[I, O](
+    stepDef: ZIOSteps[R]#StepDef[I, O],
     gherkinStep: GherkinStep,
     line: String,
     currentStepType: StepType,
     start: Instant
-  ): ZIO[R, Throwable, StepResult] = {
+  )(implicit iTag: Tag[I], oTag: Tag[O]): ZIO[R, Throwable, StepResult] = {
     val stepId  = gherkinStep.id
-    val pattern = convertToRegex(stepDef.pattern)
-    // Cast fn to Any => ZIO[R, Throwable, Any] to match executeStepFunction's expected type
-    // This is safe because I => O is compatible with Any => Any in this dynamic context
-    val fn     = stepDef.fn.asInstanceOf[Any => ZIO[R, Throwable, Any]]
-    val params = extractParams(pattern, gherkinStep.pattern, stepDef.pattern)
+    val pattern = StepUtils.convertToRegex(stepDef.pattern)
+    val params  = StepUtils.extractParams(pattern, gherkinStep.pattern, stepDef.pattern)
+    val fn      = stepDef.fn
 
     for {
       currentStack <- stackRef.get
-      _            <- logCollector.logStdout(scenarioId, stepId, s"Step: $line, OutputStack: $currentStack, Params: $params")
+      // _            <- logCollector.logStdout(scenarioId, stepId, s"Step: $line, OutputStack: $currentStack, Params: $params")
       // Determine the input for the step (from params or previous outputs)
-      input <- determineInput(params, currentStepType)
-      _     <- logCollector.logStdout(scenarioId, stepId, s"Selected Input for $line: ${input.toString}")
+      input <- determineInput(params, currentStepType, stepDef.iTag)
+      // _            <- logCollector.logStdout(scenarioId, stepId, s"Selected Input for $line: ${input.toString}")
       // Execute the step function with the prepared input
       result <- executeStepFunction(fn, line, input, start, stepId)
     } yield result
   }
 
   // Determines the input for a step, either from parameters or the stack
-  private def determineInput(
+  private def determineInput[I](
     params: List[Any],
-    currentStepType: StepType
-  ): ZIO[Any, Nothing, Any] =
-    stackRef.get.map { stack =>
-      val priorOutput =
-        stack.headOption.map(_.output).getOrElse(()) // Use previous step's output
-
-      if (params.nonEmpty) {
-        // Combine prior output with params without flattening the prior output
-        priorOutput match {
-          case ()    => if (params.length == 1) params.head else Tuple.fromArray(params.toArray)
-          case prior => Tuple.fromArray((prior :: params).toArray)
-        }
-      } else {
-        priorOutput
-      }
+    currentStepType: StepType,
+    iTag: Tag[I]
+  ): ZIO[Any, Throwable, I] =
+    stackRef.get.flatMap { stack =>
+      val priorOutput = stack.headOption.map(_.output).getOrElse(())
+      OutputStack.combineTyped(priorOutput, params)(iTag)
     }
 
   // Runs the step's function and constructs the result, handling success and failure
-  private def executeStepFunction(
-    fn: Any => ZIO[R, Throwable, Any],
+  private def executeStepFunction[I, O](
+    fn: I => ZIO[R, Throwable, O],
     line: String,
-    input: Any,
+    input: I,
     start: Instant,
     stepId: String
   ): ZIO[R, Throwable, StepResult] =
@@ -132,7 +121,7 @@ case class StepExecutor[R](
       line,
       succeeded = true,
       error = None,
-      output = output,
+      output = output.asInstanceOf[Any],
       logs = logs.toStepResultLogs,
       duration = Duration.Zero,
       startTime = start

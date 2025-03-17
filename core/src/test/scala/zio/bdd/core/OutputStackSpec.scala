@@ -1,5 +1,6 @@
 package zio.bdd.core
 
+import izumi.reflect.Tag
 import zio.*
 import zio.bdd.gherkin.StepType
 import zio.test.*
@@ -70,30 +71,7 @@ object OutputStackSpec extends ZIOSpecDefault {
           empty2   <- OutputStack.isEmpty(stackRef)
         } yield assertTrue(empty1, !empty2)
       },
-      test("findNonUnitOutput returns the first non-unit output") {
-        val records = Chunk(
-          StepRecord(StepType.GivenStep, "Given I start", ()), // Unit output
-          StepRecord(StepType.WhenStep, "When I act", "data"), // Non-unit output
-          StepRecord(StepType.ThenStep, "Then I see", 42)      // Non-unit output
-        )
-        for {
-          stackRef <- OutputStack.make
-          _        <- stackRef.set(records)
-          output   <- OutputStack.findNonUnitOutput(stackRef)
-        } yield assertTrue(output.contains("data"))
-      },
-      test("findNonUnitOutput returns None when all outputs are unit") {
-        val records = Chunk(
-          StepRecord(StepType.GivenStep, "Given I start", ()),
-          StepRecord(StepType.WhenStep, "When I act", ())
-        )
-        for {
-          stackRef <- OutputStack.make
-          _        <- stackRef.set(records)
-          output   <- OutputStack.findNonUnitOutput(stackRef)
-        } yield assertTrue(output.isEmpty)
-      },
-      test("findLastNonAndStepType returns the first non-And step type") {
+      test("findLastNonAndStepType returns the most recent non-And step type") {
         val records = Chunk(
           StepRecord(StepType.AndStep, "And I continue", "and1"),
           StepRecord(StepType.WhenStep, "When I act", "when"),
@@ -117,45 +95,27 @@ object OutputStackSpec extends ZIOSpecDefault {
           stepType <- OutputStack.findLastNonAndStepType(stackRef)
         } yield assertTrue(stepType == StepType.GivenStep)
       },
-      test("flattenOutput handles nested outputs correctly") {
+      test("combineTyped flattens previous output with new outputs") {
+        val prev    = (1, "prev")
+        val outputs = List("new", 42)
+        val resultZIO =
+          OutputStack.combineTyped(prev, outputs).orDie // Convert Throwable to Nothing
+        assertZIO(resultZIO)(equalTo((1, "prev", "new", 42)))
+      },
+      test("combineTyped handles nested outputs correctly") {
         checkAll(
           Gen.fromIterable(
             List(
-              ((), ()),     // Both unit
-              ("data", ()), // One unit
-              ((), 42),     // One unit
-              ("data", 42), // No unit
-              ()            // Single unit
+              ((), Nil, ()),
+              ("data", Nil, "data"),
+              ((), List(42), 42),
+              (("data", 42), Nil, ("data", 42))
             )
           )
-        ) { input =>
-          val result = OutputStack.flattenOutput(input)
-          val expected = input match {
-            case ((), ())     => ()
-            case ("data", ()) => "data"
-            case ((), 42)     => 42
-            case ("data", 42) => ("data", 42)
-            case ()           => ()
-            case other        => other
-          }
-          assertTrue(result == expected)
+        ) { case (prev, params, expected) =>
+          val resultZIO = OutputStack.combineTyped[Any](prev, params).orDie
+          assertZIO(resultZIO)(equalTo(expected))
         }
-      },
-      test("combine flattens previous output with new outputs") {
-        val prev    = (1, "prev")
-        val outputs = List("new", 42)
-        val result  = OutputStack.combine(prev, outputs)
-        assertTrue(result == (1, "prev", "new", 42))
-      },
-      test("flattenOutput removes nested Unit values") {
-        val input  = (((), "data"), (42, ()))
-        val result = OutputStack.flattenOutput(input)
-        assertTrue(result == ("data", 42))
-      },
-      test("flattenOutput handles deeply nested tuples") {
-        val input  = ((((), 1), ()), ("data", (42, ())))
-        val result = OutputStack.flattenOutput(input)
-        assertTrue(result == (1, "data", 42))
       }
     )
 }
