@@ -32,12 +32,6 @@ object OutputStack {
   def isEmpty(stackRef: Ref[Chunk[StepRecord]]): UIO[Boolean] =
     stackRef.get.map(_.isEmpty)
 
-  // Finds the last non-"And" step type (used to determine expected type for "And" steps)
-  def findLastNonAndStepType(stackRef: Ref[Chunk[StepRecord]]): UIO[StepType] =
-    stackRef.get.map { chunk =>
-      chunk.find(_.stepType != StepType.AndStep).map(_.stepType).getOrElse(StepType.GivenStep)
-    }
-
   // Type-safe combine previous output with step parameters into a single input value with runtime validation
   private[core] def combineTyped[I](prev: Any, params: List[Any])(implicit iTag: Tag[I]): ZIO[Any, Throwable, I] = {
     val combined = (prev, params) match {

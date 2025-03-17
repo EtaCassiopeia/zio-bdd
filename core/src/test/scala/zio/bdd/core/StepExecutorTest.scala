@@ -32,15 +32,16 @@ object StepExecutorTest extends ZIOSpecDefault {
         executor <- makeExecutor()
       } yield {
         val patterns = Map(
-          "the user adds {int} items" -> "the user adds (\\d+) items".r,
-          "price is {float}"          -> "price is (\\d+\\.\\d+)".r,
-          "enabled is {boolean}"      -> "enabled is (true|false)".r,
-          "name is {string}"          -> "name is (.+)".r,
-          "value is {double}"         -> "value is (\\d+\\.\\d+)".r,
-          "plain text"                -> "plain text".r
+          "the user adds {int} items" -> s"^the user adds (\\d+) items$$".r,
+          "price is {float}"          -> s"^price is (\\d+\\.\\d+)$$".r,
+          "enabled is {boolean}"      -> s"^enabled is (true|false)$$".r,
+          "name is {string}"          -> s"^name is (.+)$$".r,
+          "value is {double}"         -> s"^value is (\\d+\\.\\d+)$$".r,
+          "plain text"                -> s"^plain text$$".r
         )
         val results = patterns.map { case (input, expected) =>
           val result = StepUtils.convertToRegex(input)
+          println(s"Input: $input, Expected: $expected, Result: $result")
           result.pattern.pattern == expected.pattern.pattern
         }
         assertTrue(results.forall(identity))
