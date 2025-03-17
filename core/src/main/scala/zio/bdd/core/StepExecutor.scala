@@ -55,7 +55,7 @@ case class StepExecutor[R](
   private def findMatchingStepDef(
     expectedStepType: StepType,
     gherkinStep: GherkinStep
-  ): ZIO[Any, Nothing, Option[ZIOSteps[R]#StepDef[?, ?]]] =
+  ): ZIO[Any, Nothing, Option[ZIOSteps[R]#StepDef[? <: Matchable, ?]]] =
     ZIO.succeed {
       steps.getSteps.find { stepDef =>
         val matchesStepType = if (gherkinStep.stepType == StepType.AndStep) {
@@ -71,7 +71,7 @@ case class StepExecutor[R](
     }
 
   // Executes a matched step definition with its parameters and input
-  private def executeMatchedStep[I, O](
+  private def executeMatchedStep[I <: Matchable, O](
     stepDef: ZIOSteps[R]#StepDef[I, O],
     gherkinStep: GherkinStep,
     line: String,
@@ -106,7 +106,7 @@ case class StepExecutor[R](
     }
 
   // Runs the step's function and constructs the result, handling success and failure
-  private def executeStepFunction[I, O](
+  private def executeStepFunction[I <: Matchable, O](
     fn: I => ZIO[R, Throwable, O],
     line: String,
     input: I,

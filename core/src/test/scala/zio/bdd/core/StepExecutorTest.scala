@@ -106,9 +106,13 @@ object StepExecutorTest extends ZIOSpecDefault {
     test("StepExecutor executes step with alternation syntax 'the account (is|is not) active'") {
       val steps = new ZIOSteps[Any] {
         type Env = Any
-        private var steps: List[StepDef[?, ?]]     = Nil
-        override def getSteps: List[StepDef[?, ?]] = steps.reverse
-        override protected def register[I: Tag, O: Tag](stepType: StepType, pattern: String, fn: Step[I, O]): Unit =
+        private var steps: List[StepDef[? <: Matchable, ?]]     = Nil
+        override def getSteps: List[StepDef[? <: Matchable, ?]] = steps.reverse
+        override protected def register[I <: Matchable: Tag, O: Tag](
+          stepType: StepType,
+          pattern: String,
+          fn: Step[I, O]
+        ): Unit =
           steps = StepDef(stepType, pattern, fn) :: steps
         override def environment: ZLayer[Any, Any, Any] = ZLayer.empty
 
