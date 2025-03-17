@@ -30,9 +30,13 @@ object AssertionTest extends ZIOSpecDefault {
   // Define a simple step definition for testing assertions
   private val demoSteps = new ZIOSteps[Any] {
     type Env = Any
-    private var steps: List[StepDef[?, ?]]     = Nil
-    override def getSteps: List[StepDef[?, ?]] = steps.reverse
-    override protected def register[I: Tag, O: Tag](stepType: StepType, pattern: String, fn: Step[I, O]): Unit =
+    private var steps: List[StepDef[? <: Matchable, ?]]     = Nil
+    override def getSteps: List[StepDef[? <: Matchable, ?]] = steps.reverse
+    override protected def register[I <: Matchable: Tag, O: Tag](
+      stepType: StepType,
+      pattern: String,
+      fn: Step[I, O]
+    ): Unit =
       steps = StepDef(stepType, pattern, fn) :: steps
     override def environment: ZLayer[Any, Any, Any] = ZLayer.empty
 
@@ -138,9 +142,13 @@ object AssertionTest extends ZIOSpecDefault {
     test("assertLeft checks for error case") {
       val errorSteps = new ZIOSteps[Any] {
         type Env = Any
-        private var steps: List[StepDef[?, ?]]     = Nil
-        override def getSteps: List[StepDef[?, ?]] = steps.reverse
-        override protected def register[I: Tag, O: Tag](stepType: StepType, pattern: String, fn: Step[I, O]): Unit =
+        private var steps: List[StepDef[? <: Matchable, ?]]     = Nil
+        override def getSteps: List[StepDef[? <: Matchable, ?]] = steps.reverse
+        override protected def register[I <: Matchable: Tag, O: Tag](
+          stepType: StepType,
+          pattern: String,
+          fn: Step[I, O]
+        ): Unit =
           steps = StepDef(stepType, pattern, fn) :: steps
         override def environment: ZLayer[Any, Any, Any] = ZLayer.empty
 
@@ -159,9 +167,13 @@ object AssertionTest extends ZIOSpecDefault {
     test("assertLeftEquals checks error message") {
       val errorSteps = new ZIOSteps[Any] {
         type Env = Any
-        private var steps: List[StepDef[?, ?]]     = Nil
-        override def getSteps: List[StepDef[?, ?]] = steps.reverse
-        override protected def register[I: Tag, O: Tag](stepType: StepType, pattern: String, fn: Step[I, O]): Unit =
+        private var steps: List[StepDef[? <: Matchable, ?]]     = Nil
+        override def getSteps: List[StepDef[? <: Matchable, ?]] = steps.reverse
+        override protected def register[I <: Matchable: Tag, O: Tag](
+          stepType: StepType,
+          pattern: String,
+          fn: Step[I, O]
+        ): Unit =
           steps = StepDef(stepType, pattern, fn) :: steps
         override def environment: ZLayer[Any, Any, Any] = ZLayer.empty
 
