@@ -7,7 +7,7 @@ import zio.bdd.example.Config
 
 @Suite(
   featureDir = "example/src/test/resources/features",
-  reporters = Array("console", "junitxml"),
+  reporters = Array("pretty", "junitxml"),
   parallelism = 1,
   includeTags = Array("positive") // Pre-filter to only run @positive scenarios
 )

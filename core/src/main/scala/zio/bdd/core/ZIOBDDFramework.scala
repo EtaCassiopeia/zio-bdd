@@ -1,7 +1,7 @@
 package zio.bdd.core
 
 import sbt.testing.*
-import zio.bdd.core.report.{ConsoleReporter, JUnitXMLFormatter, JUnitXMLReporter, Reporter}
+import zio.bdd.core.report.{ConsoleReporter, JUnitXMLFormatter, JUnitXMLReporter, PrettyReporter, Reporter}
 import zio.bdd.gherkin.{Feature, GherkinParser}
 import zio.{Ref, Runtime, Unsafe, ZIO, ZLayer}
 
@@ -150,23 +150,33 @@ class ZIOBDDTask(
   private def parseConfig(args: Array[String], className: String): TestConfig = {
     val clazz      = testClassLoader.loadClass(className + "$")
     val annotation = Option(clazz.getAnnotation(classOf[zio.bdd.core.Suite]))
+
+    def instantiateReporter(name: String): Reporter = name match {
+      case "console" => ConsoleReporter
+      case "pretty" =>
+        Unsafe.unsafe { implicit unsafe =>
+          runtime.unsafe
+            .run(
+              ZIO.scoped(
+                PrettyReporter.live.build.map(_.get[Reporter])
+              )
+            )
+            .getOrThrowFiberFailure()
+        }
+      case "junitxml" =>
+        JUnitXMLReporter(
+          JUnitXMLFormatter.Format.JUnit5,
+          Ref.unsafe.make(List.empty[JUnitXMLFormatter.TestCase])(Unsafe.unsafe),
+          defaultTestResultDir
+        )
+      case _ => ConsoleReporter
+    }
+
     val annoConfig = annotation
       .map(a =>
         TestConfig(
           featureFiles = if (a.featureDir().isEmpty) Nil else List(a.featureDir()),
-          reporters = a
-            .reporters()
-            .map {
-              case "console" => ConsoleReporter
-              case "junitxml" =>
-                JUnitXMLReporter(
-                  JUnitXMLFormatter.Format.JUnit5,
-                  Ref.unsafe.make(List.empty[JUnitXMLFormatter.TestCase])(Unsafe.unsafe),
-                  defaultTestResultDir
-                )
-              case other => ConsoleReporter
-            }
-            .toList,
+          reporters = a.reporters().map(instantiateReporter).toList,
           parallelism = a.parallelism(),
           includeTags = a.includeTags().toSet,
           excludeTags = a.excludeTags().toSet
@@ -211,6 +221,16 @@ class ZIOBDDTask(
       .sliding(2)
       .collect {
         case Array("--reporter", "console") => ConsoleReporter
+        case Array("--reporter", "pretty") =>
+          Unsafe.unsafe { implicit unsafe =>
+            runtime.unsafe
+              .run(
+                ZIO.scoped(
+                  PrettyReporter.live.build.map(_.get[Reporter])
+                )
+              )
+              .getOrThrowFiberFailure()
+          }
         case Array("--reporter", "junitxml") =>
           JUnitXMLReporter(
             JUnitXMLFormatter.Format.JUnit5,
@@ -218,10 +238,7 @@ class ZIOBDDTask(
             defaultTestResultDir
           )
       }
-      .toList match {
-      case Nil       => List(ConsoleReporter)
-      case reporters => reporters
-    }
+      .toList
 
   private def parseParallelism(args: Array[String]): Int =
     args
@@ -304,17 +321,6 @@ class ZIOBDDTask(
           override def duration(): Long = result.duration.toMillis
         }
         eventHandler.handle(event)
-
-        loggers.foreach { logger =>
-          val logMsg = s"${result.step} - ${if (result.succeeded) "PASSED" else "FAILED"} " +
-            s"(duration: ${result.duration.toMillis}ms, file: ${result.file}:${result.line})"
-          logger.info(logMsg)
-          result.logs.foreach { case (msg, time) => logger.debug(s"[$time] $msg") }
-          result.error.foreach { t =>
-            logger.error(s"Error: ${t.getMessage}")
-            logger.debug(s"Stack trace: ${t.getStackTrace.mkString("\n")}")
-          }
-        }
       }
     }
   }
