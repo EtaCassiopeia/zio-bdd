@@ -5,6 +5,7 @@ import zio.bdd.core.report.ConsoleReporter
 import zio.test.*
 import zio.bdd.gherkin.{StepType, Step as GherkinStep}
 import zio.test.Assertion.equalTo
+import izumi.reflect.Tag
 
 object AssertionTest extends ZIOSpecDefault {
 
@@ -31,7 +32,7 @@ object AssertionTest extends ZIOSpecDefault {
     type Env = Any
     private var steps: List[StepDef[?, ?]]     = Nil
     override def getSteps: List[StepDef[?, ?]] = steps.reverse
-    override protected def register[I, O](stepType: StepType, pattern: String, fn: Step[I, O]): Unit =
+    override protected def register[I: Tag, O: Tag](stepType: StepType, pattern: String, fn: Step[I, O]): Unit =
       steps = StepDef(stepType, pattern, fn) :: steps
     override def environment: ZLayer[Any, Any, Any] = ZLayer.empty
 
@@ -85,8 +86,8 @@ object AssertionTest extends ZIOSpecDefault {
         executor   <- makeExecutor(demoSteps)
         givenStep   = GherkinStep(StepType.GivenStep, "a cart with id C1 and 2 items", None, None)
         whenStep    = GherkinStep(StepType.WhenStep, "a discount of 5.0 is applied", None, None)
-        _          <- executor.executeStep(givenStep) // Pushes cart to stack
-        result     <- executor.executeStep(whenStep)  // Uses cart from stack
+        _          <- executor.executeStep(givenStep)
+        result     <- executor.executeStep(whenStep)
         updatedCart = result.output.asInstanceOf[Cart]
         _          <- Assertions.assertSome(updatedCart.discount, "Discount should be present")
       } yield assertTrue(true)
@@ -139,10 +140,13 @@ object AssertionTest extends ZIOSpecDefault {
         type Env = Any
         private var steps: List[StepDef[?, ?]]     = Nil
         override def getSteps: List[StepDef[?, ?]] = steps.reverse
-        override protected def register[I, O](stepType: StepType, pattern: String, fn: Step[I, O]): Unit =
+        override protected def register[I: Tag, O: Tag](stepType: StepType, pattern: String, fn: Step[I, O]): Unit =
           steps = StepDef(stepType, pattern, fn) :: steps
         override def environment: ZLayer[Any, Any, Any] = ZLayer.empty
-        When("an order fails")(_ => ZIO.succeed(Order(0.0, Left("Order failed"))))
+
+        When("an order fails") { (_: Any) =>
+          ZIO.succeed(Order(0.0, Left("Order failed")))
+        }
       }
       for {
         executor <- makeExecutor(errorSteps)
@@ -157,10 +161,13 @@ object AssertionTest extends ZIOSpecDefault {
         type Env = Any
         private var steps: List[StepDef[?, ?]]     = Nil
         override def getSteps: List[StepDef[?, ?]] = steps.reverse
-        override protected def register[I, O](stepType: StepType, pattern: String, fn: Step[I, O]): Unit =
+        override protected def register[I: Tag, O: Tag](stepType: StepType, pattern: String, fn: Step[I, O]): Unit =
           steps = StepDef(stepType, pattern, fn) :: steps
         override def environment: ZLayer[Any, Any, Any] = ZLayer.empty
-        When("an order fails")(_ => ZIO.succeed(Order(0.0, Left("Order failed"))))
+
+        When("an order fails") { (_: Any) =>
+          ZIO.succeed(Order(0.0, Left("Order failed")))
+        }
       }
       for {
         executor <- makeExecutor(errorSteps)

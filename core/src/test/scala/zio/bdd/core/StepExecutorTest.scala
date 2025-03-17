@@ -4,6 +4,7 @@ import zio.*
 import zio.bdd.core.report.ConsoleReporter
 import zio.test.*
 import zio.bdd.gherkin.{StepType, Step as GherkinStep}
+import izumi.reflect.Tag
 import zio.test.Assertion._
 
 object StepExecutorTest extends ZIOSpecDefault {
@@ -107,9 +108,10 @@ object StepExecutorTest extends ZIOSpecDefault {
         type Env = Any
         private var steps: List[StepDef[?, ?]]     = Nil
         override def getSteps: List[StepDef[?, ?]] = steps.reverse
-        override protected def register[I, O](stepType: StepType, pattern: String, fn: Step[I, O]): Unit =
+        override protected def register[I: Tag, O: Tag](stepType: StepType, pattern: String, fn: Step[I, O]): Unit =
           steps = StepDef(stepType, pattern, fn) :: steps
         override def environment: ZLayer[Any, Any, Any] = ZLayer.empty
+
         Given("the account (is|is not) active") { (status: String) =>
           ZIO.succeed(s"Account status: $status")
         }
@@ -133,9 +135,9 @@ object StepExecutorTest extends ZIOSpecDefault {
           ("the account (is|is not) active", "the account is not active", List("is not")),
 
           // Regex placeholders for different types
-          ("user (\\w+) logged in", "user alice logged in", List("alice")), // String via regex
-          ("added (\\d+) items", "added 42 items", List("42")),             // Int via regex (as string)
-          ("price is (\\d+\\.\\d+)", "price is 12.34", List("12.34")),      // Double via regex (as string)
+          ("user (\\w+) logged in", "user alice logged in", List("alice")),
+          ("added (\\d+) items", "added 42 items", List("42")),
+          ("price is (\\d+\\.\\d+)", "price is 12.34", List("12.34")),
 
           // Multiple regex placeholders
           ("(\\w+) has (\\d+) items", "bob has 5 items", List("bob", "5")),
@@ -146,7 +148,6 @@ object StepExecutorTest extends ZIOSpecDefault {
           // ("(\\w+) owes {double}", "alice owes 9.99", List("alice", 9.99d)),
           // ("{string} has (\\d+) points", "john has 100 points", List("john", "100"))
         )
-
         val results = testCases.zipWithIndex.map { case ((patternString, line, expected), testIdx) =>
           val regex   = StepUtils.convertToRegex(patternString)
           val result  = StepUtils.extractParams(regex, line, patternString)
@@ -178,8 +179,7 @@ object StepExecutorTest extends ZIOSpecDefault {
           s"Pattern: $patternString, Line: $line, Result: $result, Types: ${result.map(_.getClass.getSimpleName)}"
         )
 
-        assert(result)(equalTo(expectedValues)) &&
-        assert(result.map(_.getClass.getSimpleName))(equalTo(expectedTypes))
+        assertTrue(result == expectedValues, result.map(_.getClass.getSimpleName) == expectedTypes)
       }): ZIO[TestEnvironment & Scope, Nothing, TestResult]
     }
   ).provideSome[Scope](testEnv)
