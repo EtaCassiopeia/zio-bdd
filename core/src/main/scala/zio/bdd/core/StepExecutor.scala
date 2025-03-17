@@ -114,7 +114,7 @@ case class StepExecutor[R](
     stepId: String
   ): ZIO[R, Throwable, StepResult] =
     (for {
-      _      <- logCollector.logStdout(scenarioId, stepId, s"Executing: $line with input: ${input.toString}")
+      // _      <- logCollector.logStdout(scenarioId, stepId, s"Executing: $line with input: ${input.toString}")
       output <- fn(input)
       logs   <- logCollector.getLogs(scenarioId, stepId)
     } yield StepResult(

@@ -60,7 +60,7 @@ package zio.bdd.example
 import zio.*
 import zio.bdd.core.{ZIOSteps, Suite}
 
-@Suite(featureDir = "example/src/test/resources/features", reporters = Array("console", "junitxml"), parallelism = 2)
+@Suite(featureDir = "example/src/test/resources/features", reporters = Array("pretty", "junitxml"), parallelism = 2)
 object UserSpec extends ZIOSteps.Default[UserService] {
   Given("a user named {string}") { (name: String) =>
     ZIO.serviceWithZIO[UserService](_.createUser(name))
