@@ -7,9 +7,9 @@ object StepUtils {
     val baseRegex = if (pattern.contains("{") || pattern.contains("}")) {
       pattern
         .replace("{string}", "(.+)")
-        .replace("{int}", "(\\d+)")
-        .replace("{float}", "(\\d+\\.\\d+)")
-        .replace("{double}", "(\\d+\\.\\d+)")
+        .replace("{int}", "(-?\\d+)")
+        .replace("{float}", "(-?\\d+\\.\\d+)")
+        .replace("{double}", "(-?\\d+\\.\\d+)")
         .replace("{boolean}", "(true|false)")
         .replaceAll("\\{[^:]+:[^}]+\\}", "(.+)")
     } else {
