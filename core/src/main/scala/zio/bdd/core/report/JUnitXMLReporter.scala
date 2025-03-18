@@ -50,7 +50,6 @@ case class JUnitXMLReporter(
   override def endScenario(scenario: String, results: List[StepResult]): ZIO[LogCollector, Nothing, Unit] =
     for {
       _         <- ZIO.logDebug(s"Entering endScenario: $scenario with ${results.length} steps")
-      _         <- Console.printLine(s"DEBUG: Ending scenario: $scenario").orDie
       startTime <- ZIO.succeed(results.headOption.map(_.startTime).getOrElse(Instant.now()))
       duration = results.lastOption
                    .map(r => java.time.Duration.between(startTime, r.startTime.plusNanos(r.duration.toNanos)).toMillis)

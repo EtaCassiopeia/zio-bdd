@@ -32,11 +32,11 @@ object StepExecutorTest extends ZIOSpecDefault {
         executor <- makeExecutor()
       } yield {
         val patterns = Map(
-          "the user adds {int} items" -> s"^the user adds (\\d+) items$$".r,
-          "price is {float}"          -> s"^price is (\\d+\\.\\d+)$$".r,
+          "the user adds {int} items" -> s"^the user adds (-?\\d+) items$$".r,
+          "price is {float}"          -> s"^price is (-?\\d+\\.\\d+)$$".r,
           "enabled is {boolean}"      -> s"^enabled is (true|false)$$".r,
           "name is {string}"          -> s"^name is (.+)$$".r,
-          "value is {double}"         -> s"^value is (\\d+\\.\\d+)$$".r,
+          "value is {double}"         -> s"^value is (-?\\d+\\.\\d+)$$".r,
           "plain text"                -> s"^plain text$$".r
         )
         val results = patterns.map { case (input, expected) =>
@@ -185,6 +185,23 @@ object StepExecutorTest extends ZIOSpecDefault {
         )
 
         assertTrue(result == expectedValues, result.map(_.getClass.getSimpleName) == expectedTypes)
+      }): ZIO[TestEnvironment & Scope, Nothing, TestResult]
+    },
+    test("convertToRegex and extractParams handle negative numbers") {
+      (for {
+        executor <- makeExecutor()
+      } yield {
+        val testCases = List(
+          ("value is {int}", "value is -10", List(-10)),
+          ("price is {float}", "price is -12.34", List(-12.34f)),
+          ("value is {double}", "value is -5.67", List(-5.67d))
+        )
+        val results = testCases.map { case (patternString, line, expected) =>
+          val regex  = StepUtils.convertToRegex(patternString)
+          val result = StepUtils.extractParams(regex, line, patternString)
+          result == expected && result.head.getClass.getSimpleName == expected.head.getClass.getSimpleName
+        }
+        assertTrue(results.forall(identity))
       }): ZIO[TestEnvironment & Scope, Nothing, TestResult]
     }
   ).provideSome[Scope](testEnv)
