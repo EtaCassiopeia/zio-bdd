@@ -3,8 +3,8 @@ package zio.bdd.core
 import scala.util.matching.Regex
 
 object StepUtils {
-  def convertToRegex(pattern: String): Regex =
-    if (pattern.contains("{") || pattern.contains("}")) {
+  def convertToRegex(pattern: String): Regex = {
+    val baseRegex = if (pattern.contains("{") || pattern.contains("}")) {
       pattern
         .replace("{string}", "(.+)")
         .replace("{int}", "(\\d+)")
@@ -12,10 +12,22 @@ object StepUtils {
         .replace("{double}", "(\\d+\\.\\d+)")
         .replace("{boolean}", "(true|false)")
         .replaceAll("\\{[^:]+:[^}]+\\}", "(.+)")
-        .r
     } else {
-      pattern.r
+      pattern
     }
+
+    // Add anchors only if not already present
+    val startsWithAnchor = baseRegex.startsWith("^")
+    val endsWithAnchor   = baseRegex.endsWith("$")
+    val anchoredPattern = (startsWithAnchor, endsWithAnchor) match {
+      case (true, true)   => baseRegex
+      case (true, false)  => s"$baseRegex$$"
+      case (false, true)  => s"^$baseRegex"
+      case (false, false) => s"^$baseRegex$$"
+    }
+
+    anchoredPattern.r
+  }
 
   def extractParams(pattern: Regex, line: String, patternString: String): List[Any] = {
     val trimmedLine  = line.trim

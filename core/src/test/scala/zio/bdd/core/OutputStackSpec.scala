@@ -71,30 +71,6 @@ object OutputStackSpec extends ZIOSpecDefault {
           empty2   <- OutputStack.isEmpty(stackRef)
         } yield assertTrue(empty1, !empty2)
       },
-      test("findLastNonAndStepType returns the most recent non-And step type") {
-        val records = Chunk(
-          StepRecord(StepType.AndStep, "And I continue", "and1"),
-          StepRecord(StepType.WhenStep, "When I act", "when"),
-          StepRecord(StepType.AndStep, "And I finish", "and2"),
-          StepRecord(StepType.GivenStep, "Given I start", "given")
-        )
-        for {
-          stackRef <- OutputStack.make
-          _        <- stackRef.set(records)
-          stepType <- OutputStack.findLastNonAndStepType(stackRef)
-        } yield assertTrue(stepType == StepType.WhenStep)
-      },
-      test("findLastNonAndStepType returns GivenStep when all are And") {
-        val records = Chunk(
-          StepRecord(StepType.AndStep, "And I continue", "and1"),
-          StepRecord(StepType.AndStep, "And I finish", "and2")
-        )
-        for {
-          stackRef <- OutputStack.make
-          _        <- stackRef.set(records)
-          stepType <- OutputStack.findLastNonAndStepType(stackRef)
-        } yield assertTrue(stepType == StepType.GivenStep)
-      },
       test("combineTyped flattens previous output with new outputs") {
         val prev    = (1, "prev")
         val outputs = List("new", 42)

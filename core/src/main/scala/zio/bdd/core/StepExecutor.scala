@@ -21,12 +21,9 @@ case class StepExecutor[R](
     val stepId = gherkinStep.id
     ZIO.logAnnotate("stepId", stepId) {
       for {
-        // Determine the expected step type for matching (e.g., "And" inherits from last non-"And")
-        lastNonAndStepType <- OutputStack.findLastNonAndStepType(stackRef)
-        expectedStepType    = if (gherkinStep.stepType == StepType.AndStep) lastNonAndStepType else gherkinStep.stepType
-        stepDefOpt         <- findMatchingStepDef(expectedStepType, gherkinStep)
-        start              <- Clock.instant
-        _                  <- reporter.startStep(line)
+        stepDefOpt <- findMatchingStepDef(gherkinStep.stepType, gherkinStep)
+        start      <- Clock.instant
+        _          <- reporter.startStep(line)
         result <- stepDefOpt match {
                     case Some(stepDef) =>
                       // If a step definition matches, execute it
@@ -58,14 +55,20 @@ case class StepExecutor[R](
   ): ZIO[Any, Nothing, Option[ZIOSteps[R]#StepDef[? <: Matchable, ?]]] =
     ZIO.succeed {
       steps.getSteps.find { stepDef =>
-        val matchesStepType = if (gherkinStep.stepType == StepType.AndStep) {
-          // "And" steps can match either the inherited type or AndStep definitions
-          stepDef.stepType == expectedStepType || stepDef.stepType == StepType.AndStep
-        } else {
-          stepDef.stepType == expectedStepType
+        // Determine if step types match
+        val matchesStepType = gherkinStep.stepType match {
+          case StepType.AndStep =>
+            // For And steps, ignore expectedStepType and allow any step type with an exact match
+            true
+          case _ =>
+            // For non-And steps, require exact step type match
+            stepDef.stepType == expectedStepType
         }
+
+        // Convert pattern to regex and ensure exact match
         val patternRegex   = StepUtils.convertToRegex(stepDef.pattern)
-        val patternMatches = patternRegex.findFirstIn(gherkinStep.pattern).isDefined
+        val patternMatches = patternRegex.pattern.matcher(gherkinStep.pattern).matches() // Exact match
+
         matchesStepType && patternMatches
       }
     }
