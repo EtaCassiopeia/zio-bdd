@@ -26,18 +26,19 @@ object FeatureRunner {
     excludeTags: Set[String]
   ): List[Feature] =
     features.filter { feature =>
-      val featureTags            = feature.tags.toSet
-      val allScenarioTags        = feature.scenarios.flatMap(_.tags).toSet
+      val featureTags     = feature.tags.toSet
+      val allScenarioTags = feature.scenarios.flatMap(_.tags).toSet
+      // Check if the feature or any scenario matches includeTags
       val featureMatchesInclude  = includeTags.isEmpty || includeTags.exists(featureTags.contains)
       val scenarioMatchesInclude = includeTags.isEmpty || includeTags.exists(allScenarioTags.contains)
-      featureMatchesInclude || scenarioMatchesInclude
+      featureMatchesInclude || scenarioMatchesInclude // Keep the feature if it or any scenario matches includeTags
     }.map { feature =>
       val filteredScenarios = feature.scenarios.filter { scenario =>
         val combinedTags = feature.tags ++ scenario.tags
         matchesTagFilter(combinedTags, includeTags, excludeTags)
       }
       feature.copy(scenarios = filteredScenarios)
-    }.filter(_.scenarios.nonEmpty)
+    }.filter(_.scenarios.nonEmpty) // Only keep features with at least one scenario
 
   private def featureFailedResult(e: Cause[Throwable])(implicit trace: Trace): Instant => StepResult =
     startTime =>

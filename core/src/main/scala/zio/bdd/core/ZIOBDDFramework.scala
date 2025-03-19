@@ -41,9 +41,9 @@ case class BDDTestConfig(
   featureFiles: List[String] = Nil,
   reporters: List[Reporter] = List(ConsoleReporter),
   parallelism: Int = 1,
-  includeTags: Set[String] = Set.empty,
-  excludeTags: Set[String] = Set.empty,
-  logLevel: InternalLogLevel = InternalLogLevel.Info // Added log level
+  includeTags: Set[String] = Set.empty, // Inclusive filter (e.g., run only these tags)
+  excludeTags: Set[String] = Set.empty, // Exclusive filter (e.g., skip these tags)
+  logLevel: InternalLogLevel = InternalLogLevel.Info
 )
 
 case class CompositeReporter(reporters: List[Reporter]) extends Reporter {

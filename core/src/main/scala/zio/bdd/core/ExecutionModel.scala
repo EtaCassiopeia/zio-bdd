@@ -22,7 +22,7 @@ object TestError {
   }
 
   def fromThrowable(t: Throwable)(implicit trace: Trace): TestError =
-    GenericError(t.getMessage, Some(t), Some(trace)) // Use implicit Trace
+    GenericError(t.getMessage, Some(t), Some(trace))
 }
 
 // Represents the result of executing a single step

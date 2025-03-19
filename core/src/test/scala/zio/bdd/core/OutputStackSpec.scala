@@ -75,7 +75,7 @@ object OutputStackSpec extends ZIOSpecDefault {
         val prev    = (1, "prev")
         val outputs = List("new", 42)
         val resultZIO =
-          OutputStack.combineTyped(prev, outputs).orDie // Convert Throwable to Nothing
+          OutputStack.combineTyped(prev, outputs).orDie
         assertZIO(resultZIO)(equalTo((1, "prev", "new", 42)))
       },
       test("combineTyped handles nested outputs correctly") {
