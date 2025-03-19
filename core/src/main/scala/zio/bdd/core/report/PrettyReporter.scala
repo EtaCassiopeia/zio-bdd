@@ -4,17 +4,17 @@ import zio.*
 import zio.bdd.core.{CollectedLogs, InternalLogLevel, LogCollector, StepResult, TestError}
 
 case class PrettyReporter(
-  resultsRef: Ref[
-    Map[String, (List[(String, List[StepResult])], Int)]
-  ],                                               // feature -> (List[(scenarioName, results)], ignoredCount)
-  currentScenarios: Ref[Map[String, List[String]]] // feature -> List[scenarioName]
+  resultsRef: Ref[Map[String, (List[(String, List[StepResult])], Int)]],
+  currentScenarios: Ref[Map[String, List[String]]]
 ) extends Reporter {
-  private val LightGreen  = "\u001b[92m"
-  private val LightRed    = "\u001b[91m"
-  private val LightBlue   = "\u001b[94m"
-  private val LightYellow = "\u001b[93m"
-  private val LightGray   = "\u001b[90m"
-  private val Reset       = "\u001b[0m"
+  private val LightGreen    = "\u001b[92m" // Passed, Info
+  private val LightRed      = "\u001b[91m" // Failed, Error
+  private val LightBlue     = "\u001b[94m" // Features/Steps
+  private val LightYellow   = "\u001b[93m" // Scenarios
+  private val LightGray     = "\u001b[90m" // Ignored
+  private val BrightCyan    = "\u001b[96m" // Debug
+  private val BrightMagenta = "\u001b[95m" // Unused here, but kept for consistency
+  private val Reset         = "\u001b[0m"
 
   override def startFeature(feature: String): ZIO[Any, Nothing, Unit] =
     for {
@@ -50,17 +50,18 @@ case class PrettyReporter(
       _ <- currentScenarios.update { scenarios =>
              scenarios.updated(currentFeature, scenario :: scenarios.getOrElse(currentFeature, Nil))
            }
-      _ <- ZIO.logDebug(s"Starting scenario: $scenario")
+      scenarioId = s"$currentFeature-$scenario".hashCode.toString
+      _         <- ZIO.logAnnotate("scenarioId", scenarioId)(ZIO.logDebug(s"Starting scenario: $scenario"))
     } yield ()
 
   override def endScenario(scenario: String, results: List[StepResult]): ZIO[LogCollector, Nothing, Unit] =
     ZIO.logDebug(s"Ending scenario: $scenario with ${results.length} steps")
 
   override def startStep(step: String): ZIO[Any, Nothing, Unit] =
-    ZIO.unit // Logging handled by custom logger
+    ZIO.unit
 
   override def endStep(step: String, result: StepResult): ZIO[Any, Nothing, Unit] =
-    ZIO.unit // Logging handled by custom logger and collected in endScenario
+    ZIO.unit
 
   override def reportIgnoredScenario(scenario: String): ZIO[Any, Nothing, Unit] =
     resultsRef.update { map =>
@@ -79,24 +80,27 @@ case class PrettyReporter(
       stats = ReportStats(
                 features = features.length,
                 scenarios = results.length,
-                steps = results.flatten.length,
                 failedScenarios = results.count(_.exists(!_.succeeded)),
-                ignoredScenarios = ignoredCount,
-                ignoredSteps = results.flatten.count(_.error.exists(_.message.contains("Skipped due to prior failure")))
+                ignoredScenarios = ignoredCount
               )
-      report = s"""
-                  |${LightBlue}Final Test Report:${Reset}
-                  |${LightBlue}------------------${Reset}
-                  |Total Features: ${stats.features}
-                  |Total Scenarios: ${stats.scenarios}
-                  |Total Steps: ${stats.steps}
-                  |Failed Scenarios: ${stats.failedScenarios}
-                  |Ignored Scenarios: ${stats.ignoredScenarios}
-                  |Ignored Steps: ${stats.ignoredSteps}
-                  |""".stripMargin
-      _ <- logCollector.logFeature("report", report, InternalLogLevel.Info)
-      _ <- Console.printLine(report).orDie
+      report = buildFancyReport(stats)
+      _     <- logCollector.logFeature("report", report, InternalLogLevel.Info)
+      _     <- Console.printLine(report).orDie
     } yield report
+
+  private def buildFancyReport(stats: ReportStats): String = {
+    val featurePassed   = stats.features // All features "pass" if executed, no failure concept here
+    val featureFailed   = 0
+    val featureIgnored  = 0              // No feature-level ignore in your setup
+    val scenarioPassed  = stats.scenarios - stats.failedScenarios - stats.ignoredScenarios
+    val scenarioFailed  = stats.failedScenarios
+    val scenarioIgnored = stats.ignoredScenarios
+
+    s"""
+       |${LightBlue}Finished Features:${Reset} ${LightGreen}$featurePassed passed${Reset}, ${LightRed}$featureFailed failed${Reset}, ${LightGray}$featureIgnored ignored${Reset}
+       |${LightBlue}Finished Scenarios:${Reset} ${LightGreen}$scenarioPassed passed${Reset}, ${LightRed}$scenarioFailed failed${Reset}, ${LightGray}$scenarioIgnored ignored${Reset}
+       |""".stripMargin.trim
+  }
 
   private def printReport(
     results: Map[String, (List[(String, List[StepResult])], Int)]
@@ -105,7 +109,7 @@ case class PrettyReporter(
       for {
         _ <- Console.printLine(s"${LightBlue}* Feature: $feature${Reset}").orDie
         _ <- ZIO.foreachDiscard(scenarioResults) { case (scenarioName, results) =>
-               val scenarioId = s"$feature-$scenarioName".hashCode.toString // Match LogCollector scenarioId
+               val scenarioId = s"$feature-$scenarioName".hashCode.toString
                for {
                  logs <- ZIO.serviceWithZIO[LogCollector](_.getScenarioLogs(scenarioId))
                  _    <- printScenario(scenarioName, results, logs)
@@ -141,13 +145,19 @@ case class PrettyReporter(
                  }
                }
                .getOrElse("")
-             val stepLogs = logs.entries.filter { entry =>
-               val time = entry.timestamp
-               time.isAfter(result.startTime) && time.isBefore(result.startTime.plusNanos(result.duration.toNanos))
-             }
+             val stepId = result.step.hashCode.toString
+             val stepLogs = logs.entries
+               .filter(_.stepId == stepId)
+               .sortBy(_.timestamp)
              val logOutput = if (stepLogs.nonEmpty) {
                stepLogs.map { entry =>
-                 s"${LightYellow}      ╰─ [${entry.timestamp}] [${entry.level}] ${entry.message}${Reset}"
+                 val color = entry.level match {
+                   case InternalLogLevel.Info  => LightGreen
+                   case InternalLogLevel.Debug => BrightCyan
+                   case InternalLogLevel.Error => LightRed
+                   case _                      => LightYellow
+                 }
+                 s"${color}    ├─ Log [${entry.timestamp}] [${entry.level}] ${entry.message}${Reset}"
                }.mkString("\n")
              } else ""
              val fileName = result.file.getOrElse("unknown").split("[/\\\\]").last
@@ -157,7 +167,9 @@ case class PrettyReporter(
              Console
                .printLine(
                  s"${LightBlue}    ├─◑ [$status] ${result.step}$errorMsg$timing${Reset}" +
-                   (if (logOutput.nonEmpty || traceMsg.nonEmpty) s"\n$logOutput\n$traceMsg" else "")
+                   (if (logOutput.nonEmpty || traceMsg.nonEmpty)
+                      s"\n$logOutput${if (traceMsg.nonEmpty && logOutput.nonEmpty) "\n" else ""}$traceMsg"
+                    else "")
                )
                .orDie
            }
@@ -173,10 +185,8 @@ case class PrettyReporter(
   private case class ReportStats(
     features: Int,
     scenarios: Int,
-    steps: Int,
     failedScenarios: Int,
-    ignoredScenarios: Int,
-    ignoredSteps: Int
+    ignoredScenarios: Int
   )
 }
 

@@ -9,7 +9,8 @@ import zio.bdd.example.Config
   featureDir = "example/src/test/resources/features",
   reporters = Array("pretty", "junitxml"),
   parallelism = 1,
-  includeTags = Array("positive") // Pre-filter to only run @positive scenarios
+  includeTags = Array("positive"), // Pre-filter to only run @positive scenarios
+  logLevel = "debug"
 )
 object SimpleSpec extends ZIOSteps.Default[GreetingService] {
   Given("a user named {string}") { name =>

@@ -44,14 +44,14 @@ object ScenarioRunner {
       ignoredCountRef <- Ref.make(0)
       results <- ZIO
                    .foreachPar(scenariosWithMetadata) { case (scenarioName, gherkinSteps, metadata) =>
-                     val scenarioId = gherkinSteps.mkString("\n").hashCode.toString
+                     val scenarioId = s"${feature.name}-$scenarioName".hashCode.toString
                      if (metadata.isIgnored) {
                        ignoredCountRef.update(_ + 1) *>
                          run(scenarioName, steps, gherkinSteps, metadata)
                      } else {
                        ZIO
                          .foreach(1 to metadata.repeatCount) { iteration =>
-                           ZIO.logAnnotate("scenarioId", s"${scenarioId}_iteration_$iteration") {
+                           ZIO.logAnnotate("scenarioId", scenarioId) {
                              run(scenarioName, steps, gherkinSteps, metadata).tapDefect { cause =>
                                ZIO.logError(s"Scenario $scenarioName failed: ${cause.prettyPrint}")
                              }

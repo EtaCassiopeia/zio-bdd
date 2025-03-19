@@ -42,7 +42,8 @@ case class BDDTestConfig(
   reporters: List[Reporter] = List(ConsoleReporter),
   parallelism: Int = 1,
   includeTags: Set[String] = Set.empty,
-  excludeTags: Set[String] = Set.empty
+  excludeTags: Set[String] = Set.empty,
+  logLevel: InternalLogLevel = InternalLogLevel.Info // Added log level
 )
 
 case class CompositeReporter(reporters: List[Reporter]) extends Reporter {
@@ -126,7 +127,7 @@ class ZIOBDDTask(
     val program = FeatureRunner.runFeatures(
       stepInstance,
       features,
-      TestConfig(config.includeTags, config.excludeTags, config.parallelism, LogLevelConfig())
+      TestConfig(config.includeTags, config.excludeTags, config.parallelism, LogLevelConfig(config.logLevel))
     )
 
     val results =
@@ -196,7 +197,8 @@ class ZIOBDDTask(
           reporters = a.reporters().map(instantiateReporter).toList,
           parallelism = a.parallelism(),
           includeTags = a.includeTags().toSet,
-          excludeTags = a.excludeTags().toSet
+          excludeTags = a.excludeTags().toSet,
+          logLevel = parseLogLevelFromAnnotation(a.logLevel()) // Parse from annotation
         )
       )
       .getOrElse(BDDTestConfig())
@@ -206,7 +208,8 @@ class ZIOBDDTask(
       reporters = parseReporters(args, loggers),
       parallelism = parseParallelism(args),
       includeTags = parseIncludeTags(args),
-      excludeTags = parseExcludeTags(args)
+      excludeTags = parseExcludeTags(args),
+      logLevel = parseLogLevel(args, loggers) // Parse from CLI
     )
 
     BDDTestConfig(
@@ -214,9 +217,35 @@ class ZIOBDDTask(
       reporters = if (cliConfig.reporters.nonEmpty) cliConfig.reporters else annoConfig.reporters,
       parallelism = if (cliConfig.parallelism != 1) cliConfig.parallelism else annoConfig.parallelism,
       includeTags = if (cliConfig.includeTags.nonEmpty) cliConfig.includeTags else annoConfig.includeTags,
-      excludeTags = if (cliConfig.excludeTags.nonEmpty) cliConfig.excludeTags else annoConfig.excludeTags
+      excludeTags = if (cliConfig.excludeTags.nonEmpty) cliConfig.excludeTags else annoConfig.excludeTags,
+      logLevel =
+        if (cliConfig.logLevel != InternalLogLevel.Info) cliConfig.logLevel
+        else annoConfig.logLevel // CLI overrides annotation
     )
   }
+
+  private def parseLogLevel(args: Array[String], loggers: Array[Logger]): InternalLogLevel =
+    args
+      .sliding(2)
+      .collectFirst { case Array("--log-level", level) =>
+        level.toLowerCase match {
+          case "debug" => InternalLogLevel.Debug
+          case "info"  => InternalLogLevel.Info
+          case "error" => InternalLogLevel.Error
+          case _ =>
+            loggers.foreach(_.warn(s"Unknown log level '$level', defaulting to Info"))
+            InternalLogLevel.Info
+        }
+      }
+      .getOrElse(InternalLogLevel.Info)
+
+  private def parseLogLevelFromAnnotation(level: String): InternalLogLevel =
+    level.toLowerCase match {
+      case "debug" => InternalLogLevel.Debug
+      case "info"  => InternalLogLevel.Info
+      case "error" => InternalLogLevel.Error
+      case _       => InternalLogLevel.Info // Default if annotation value is invalid
+    }
 
   private def parseIncludeTags(args: Array[String]): Set[String] =
     args
