@@ -2,19 +2,40 @@ package zio.bdd.core
 
 import zio.bdd.gherkin.StepType
 import java.time.Instant
-import zio.Duration
+import zio.{Duration, Trace}
+import zio.*
+
+sealed trait TestError {
+  def message: String
+  def cause: Option[Throwable]
+  def trace: Option[Trace]
+}
+
+object TestError {
+  case class GenericError(message: String, cause: Option[Throwable], trace: Option[Trace]) extends TestError
+  case class TypeMismatch(expected: String, actual: String, input: Any, cause: Option[Throwable], trace: Option[Trace])
+      extends TestError {
+    def message: String = s"Type mismatch: expected $expected, got $actual for input $input"
+  }
+  case class MissingStep(step: String, cause: Option[Throwable], trace: Option[Trace]) extends TestError {
+    def message: String = s"No step definition matches: $step"
+  }
+
+  def fromThrowable(t: Throwable)(implicit trace: Trace): TestError =
+    GenericError(t.getMessage, Some(t), Some(trace)) // Use implicit Trace
+}
 
 // Represents the result of executing a single step
 case class StepResult(
-  step: String,                  // The step's text (e.g., "Given I have 5 items")
-  succeeded: Boolean,            // Whether the step succeeded
-  error: Option[Throwable],      // Error message if the step failed
-  output: Any,                   // The output produced by the step
-  logs: List[(String, Instant)], // Logs collected during execution
-  duration: Duration,            // New: Execution time
-  startTime: Instant,            // New: Start timestamp
-  file: Option[String] = None,   // Source file path
-  line: Option[Int] = None       // Line number
+  step: String,                                    // The step's text (e.g., "Given I have 5 items")
+  succeeded: Boolean,                              // Whether the step succeeded
+  error: Option[TestError],                        // Error message if the step failed
+  output: Any,                                     // The output produced by the step
+  logs: List[(String, Instant, InternalLogLevel)], // Logs collected during execution
+  duration: Duration,                              // New: Execution time
+  startTime: Instant,                              // New: Start timestamp
+  file: Option[String] = None,                     // Source file path
+  line: Option[Int] = None                         // Line number
 )
 
 // Represents a recorded step in the output stack

@@ -37,39 +37,46 @@ class ZIOBDDRunner(runnerArgs: Array[String], runnerRemoteArgs: Array[String], t
   override def remoteArgs(): Array[String] = runnerRemoteArgs
 }
 
-case class TestConfig(
+case class BDDTestConfig(
   featureFiles: List[String] = Nil,
   reporters: List[Reporter] = List(ConsoleReporter),
   parallelism: Int = 1,
-  includeTags: Set[String] = Set.empty, // Inclusive filter (e.g., run only these tags)
-  excludeTags: Set[String] = Set.empty  // Exclusive filter (e.g., skip these tags)
+  includeTags: Set[String] = Set.empty,
+  excludeTags: Set[String] = Set.empty
 )
 
 case class CompositeReporter(reporters: List[Reporter]) extends Reporter {
-  def startScenario(scenarioId: String): ZIO[Any, Nothing, Unit] =
+  override def startScenario(scenarioId: String): ZIO[Any, Nothing, Unit] =
     ZIO.foreachDiscard(reporters)(_.startScenario(scenarioId))
 
-  def endScenario(scenarioId: String, results: List[StepResult]): ZIO[LogCollector, Nothing, Unit] =
+  override def endScenario(scenarioId: String, results: List[StepResult]): ZIO[LogCollector, Nothing, Unit] =
     ZIO.foreachDiscard(reporters)(_.endScenario(scenarioId, results))
 
-  def startFeature(featureName: String): ZIO[Any, Nothing, Unit] =
+  override def startFeature(featureName: String): ZIO[Any, Nothing, Unit] =
     ZIO.foreachDiscard(reporters)(_.startFeature(featureName))
 
-  def endFeature(
+  override def endFeature(
     featureName: String,
     results: List[List[StepResult]],
     ignoredCount: Int
   ): ZIO[LogCollector, Nothing, Unit] =
     ZIO.foreachDiscard(reporters)(_.endFeature(featureName, results, ignoredCount))
 
-  def startStep(step: String): ZIO[Any, Nothing, Unit] =
+  override def startStep(step: String): ZIO[Any, Nothing, Unit] =
     ZIO.foreachDiscard(reporters)(_.startStep(step))
 
-  def endStep(step: String, result: StepResult): ZIO[Any, Nothing, Unit] =
+  override def endStep(step: String, result: StepResult): ZIO[Any, Nothing, Unit] =
     ZIO.foreachDiscard(reporters)(_.endStep(step, result))
 
-  def reportIgnoredScenario(scenarioText: String): ZIO[Any, Nothing, Unit] =
+  override def reportIgnoredScenario(scenarioText: String): ZIO[Any, Nothing, Unit] =
     ZIO.foreachDiscard(reporters)(_.reportIgnoredScenario(scenarioText))
+
+  override def generateFinalReport(
+    features: List[zio.bdd.gherkin.Feature],
+    results: List[List[StepResult]],
+    ignoredCount: Int
+  ): ZIO[LogCollector, Nothing, String] =
+    ZIO.foreach(reporters)(_.generateFinalReport(features, results, ignoredCount)).map(_.mkString("\n"))
 }
 
 class ZIOBDDTask(
@@ -87,7 +94,7 @@ class ZIOBDDTask(
     val className = taskDef.fullyQualifiedName()
     loggers.foreach(_.info(s"Executing test for $className"))
     val stepInstance = instantiateStepClass(className)
-    val config       = parseConfig(args, className)
+    val config       = parseConfig(args, className, loggers)
 
     val featureFiles = resolveFeatureFiles(config, className, loggers)
     loggers.foreach(_.info(s"Feature files: ${featureFiles.mkString(", ")}"))
@@ -116,7 +123,11 @@ class ZIOBDDTask(
       }
     loggers.foreach(_.info(s"Parsed features: ${features.map(_.name).mkString(", ")}"))
 
-    val program = FeatureRunner.runFeatures(stepInstance, features, config)
+    val program = FeatureRunner.runFeatures(
+      stepInstance,
+      features,
+      TestConfig(config.includeTags, config.excludeTags, config.parallelism, LogLevelConfig())
+    )
 
     val results =
       try {
@@ -147,7 +158,7 @@ class ZIOBDDTask(
       case e: Exception => throw e
     }
 
-  private def parseConfig(args: Array[String], className: String): TestConfig = {
+  private def parseConfig(args: Array[String], className: String, loggers: Array[Logger]): BDDTestConfig = {
     val clazz      = testClassLoader.loadClass(className + "$")
     val annotation = Option(clazz.getAnnotation(classOf[zio.bdd.core.Suite]))
 
@@ -164,17 +175,23 @@ class ZIOBDDTask(
             .getOrThrowFiberFailure()
         }
       case "junitxml" =>
-        JUnitXMLReporter(
-          JUnitXMLFormatter.Format.JUnit5,
-          Ref.unsafe.make(List.empty[JUnitXMLFormatter.TestCase])(Unsafe.unsafe),
-          defaultTestResultDir
-        )
-      case _ => ConsoleReporter
+        Unsafe.unsafe { implicit unsafe =>
+          runtime.unsafe
+            .run(
+              ZIO.scoped(
+                JUnitXMLReporter.live(JUnitXMLFormatter.Format.JUnit5, defaultTestResultDir).build.map(_.get[Reporter])
+              )
+            )
+            .getOrThrowFiberFailure()
+        }
+      case _ =>
+        loggers.foreach(_.warn(s"Unknown reporter '$name', defaulting to ConsoleReporter"))
+        ConsoleReporter
     }
 
     val annoConfig = annotation
       .map(a =>
-        TestConfig(
+        BDDTestConfig(
           featureFiles = if (a.featureDir().isEmpty) Nil else List(a.featureDir()),
           reporters = a.reporters().map(instantiateReporter).toList,
           parallelism = a.parallelism(),
@@ -182,17 +199,17 @@ class ZIOBDDTask(
           excludeTags = a.excludeTags().toSet
         )
       )
-      .getOrElse(TestConfig())
+      .getOrElse(BDDTestConfig())
 
-    val cliConfig = TestConfig(
+    val cliConfig = BDDTestConfig(
       featureFiles = parseFeatureFiles(args),
-      reporters = parseReporters(args),
+      reporters = parseReporters(args, loggers),
       parallelism = parseParallelism(args),
       includeTags = parseIncludeTags(args),
       excludeTags = parseExcludeTags(args)
     )
 
-    TestConfig(
+    BDDTestConfig(
       featureFiles = if (cliConfig.featureFiles.nonEmpty) cliConfig.featureFiles else annoConfig.featureFiles,
       reporters = if (cliConfig.reporters.nonEmpty) cliConfig.reporters else annoConfig.reporters,
       parallelism = if (cliConfig.parallelism != 1) cliConfig.parallelism else annoConfig.parallelism,
@@ -216,7 +233,7 @@ class ZIOBDDTask(
   private def parseFeatureFiles(args: Array[String]): List[String] =
     args.sliding(2).collect { case Array("--feature-file", path) => path }.toList
 
-  private def parseReporters(args: Array[String]): List[Reporter] =
+  private def parseReporters(args: Array[String], loggers: Array[Logger]): List[Reporter] =
     args
       .sliding(2)
       .collect {
@@ -232,11 +249,21 @@ class ZIOBDDTask(
               .getOrThrowFiberFailure()
           }
         case Array("--reporter", "junitxml") =>
-          JUnitXMLReporter(
-            JUnitXMLFormatter.Format.JUnit5,
-            Ref.unsafe.make(List.empty[JUnitXMLFormatter.TestCase])(Unsafe.unsafe),
-            defaultTestResultDir
-          )
+          Unsafe.unsafe { implicit unsafe =>
+            runtime.unsafe
+              .run(
+                ZIO.scoped(
+                  JUnitXMLReporter
+                    .live(JUnitXMLFormatter.Format.JUnit5, defaultTestResultDir)
+                    .build
+                    .map(_.get[Reporter])
+                )
+              )
+              .getOrThrowFiberFailure()
+          }
+        case Array("--reporter", unknown) =>
+          loggers.foreach(_.warn(s"Unknown reporter '$unknown', defaulting to ConsoleReporter"))
+          ConsoleReporter
       }
       .toList
 
@@ -248,7 +275,7 @@ class ZIOBDDTask(
       }
       .getOrElse(1)
 
-  private def resolveFeatureFiles(config: TestConfig, className: String, loggers: Array[Logger]): List[String] =
+  private def resolveFeatureFiles(config: BDDTestConfig, className: String, loggers: Array[Logger]): List[String] =
     if (config.featureFiles.nonEmpty) {
       config.featureFiles.flatMap { path =>
         val file = new File(path)
@@ -315,7 +342,7 @@ class ZIOBDDTask(
           override def selector(): Selector         = new TestSelector(result.step)
           override def status(): Status             = if (result.succeeded) Status.Success else Status.Failure
           override def throwable(): OptionalThrowable = result.error match {
-            case Some(t) => new OptionalThrowable(t)
+            case Some(t) => new OptionalThrowable(new Exception(t.message, t.cause.orNull))
             case None    => new OptionalThrowable()
           }
           override def duration(): Long = result.duration.toMillis

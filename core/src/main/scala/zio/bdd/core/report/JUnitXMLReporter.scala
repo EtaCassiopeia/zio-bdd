@@ -2,8 +2,7 @@ package zio.bdd.core.report
 
 import zio.*
 import zio.bdd.core.report.JUnitXMLFormatter.{Format, TestCase, TestSuite}
-import zio.bdd.core.report.{JUnitXMLFormatter, Reporter}
-import zio.bdd.core.{CollectedLogs, LogCollector, StepResult}
+import zio.bdd.core.{CollectedLogs, InternalLogLevel, LogCollector, StepResult}
 
 import java.time.Instant
 
@@ -55,7 +54,7 @@ case class JUnitXMLReporter(
                    .map(r => java.time.Duration.between(startTime, r.startTime.plusNanos(r.duration.toNanos)).toMillis)
                    .getOrElse(0L)
       scenarioId <- ZIO.logAnnotations.map(_.getOrElse("scenarioId", s"${scenario}_default"))
-      logs       <- LogCollector.getScenarioLogs(scenarioId)
+      logs       <- ZIO.serviceWithZIO[LogCollector](_.getScenarioLogs(scenarioId))
       succeeded   = results.forall(_.succeeded)
       assertions  = results.count(_.succeeded)
       testCase = TestCase(
@@ -88,6 +87,43 @@ case class JUnitXMLReporter(
                  )
       _ <- testCasesRef.update(testCase :: _)
     } yield ()
+
+  override def generateFinalReport(
+    features: List[zio.bdd.gherkin.Feature],
+    results: List[List[StepResult]],
+    ignoredCount: Int
+  ): ZIO[LogCollector, Nothing, String] =
+    for {
+      logCollector <- ZIO.service[LogCollector]
+      stats = ReportStats(
+                features = features.length,
+                scenarios = results.length,
+                steps = results.flatten.length,
+                failedScenarios = results.count(_.exists(!_.succeeded)),
+                ignoredScenarios = ignoredCount,
+                ignoredSteps = results.flatten.count(_.error.exists(_.message.contains("Skipped due to prior failure")))
+              )
+      report = s"""
+                  |Final Test Report:
+                  |------------------
+                  |Total Features: ${stats.features}
+                  |Total Scenarios: ${stats.scenarios}
+                  |Total Steps: ${stats.steps}
+                  |Failed Scenarios: ${stats.failedScenarios}
+                  |Ignored Scenarios: ${stats.ignoredScenarios}
+                  |Ignored Steps: ${stats.ignoredSteps}
+                  |""".stripMargin
+      _ <- logCollector.logFeature("report", report, InternalLogLevel.Info)
+    } yield report
+
+  private case class ReportStats(
+    features: Int,
+    scenarios: Int,
+    steps: Int,
+    failedScenarios: Int,
+    ignoredScenarios: Int,
+    ignoredSteps: Int
+  )
 }
 
 object JUnitXMLReporter {

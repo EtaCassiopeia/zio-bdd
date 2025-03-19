@@ -17,7 +17,7 @@ object SimpleSpec extends ZIOSteps.Default[GreetingService] {
   }
 
   When("the user is greeted") { (name: String) =>
-    ZIO.serviceWithZIO[GreetingService](_.greet(name))
+    ZIO.logInfo("Greeting user") *> ZIO.serviceWithZIO[GreetingService](_.greet(name))
   }
 
   Then("the greeting should be {string}") { case (actualGreeting: String, expectedGreeting: String) =>

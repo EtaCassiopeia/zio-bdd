@@ -5,24 +5,25 @@ import zio.logging.LogFormat
 
 import java.time.Instant
 
-case class LogEntry(message: String, timestamp: Instant, source: LogSource)
+enum InternalLogLevel {
+  case Debug, Info, Warning, Error, Fatal
+}
 
 enum LogSource {
   case Stdout
   case Stderr
 }
 
-case class CollectedLogs(stdout: List[LogEntry] = Nil, stderr: List[LogEntry] = Nil) {
-  def add(entry: LogEntry): CollectedLogs = entry.source match {
-    case LogSource.Stdout => copy(stdout = entry :: stdout)
-    case LogSource.Stderr => copy(stderr = entry :: stderr)
-  }
+case class LogEntry(message: String, timestamp: Instant, source: LogSource, level: InternalLogLevel)
 
-  def toStepResultLogs: List[(String, Instant)] =
-    (stdout ++ stderr).map(entry => (entry.message, entry.timestamp))
-
+case class CollectedLogs(entries: List[LogEntry] = Nil) {
+  def add(entry: LogEntry): CollectedLogs = copy(entries = entry :: entries)
+  def toStepResultLogs: List[(String, Instant, InternalLogLevel)] =
+    entries.map(entry => (entry.message, entry.timestamp, entry.level))
   def clear: CollectedLogs = CollectedLogs()
 }
+
+case class LogLevelConfig(minLevel: InternalLogLevel = InternalLogLevel.Info)
 
 /**
  * Defines the interface for collecting and managing logs during step execution.
@@ -30,12 +31,14 @@ case class CollectedLogs(stdout: List[LogEntry] = Nil, stderr: List[LogEntry] = 
  * JUnit XML) to process them distinctly.
  */
 trait LogCollector {
-  def logStdout(scenarioId: String, stepId: String, message: String): ZIO[Any, Nothing, Unit]
-  def logStderr(scenarioId: String, stepId: String, message: String): ZIO[Any, Nothing, Unit]
+  def log(scenarioId: String, stepId: String, message: String, level: InternalLogLevel): ZIO[Any, Nothing, Unit]
+  def logFeature(featureId: String, message: String, level: InternalLogLevel): ZIO[Any, Nothing, Unit]
   def getLogs(scenarioId: String, stepId: String): ZIO[Any, Nothing, CollectedLogs]
   def getScenarioLogs(scenarioId: String): ZIO[Any, Nothing, CollectedLogs]
+  def getFeatureLogs(featureId: String): ZIO[Any, Nothing, CollectedLogs]
   def getAllLogs: ZIO[Any, Nothing, Map[(String, String), CollectedLogs]]
   def clearLogs: ZIO[Any, Nothing, Unit]
+  def setLogLevelConfig(config: LogLevelConfig): ZIO[Any, Nothing, Unit]
 }
 
 /**
@@ -50,42 +53,110 @@ object LogCollector {
    */
   private val collectorImpl: ZLayer[Any, Nothing, LogCollector] = ZLayer.scoped {
     for {
-      ref <- Ref.make(Map.empty[(String, String), CollectedLogs])
+      ref         <- Ref.make(Map.empty[(String, String), CollectedLogs])
+      featureRef  <- Ref.make(Map.empty[String, CollectedLogs])
+      logLevelRef <- Ref.make(LogLevelConfig())
     } yield new LogCollector {
-      def logStdout(scenarioId: String, stepId: String, message: String): ZIO[Any, Nothing, Unit] =
-        Clock.instant.flatMap(now =>
-          ref.update(
-            _.updatedWith((scenarioId, stepId))(
-              _.map(_.add(LogEntry(message, now, LogSource.Stdout)))
-                .orElse(Some(CollectedLogs(stdout = List(LogEntry(message, now, LogSource.Stdout)))))
-            )
-          )
-        )
+      def setLogLevelConfig(config: LogLevelConfig): ZIO[Any, Nothing, Unit] =
+        logLevelRef.set(config)
 
-      def logStderr(scenarioId: String, stepId: String, message: String): ZIO[Any, Nothing, Unit] =
-        Clock.instant.flatMap(now =>
-          ref.update(
-            _.updatedWith((scenarioId, stepId))(
-              _.map(_.add(LogEntry(message, now, LogSource.Stderr)))
-                .orElse(Some(CollectedLogs(stderr = List(LogEntry(message, now, LogSource.Stderr)))))
-            )
-          )
-        )
+      def log(scenarioId: String, stepId: String, message: String, level: InternalLogLevel): ZIO[Any, Nothing, Unit] =
+        logLevelRef.get.flatMap { config =>
+          if (level.ordinal >= config.minLevel.ordinal) {
+            Clock.instant.flatMap { now =>
+              ref.update(
+                _.updatedWith((scenarioId, stepId))(
+                  _.map(
+                    _.add(
+                      LogEntry(
+                        message,
+                        now,
+                        level match {
+                          case InternalLogLevel.Error | InternalLogLevel.Fatal => LogSource.Stderr
+                          case _                                               => LogSource.Stdout
+                        },
+                        level
+                      )
+                    )
+                  )
+                    .orElse(
+                      Some(
+                        CollectedLogs().add(
+                          LogEntry(
+                            message,
+                            now,
+                            level match {
+                              case InternalLogLevel.Error | InternalLogLevel.Fatal => LogSource.Stderr
+                              case _                                               => LogSource.Stdout
+                            },
+                            level
+                          )
+                        )
+                      )
+                    )
+                )
+              )
+            }
+          } else ZIO.unit
+        }
+
+      def logFeature(featureId: String, message: String, level: InternalLogLevel): ZIO[Any, Nothing, Unit] =
+        logLevelRef.get.flatMap { config =>
+          if (level.ordinal >= config.minLevel.ordinal) {
+            Clock.instant.flatMap { now =>
+              featureRef.update(
+                _.updatedWith(featureId)(
+                  _.map(
+                    _.add(
+                      LogEntry(
+                        message,
+                        now,
+                        level match {
+                          case InternalLogLevel.Error | InternalLogLevel.Fatal => LogSource.Stderr
+                          case _                                               => LogSource.Stdout
+                        },
+                        level
+                      )
+                    )
+                  )
+                    .orElse(
+                      Some(
+                        CollectedLogs().add(
+                          LogEntry(
+                            message,
+                            now,
+                            level match {
+                              case InternalLogLevel.Error | InternalLogLevel.Fatal => LogSource.Stderr
+                              case _                                               => LogSource.Stdout
+                            },
+                            level
+                          )
+                        )
+                      )
+                    )
+                )
+              )
+            }
+          } else ZIO.unit
+        }
 
       def getLogs(scenarioId: String, stepId: String): ZIO[Any, Nothing, CollectedLogs] =
         ref.get.map(_.getOrElse((scenarioId, stepId), CollectedLogs()))
 
       def getScenarioLogs(scenarioId: String): ZIO[Any, Nothing, CollectedLogs] =
         ref.get.map(_.foldLeft(CollectedLogs()) { case (acc, ((sid, _), logs)) =>
-          if (sid == scenarioId) acc.copy(stdout = logs.stdout ++ acc.stdout, stderr = logs.stderr ++ acc.stderr)
+          if (sid == scenarioId) acc.copy(entries = logs.entries ++ acc.entries)
           else acc
         })
+
+      def getFeatureLogs(featureId: String): ZIO[Any, Nothing, CollectedLogs] =
+        featureRef.get.map(_.getOrElse(featureId, CollectedLogs()))
 
       def getAllLogs: ZIO[Any, Nothing, Map[(String, String), CollectedLogs]] =
         ref.get
 
       def clearLogs: ZIO[Any, Nothing, Unit] =
-        ref.set(Map.empty)
+        ref.set(Map.empty) *> featureRef.set(Map.empty)
     }
   }
 
@@ -107,31 +178,20 @@ object LogCollector {
       spans: List[LogSpan],
       annotations: Map[String, String]
     ) => {
-      val formattedMessage = formatLogger(
-        trace,
-        fiberId,
-        logLevel,
-        message,
-        cause,
-        context,
-        spans,
-        annotations
-      )
+      val formattedMessage = formatLogger(trace, fiberId, logLevel, message, cause, context, spans, annotations)
       Unsafe.unsafe { implicit u =>
-        Runtime.default.unsafe
-          .run(
-            logLevel match {
-              case LogLevel.Error | LogLevel.Fatal =>
-                val scenarioId = annotations.getOrElse("scenarioId", "default")
-                val stepId     = annotations.getOrElse("stepId", "unknown")
-                collector.logStderr(scenarioId, stepId, formattedMessage)
-              case _ =>
-                val scenarioId = annotations.getOrElse("scenarioId", "default")
-                val stepId     = annotations.getOrElse("stepId", "unknown")
-                collector.logStdout(scenarioId, stepId, formattedMessage)
-            }
-          )
-          .getOrThrowFiberFailure()
+        Runtime.default.unsafe.run {
+          val scenarioId = annotations.getOrElse("scenarioId", "default")
+          val stepId     = annotations.getOrElse("stepId", "unknown")
+          val level = logLevel match {
+            case LogLevel.Debug   => InternalLogLevel.Debug
+            case LogLevel.Info    => InternalLogLevel.Info
+            case LogLevel.Warning => InternalLogLevel.Warning
+            case LogLevel.Error   => InternalLogLevel.Error
+            case LogLevel.Fatal   => InternalLogLevel.Fatal
+          }
+          collector.log(scenarioId, stepId, formattedMessage, level)
+        }.getOrThrowFiberFailure()
       }
     }
   }
@@ -156,21 +216,14 @@ object LogCollector {
   val live: ZLayer[Any, Nothing, LogCollector] =
     collectorImpl >>> (collectorImpl ++ loggingLayer) >>> ZLayer.service[LogCollector]
 
-  def logStdout(scenarioId: String, stepId: String, message: String): ZIO[LogCollector, Nothing, Unit] =
-    ZIO.serviceWithZIO[LogCollector](_.logStdout(scenarioId, stepId, message))
+  def log(
+    scenarioId: String,
+    stepId: String,
+    message: String,
+    level: InternalLogLevel
+  ): ZIO[LogCollector, Nothing, Unit] =
+    ZIO.serviceWithZIO[LogCollector](_.log(scenarioId, stepId, message, level))
 
-  def logStderr(scenarioId: String, stepId: String, message: String): ZIO[LogCollector, Nothing, Unit] =
-    ZIO.serviceWithZIO[LogCollector](_.logStderr(scenarioId, stepId, message))
-
-  def getLogs(scenarioId: String, stepId: String): ZIO[LogCollector, Nothing, CollectedLogs] =
-    ZIO.serviceWithZIO[LogCollector](_.getLogs(scenarioId, stepId))
-
-  def getScenarioLogs(scenarioId: String): ZIO[LogCollector, Nothing, CollectedLogs] =
-    ZIO.serviceWithZIO[LogCollector](_.getScenarioLogs(scenarioId))
-
-  def getAllLogs: ZIO[LogCollector, Nothing, Map[(String, String), CollectedLogs]] =
-    ZIO.serviceWithZIO[LogCollector](_.getAllLogs)
-
-  def clearLogs: ZIO[LogCollector, Nothing, Unit] =
-    ZIO.serviceWithZIO[LogCollector](_.clearLogs)
+  def logFeature(featureId: String, message: String, level: InternalLogLevel): ZIO[LogCollector, Nothing, Unit] =
+    ZIO.serviceWithZIO[LogCollector](_.logFeature(featureId, message, level))
 }

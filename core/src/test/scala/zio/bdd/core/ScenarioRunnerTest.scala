@@ -97,7 +97,7 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
         results.head(0).succeeded,
         results.head(1).succeeded,
         !results.head(2).succeeded,
-        results.head(2).error.map(_.getMessage).exists(_.contains("Insufficient stock")),
+        results.head(2).error.map(_.message).exists(_.contains("Insufficient stock")),
         feature.scenarios.head.metadata.retryCount == 3
       )
     },
@@ -162,7 +162,7 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
         results.head.length == 2,
         results.head(0).succeeded,
         !results.head(1).succeeded,
-        results.head(1).error.map(_.getMessage).contains("No step definition matches"),
+        results.head(1).error.map(_.message).contains("No step definition matches: an undefined step runs"),
         results.head(1).step == "an undefined step runs"
       )
     },
@@ -183,7 +183,7 @@ object ScenarioRunnerTest extends ZIOSpecDefault {
         results.head(0).succeeded,
         results.head(1).succeeded,
         !results.head(2).succeeded,
-        results.head(2).error.map(_.getMessage).exists(_.contains("Insufficient stock")),
+        results.head(2).error.map(_.message).exists(_.contains("Insufficient stock")),
         results.head(2).step == """the user adds -1 of product "P7" to the cart"""
       )
     },

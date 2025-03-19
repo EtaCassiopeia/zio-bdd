@@ -1,11 +1,11 @@
 package zio.bdd.core
 
 import zio.*
-import zio.bdd.core.report.ConsoleReporter
-import zio.test.*
 import zio.bdd.gherkin.{StepType, Step as GherkinStep}
+import zio.test.*
 import zio.test.Assertion.equalTo
 import izumi.reflect.Tag
+import zio.bdd.core.report.{ConsoleReporter, Reporter}
 
 object AssertionTest extends ZIOSpecDefault {
 
@@ -19,12 +19,13 @@ object AssertionTest extends ZIOSpecDefault {
   // Helper to create a minimal StepExecutor for testing
   def makeExecutor[R](
     steps: ZIOSteps[R] = ZIOSteps.empty[R]
-  ): ZIO[Scope, Nothing, StepExecutor[R]] =
+  ): ZIO[Scope & LogCollector & Reporter, Nothing, StepExecutor[R]] =
     ZIO.scoped {
       for {
         stackRef     <- Ref.make(Chunk.empty[StepRecord])
-        logCollector <- LogCollector.live.build
-      } yield StepExecutor("test-scenario", steps, stackRef, ConsoleReporter, logCollector.get)
+        logCollector <- ZIO.service[LogCollector]
+        reporter     <- ZIO.service[Reporter]
+      } yield StepExecutor("test-scenario", steps, stackRef, reporter, logCollector)
     }
 
   // Define a simple step definition for testing assertions
@@ -38,7 +39,7 @@ object AssertionTest extends ZIOSpecDefault {
       fn: Step[I, O]
     ): Unit =
       steps = StepDef(stepType, pattern, fn) :: steps
-    override def environment: ZLayer[Any, Any, Any] = ZLayer.empty
+    override def environment: ZLayer[Any, Nothing, Any] = ZLayer.empty
 
     Given("a cart with id {string} and {int} items") { case (id: String, itemCount: Int) =>
       ZIO.succeed(Cart(id, Map("P1" -> itemCount), None))
@@ -54,14 +55,14 @@ object AssertionTest extends ZIOSpecDefault {
     }
   }
 
-  override def spec: Spec[TestEnvironment & Scope, Any] = suite("Assertions Demo")(
+  override def spec: Spec[Any, Any] = suite("Assertions Demo")(
     test("assertTrue checks a simple condition") {
       for {
         executor <- makeExecutor(demoSteps)
         step      = GherkinStep(StepType.GivenStep, "a cart with id C1 and 2 items", None, None)
         result   <- executor.executeStep(step)
         _        <- Assertions.assertTrue(result.succeeded, "Step execution should succeed")
-      } yield assertTrue(true) // To satisfy ZIO Test, If we get this far without an exception, the test passes
+      } yield assertTrue(true)
     },
     test("assertEquals checks cart ID") {
       for {
@@ -80,8 +81,8 @@ object AssertionTest extends ZIOSpecDefault {
         _        <- Assertions.assertTrue(!result.succeeded, "Step should fail")
         _        <- Assertions.assertSome(result.error, "Step should have an error")
         _ <- Assertions.assertTrue(
-               result.error.exists(_.isInstanceOf[RuntimeException]),
-               "Step error should be a RuntimeException"
+               result.error.exists(_.message.contains("Simulated error")),
+               "Step error message should contain 'Step execution failed'"
              )
       } yield assertTrue(true)
     },
@@ -150,7 +151,7 @@ object AssertionTest extends ZIOSpecDefault {
           fn: Step[I, O]
         ): Unit =
           steps = StepDef(stepType, pattern, fn) :: steps
-        override def environment: ZLayer[Any, Any, Any] = ZLayer.empty
+        override def environment: ZLayer[Any, Nothing, Any] = ZLayer.empty
 
         When("an order fails") { (_: Any) =>
           ZIO.succeed(Order(0.0, Left("Order failed")))
@@ -175,7 +176,7 @@ object AssertionTest extends ZIOSpecDefault {
           fn: Step[I, O]
         ): Unit =
           steps = StepDef(stepType, pattern, fn) :: steps
-        override def environment: ZLayer[Any, Any, Any] = ZLayer.empty
+        override def environment: ZLayer[Any, Nothing, Any] = ZLayer.empty
 
         When("an order fails") { (_: Any) =>
           ZIO.succeed(Order(0.0, Left("Order failed")))
@@ -249,5 +250,5 @@ object AssertionTest extends ZIOSpecDefault {
         _          <- Assertions.assertNestedEquals(updatedCart, "discount", _.discount, Some(5.0), "Discount value mismatch")
       } yield assertTrue(true)
     }
-  )
+  ).provide(LogCollector.live, ZLayer.succeed(ConsoleReporter), Scope.default)
 }
