@@ -83,12 +83,12 @@ case class PrettyReporter(
                 failedScenarios = results.count(_.exists(!_.succeeded)),
                 ignoredScenarios = ignoredCount
               )
-      report = buildFancyReport(stats)
+      report = buildFinalReport(stats)
       _     <- logCollector.logFeature("report", report, InternalLogLevel.Info)
       _     <- Console.printLine(report).orDie
     } yield report
 
-  private def buildFancyReport(stats: ReportStats): String = {
+  private def buildFinalReport(stats: ReportStats): String = {
     val featurePassed   = stats.features // All features "pass" if executed, no failure concept here
     val featureFailed   = 0
     val featureIgnored  = 0              // No feature-level ignore in your setup
@@ -97,8 +97,10 @@ case class PrettyReporter(
     val scenarioIgnored = stats.ignoredScenarios
 
     s"""
+       |
        |${LightBlue}Finished Features:${Reset} ${LightGreen}$featurePassed passed${Reset}, ${LightRed}$featureFailed failed${Reset}, ${LightGray}$featureIgnored ignored${Reset}
        |${LightBlue}Finished Scenarios:${Reset} ${LightGreen}$scenarioPassed passed${Reset}, ${LightRed}$scenarioFailed failed${Reset}, ${LightGray}$scenarioIgnored ignored${Reset}
+       |
        |""".stripMargin.trim
   }
 
@@ -157,7 +159,8 @@ case class PrettyReporter(
                    case InternalLogLevel.Error => LightRed
                    case _                      => LightYellow
                  }
-                 s"${color}    ├─ Log [${entry.timestamp}] [${entry.level}] ${entry.message}${Reset}"
+                 // s"${color}    ├─ [${entry.timestamp}] [${entry.level}] ${entry.message}${Reset}"
+                 s"${color}    ├─ ${entry.message}${Reset}"
                }.mkString("\n")
              } else ""
              val fileName = result.file.getOrElse("unknown").split("[/\\\\]").last
