@@ -9,6 +9,7 @@ import java.time.Instant
 // Runs a single scenario (list of steps) with the given step definitions
 object ScenarioRunner {
   def run[R](
+    featureId: String,
     scenarioId: String,
     steps: ZIOSteps[R],
     gherkinSteps: List[GherkinStep],
@@ -28,7 +29,7 @@ object ScenarioRunner {
                    // Set up executors with dependencies and run the scenario
                    val stepExecutor     = StepExecutor(scenarioId, steps, stackRef, reporter, logCollector)
                    val scenarioExecutor = ScenarioExecutor(stepExecutor)
-                   scenarioExecutor.runSteps(gherkinSteps)
+                   scenarioExecutor.runSteps(featureId, scenarioId, gherkinSteps)
                  }
       _ <- steps.afterScenario(scenarioId).orDie // Run afterScenario hook
       _ <- reporter.endScenario(scenarioId, results)
@@ -52,22 +53,23 @@ object ScenarioRunner {
       // Execute scenarios in parallel, respecting repeatCount
       results <- ZIO
                    .foreachPar(scenariosWithMetadata) { case (scenarioName, gherkinSteps, metadata) =>
+                     // TODO: Add iteration number to scenarioId?
                      val scenarioId = s"${feature.name}-$scenarioName".hashCode.toString
-                     if (metadata.isIgnored) {
-                       // Increment ignored count and run (which will report and return empty results)
-                       ignoredCountRef.update(_ + 1) *>
-                         run(scenarioName, steps, gherkinSteps, metadata)
-                     } else {
-                       ZIO
-                         .foreach(1 to metadata.repeatCount) { iteration =>
-                           ZIO.logAnnotate("scenarioId", scenarioId) {
+                     ZIO.logAnnotate("scenarioId", scenarioId) {
+                       if (metadata.isIgnored) {
+                         // Increment ignored count and run (which will report and return empty results)
+                         ignoredCountRef.update(_ + 1) *>
+                           run(feature.name, scenarioId, steps, gherkinSteps, metadata)
+                       } else {
+                         ZIO
+                           .foreach(1 to metadata.repeatCount) { iteration =>
                              // Removed .retryN since error type is Nothing; retries handled in step execution if needed
-                             run(scenarioName, steps, gherkinSteps, metadata).tapDefect { cause =>
+                             run(feature.name, scenarioId, steps, gherkinSteps, metadata).tapDefect { cause =>
                                ZIO.logError(s"Scenario $scenarioName failed: ${cause.prettyPrint}")
                              }
                            }
-                         }
-                         .map(_.flatten.toList)
+                           .map(_.flatten.toList)
+                       }
                      }
                    }
                    .withParallelism(parallelism)
@@ -83,34 +85,41 @@ case class ScenarioExecutor[R](stepExecutor: StepExecutor[R]) {
 
   // Recursively runs a list of steps, accumulating results
   def runSteps(
+    featureId: String,
+    scenarioId: String,
     steps: List[GherkinStep]
   )(implicit trace: Trace): ZIO[R & LogCollector & Reporter, Nothing, List[StepResult]] =
     ZIO.foldLeft(steps)(List.empty[StepResult]) { (results, step) =>
-      results.lastOption match {
-        // If previous step failed, skip remaining steps and mark them as skipped
-        case Some(last) if !last.succeeded =>
-          stepExecutor.logCollector
-            .log(
-              stepExecutor.scenarioId,
-              step.id,
-              s"Skipping step due to previous failure: ${step.pattern}",
-              InternalLogLevel.Warning
-            )
-            .as {
-              results :+ StepResult(
-                step.pattern,
-                succeeded = false,
-                error = Some(TestError.GenericError("Skipped due to prior failure", None, Some(trace))),
-                output = (),
-                logs = Nil,
-                duration = Duration.Zero,
-                startTime = Instant.now(),
-                file = step.file,
-                line = step.line
+      ZIO.logAnnotate("stepId", step.id) {
+        results.lastOption match {
+          // If previous step failed, skip remaining steps and mark them as skipped
+          case Some(last) if !last.succeeded =>
+            stepExecutor.logCollector
+              .log(
+                stepExecutor.scenarioId,
+                step.id,
+                s"Skipping step due to previous failure: ${step.pattern}",
+                InternalLogLevel.Warning
               )
-            }
-        case _ =>
-          stepExecutor.executeStep(step).map(results :+ _)
+              .as {
+                results :+ StepResult(
+                  step.pattern,
+                  succeeded = false,
+                  error = Some(TestError.GenericError("Skipped due to prior failure", None, Some(trace))),
+                  output = (),
+                  logs = Nil,
+                  duration = Duration.Zero,
+                  startTime = Instant.now(),
+                  stepId = Some(step.id),
+                  scenarioId = Some(scenarioId),
+                  featureId = Some(featureId),
+                  file = step.file,
+                  line = step.line
+                )
+              }
+          case _ =>
+            stepExecutor.executeStep(featureId, scenarioId, step).map(results :+ _)
+        }
       }
     }
 }

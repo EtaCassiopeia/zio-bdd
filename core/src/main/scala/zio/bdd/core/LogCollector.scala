@@ -26,7 +26,6 @@ case class CollectedLogs(entries: List[LogEntry] = Nil) {
   def add(entry: LogEntry): CollectedLogs = copy(entries = entry :: entries)
   def toStepResultLogs: List[(String, Instant, InternalLogLevel)] =
     entries.map(entry => (entry.message, entry.timestamp, entry.level))
-  def clear: CollectedLogs = CollectedLogs()
 }
 
 case class LogLevelConfig(minLevel: InternalLogLevel = InternalLogLevel.Info)
@@ -43,7 +42,6 @@ trait LogCollector {
   def getScenarioLogs(scenarioId: String): ZIO[Any, Nothing, CollectedLogs]
   def getFeatureLogs(featureId: String): ZIO[Any, Nothing, CollectedLogs]
   def getAllLogs: ZIO[Any, Nothing, Map[(String, String), CollectedLogs]]
-  def clearLogs: ZIO[Any, Nothing, Unit]
   def setLogLevelConfig(config: LogLevelConfig): ZIO[Any, Nothing, Unit]
 }
 
@@ -109,7 +107,6 @@ object LogCollector {
           _      <- updateLogsIfLevelSufficient(featureRef, featureId, entry, config)
         } yield ()
 
-      // Remaining methods unchanged
       def getLogs(scenarioId: String, stepId: String): ZIO[Any, Nothing, CollectedLogs] =
         ref.get.map(_.getOrElse((scenarioId, stepId), CollectedLogs()))
 
@@ -124,8 +121,6 @@ object LogCollector {
       def getAllLogs: ZIO[Any, Nothing, Map[(String, String), CollectedLogs]] =
         ref.get
 
-      def clearLogs: ZIO[Any, Nothing, Unit] =
-        ref.set(Map.empty) *> featureRef.set(Map.empty)
     }
   }
 

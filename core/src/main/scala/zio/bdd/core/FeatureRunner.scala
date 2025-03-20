@@ -40,14 +40,17 @@ object FeatureRunner {
       feature.copy(scenarios = filteredScenarios)
     }.filter(_.scenarios.nonEmpty) // Only keep features with at least one scenario
 
-  private def featureFailedResult(e: Cause[Throwable])(implicit trace: Trace): Instant => StepResult =
+  private def featureFailedResult(featureId: String, e: Cause[Throwable])(implicit
+    trace: Trace
+  ): Instant => StepResult =
     startTime =>
-      StepResult(
+      StepResult( // TODO: Consider using a specific error type
         "Feature failed",
         succeeded = false,
         error = Some(TestError.GenericError(e.prettyPrint, None, Some(trace))),
         output = (),
         logs = Nil,
+        featureId = Some(featureId),
         duration = Duration.Zero,
         startTime = startTime
       )
@@ -99,7 +102,7 @@ object FeatureRunner {
                            .tapDefect { cause =>
                              logCollector
                                .logFeature(featureId, s"Feature failed: ${cause.prettyPrint}", InternalLogLevel.Error)
-                               .as(List(featureFailedResult(cause)(trace)(Instant.now())))
+                               .as(List(featureFailedResult(featureId, cause)(trace)(Instant.now())))
                            }
                      }
                      .map(_.flatten)
@@ -107,12 +110,12 @@ object FeatureRunner {
                  }
       ignoredCount <-
         ZIO.foreach(filteredFeatures)(f => ZIO.succeed(f.scenarios.count(_.metadata.isIgnored))).map(_.sum)
-      report <- reporter.generateFinalReport(features, results.groupedBy(_.step), ignoredCount)
+      report <- reporter.generateFinalReport(features, results.groupByScenario, ignoredCount)
       _      <- ZIO.logInfo(report)
     } yield results
 
   implicit class StepResultListOps(results: List[StepResult]) {
-    def groupedBy(key: StepResult => String): List[List[StepResult]] =
-      results.groupBy(key).values.toList
+    def groupByScenario: List[List[StepResult]] =
+      results.groupBy(_.scenarioId.getOrElse("unknown")).values.toList
   }
 }

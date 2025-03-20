@@ -40,7 +40,6 @@ case class JUnitXMLReporter(
       _       <- ensureOutputDir.orDie
       filePath = s"$outputDir/${feature.replaceAll("[^a-zA-Z0-9]", "_")}-${format.toString.toLowerCase}.xml"
       _       <- JUnitXMLFormatter.writeToFile(suite, filePath, format).orDie
-      _       <- ZIO.serviceWithZIO[LogCollector](_.clearLogs)
     } yield ()
 
   override def startScenario(scenario: String): ZIO[Any, Nothing, Unit] =

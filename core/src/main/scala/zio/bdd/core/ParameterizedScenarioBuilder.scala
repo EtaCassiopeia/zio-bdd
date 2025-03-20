@@ -54,6 +54,7 @@ object ParameterizedScenarioBuilder {
               }
               .map { parameterizedSteps =>
                 (
+                  // TODO: Assign a unique name for each parameterized scenario. e.g., "ScenarioName-Row1"
                   scenario.name,
                   parameterizedSteps,
                   scenario.metadata

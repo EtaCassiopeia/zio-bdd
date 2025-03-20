@@ -32,8 +32,11 @@ case class StepResult(
   error: Option[TestError],                        // Error message if the step failed
   output: Any,                                     // The output produced by the step
   logs: List[(String, Instant, InternalLogLevel)], // Logs collected during execution
-  duration: Duration,                              // New: Execution time
-  startTime: Instant,                              // New: Start timestamp
+  duration: Duration,                              // Execution time
+  startTime: Instant,                              // Start timestamp
+  stepId: Option[String] = None,                   // Step ID
+  scenarioId: Option[String] = None,               // Scenario ID
+  featureId: Option[String] = None,                // Feature ID
   file: Option[String] = None,                     // Source file path
   line: Option[Int] = None                         // Line number
 )

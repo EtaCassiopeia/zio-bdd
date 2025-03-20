@@ -16,8 +16,10 @@ case class StepExecutor[R](
 ) {
 
   // Main method to execute a single Gherkin step
-  def executeStep(gherkinStep: GherkinStep)(implicit trace: Trace): ZIO[R, Nothing, StepResult] =
-    ZIO.logAnnotate("stepId", gherkinStep.pattern.hashCode.toString) {
+  def executeStep(featureId: String, scenarioId: String, gherkinStep: GherkinStep)(implicit
+    trace: Trace
+  ): ZIO[R, Nothing, StepResult] =
+    ZIO.logAnnotate("stepId", gherkinStep.id) {
       for {
         stepDefOpt <- findMatchingStepDef(gherkinStep.stepType, gherkinStep)
         start      <- Clock.instant
@@ -25,13 +27,28 @@ case class StepExecutor[R](
         result <- stepDefOpt match {
                     case Some(stepDef) =>
                       // If a step definition matches, execute it
-                      executeMatchedStep(stepDef, gherkinStep, gherkinStep.pattern, gherkinStep.stepType, start)(
+                      executeMatchedStep(
+                        stepDef,
+                        gherkinStep,
+                        gherkinStep.pattern,
+                        gherkinStep.stepType,
+                        start,
+                        featureId,
+                        scenarioId
+                      )(
                         stepDef.iTag,
                         stepDef.oTag
                       ).tapDefect(cause => handleStepFailure(gherkinStep, cause, start))
                     case None =>
                       // If no match, report a failure
-                      executeUnmatchedStep(gherkinStep, gherkinStep.pattern, gherkinStep.stepType, start)
+                      executeUnmatchedStep(
+                        featureId,
+                        scenarioId,
+                        gherkinStep,
+                        gherkinStep.pattern,
+                        gherkinStep.stepType,
+                        start
+                      )
                   }
         end <- Clock.instant
         finalResult = result.copy(
@@ -83,7 +100,9 @@ case class StepExecutor[R](
     gherkinStep: GherkinStep,
     line: String,
     currentStepType: StepType,
-    start: Instant
+    start: Instant,
+    featureId: String,
+    scenarioId: String
   )(implicit iTag: Tag[I], oTag: Tag[O], trace: Trace): ZIO[R, Nothing, StepResult] =
     for {
       params <- ZIO.succeed(StepUtils.extractParams(StepUtils.convertToRegex(stepDef.pattern), line, stepDef.pattern))
@@ -102,13 +121,16 @@ case class StepExecutor[R](
                         error = Some(error),
                         output = (),
                         logs = Nil,
+                        stepId = Some(gherkinStep.id),
+                        scenarioId = Some(scenarioId),
+                        featureId = Some(featureId),
                         duration = Duration.Zero,
                         startTime = start
                       )
                     )
                   case Right(value) =>
                     // Execute the step function with the prepared input
-                    executeStepFunction(stepDef.fn, line, value, start, gherkinStep.id)
+                    executeStepFunction(stepDef.fn, line, value, start, featureId, scenarioId, gherkinStep.id)
                 }
     } yield result
 
@@ -129,6 +151,8 @@ case class StepExecutor[R](
     line: String,
     input: I,
     start: Instant,
+    featureId: String,
+    scenarioId: String,
     stepId: String
   )(implicit trace: Trace): ZIO[R, Nothing, StepResult] =
     for {
@@ -140,6 +164,9 @@ case class StepExecutor[R](
                     error = None,
                     output = output.asInstanceOf[Any],
                     logs = Nil,
+                    stepId = Some(stepId),
+                    scenarioId = Some(scenarioId),
+                    featureId = Some(featureId),
                     duration = Duration.Zero, // Will be updated
                     startTime = startTime
                   )
@@ -153,6 +180,9 @@ case class StepExecutor[R](
                     error = Some(TestError.fromThrowable(error)),
                     output = (),
                     logs = logs.toStepResultLogs,
+                    stepId = Some(stepId),
+                    scenarioId = Some(scenarioId),
+                    featureId = Some(featureId),
                     duration = Duration.Zero, // Will be updated
                     startTime = startTime
                   )
@@ -162,6 +192,8 @@ case class StepExecutor[R](
 
   // Handles the case where no step definition matches the Gherkin step
   private def executeUnmatchedStep(
+    featureId: String,
+    scenarioId: String,
     gherkinStep: GherkinStep,
     line: String,
     currentStepType: StepType,
@@ -178,6 +210,9 @@ case class StepExecutor[R](
       logs = logs.toStepResultLogs,
       duration = Duration.Zero,
       startTime = start,
+      stepId = Some(gherkinStep.id),
+      scenarioId = Some(scenarioId),
+      featureId = Some(featureId),
       file = gherkinStep.file,
       line = gherkinStep.line
     )
