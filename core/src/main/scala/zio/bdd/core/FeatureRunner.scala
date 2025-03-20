@@ -61,49 +61,30 @@ object FeatureRunner {
     config: TestConfig
   )(implicit trace: Trace): ZIO[R & LogCollector & Reporter, Nothing, List[StepResult]] =
     for {
-      logCollector <- ZIO.service[LogCollector]
-      reporter     <- ZIO.service[Reporter]
-      _            <- logCollector.setLogLevelConfig(config.logLevelConfig)
-      _ <- logCollector.logFeature(
-             "all",
-             s"Loaded ${features.length} features with ${features.flatMap(_.scenarios).length} scenarios",
-             InternalLogLevel.Info
-           )
+      logCollector    <- ZIO.service[LogCollector]
+      reporter        <- ZIO.service[Reporter]
+      _               <- logCollector.setLogLevelConfig(config.logLevelConfig)
+      _               <- ZIO.debug(s"Loaded ${features.length} features with ${features.flatMap(_.scenarios).length} scenarios")
       filteredFeatures = filterFeatures(features, config.includeTags, config.excludeTags)
       _ <-
-        logCollector.logFeature(
-          "all",
-          s"After filtering: ${filteredFeatures.length} features with ${filteredFeatures.flatMap(_.scenarios).length} scenarios",
-          InternalLogLevel.Debug
+        ZIO.debug(
+          s"After filtering: ${filteredFeatures.length} features with ${filteredFeatures.flatMap(_.scenarios).length} scenarios"
         )
+
       results <- if (filteredFeatures.isEmpty) {
-                   logCollector
-                     .logFeature("all", "No features or scenarios match the tag filters", InternalLogLevel.Warning)
-                     .as(Nil)
+                   ZIO.debug("No features or scenarios match the tag filters").as(Nil)
                  } else {
                    ZIO
                      .foreachPar(filteredFeatures) { feature =>
                        val featureId = feature.name.hashCode.toString
-                       logCollector.logFeature(
-                         featureId,
-                         s"Starting feature: ${feature.name}",
-                         InternalLogLevel.Info
-                       ) *>
-                         ScenarioRunner
-                           .runScenarios(steps, feature, config.parallelism)
-                           .map(_.flatten)
-                           .tap { res =>
-                             logCollector.logFeature(
-                               featureId,
-                               s"Feature '${feature.name}' produced ${res.length} results",
-                               InternalLogLevel.Info
-                             )
-                           }
-                           .tapDefect { cause =>
-                             logCollector
-                               .logFeature(featureId, s"Feature failed: ${cause.prettyPrint}", InternalLogLevel.Error)
-                               .as(List(featureFailedResult(featureId, cause)(trace)(Instant.now())))
-                           }
+                       ScenarioRunner
+                         .runScenarios(steps, feature, config.parallelism)
+                         .map(_.flatten)
+                         .tapDefect { cause =>
+                           logCollector
+                             .logFeature(featureId, s"Feature failed: ${cause.prettyPrint}", InternalLogLevel.Error)
+                             .as(List(featureFailedResult(featureId, cause)(trace)(Instant.now())))
+                         }
                      }
                      .map(_.flatten)
                      .withParallelism(config.parallelism)

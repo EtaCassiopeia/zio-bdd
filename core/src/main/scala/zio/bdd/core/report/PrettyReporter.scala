@@ -176,9 +176,9 @@ class PrettyReporter extends Reporter {
         }.mkString("\n")
 
         val finishedFeature = if (feature.scenarios.isEmpty) {
-          s"* ${LightGray}Finished Feature: ${feature.name} - 0 passed, 0 failed, ${feature.scenarios.length} ignored$Reset"
+          s"* ${LightGray}Feature: ${feature.name} - 0 passed, 0 failed, ${feature.scenarios.length} ignored$Reset"
         } else {
-          s"* ${LightBlue}Finished Feature: ${feature.name} - $LightGreen$passedScenarios passed$Reset, $LightRed$failedScenarios failed$Reset, $LightGray$ignoredScenarios ignored$Reset"
+          s"* ${LightBlue}Feature: ${feature.name} - $LightGreen$passedScenarios passed$Reset, $LightRed$failedScenarios failed$Reset, $LightGray$ignoredScenarios ignored$Reset"
         }
 
         s"$featureLine" + (if (scenarioLines.nonEmpty) s"\n$scenarioLines" else "") + s"\n$finishedFeature"
@@ -187,8 +187,8 @@ class PrettyReporter extends Reporter {
       s"""
          |$featureDetails
          |
-         |${LightBlue}Finished Features:${Reset} ${LightGreen}${stats.features - stats.failedFeatures - stats.ignoredFeatures} passed${Reset}, ${LightRed}${stats.failedFeatures} failed${Reset}, ${LightGray}${stats.ignoredFeatures} ignored${Reset}
-         |${LightYellow}Finished Scenarios:${Reset} ${LightGreen}${stats.scenarios - stats.failedScenarios - stats.ignoredScenarios} passed${Reset}, ${LightRed}${stats.failedScenarios} failed${Reset}, ${LightGray}${stats.ignoredScenarios} ignored${Reset}
+         |${LightBlue}Features:${Reset} ${LightGreen}${stats.features - stats.failedFeatures - stats.ignoredFeatures} passed${Reset}, ${LightRed}${stats.failedFeatures} failed${Reset}, ${LightGray}${stats.ignoredFeatures} ignored${Reset}
+         |${LightYellow}Scenarios:${Reset} ${LightGreen}${stats.scenarios - stats.failedScenarios - stats.ignoredScenarios} passed${Reset}, ${LightRed}${stats.failedScenarios} failed${Reset}, ${LightGray}${stats.ignoredScenarios} ignored${Reset}
          |""".stripMargin.trim
     }
   }

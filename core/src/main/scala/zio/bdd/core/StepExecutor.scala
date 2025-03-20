@@ -61,12 +61,12 @@ case class StepExecutor[R](
         // Record the step's result in the stack for use by subsequent steps
         _            <- OutputStack.push(stackRef, StepRecord(gherkinStep.stepType, gherkinStep.pattern, finalResult.output))
         updatedStack <- stackRef.get
-        _ <- logCollector.log(
-               scenarioId,
-               gherkinStep.id,
-               s"After ${gherkinStep.pattern}, Stack: $updatedStack, Duration: ${finalResult.duration}",
-               InternalLogLevel.Debug
-             )
+//        _ <- logCollector.log(
+//               scenarioId,
+//               gherkinStep.id,
+//               s"After ${gherkinStep.pattern}, Stack: $updatedStack, Duration: ${finalResult.duration}",
+//               InternalLogLevel.Debug
+//             )
       } yield finalResult
     }
 
