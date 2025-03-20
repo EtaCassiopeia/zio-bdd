@@ -89,17 +89,17 @@ class PrettyReporter extends Reporter {
           if (failedScenarios > 0) s"${LightRed}[FAILED]${Reset}"
           else if (passedScenarios > 0) s"${LightGreen}[PASSED]${Reset}"
           else s"${LightGray}[IGNORED]${Reset}"
-        val featureLine = s"* $featureStatus Feature: ${feature.name}"
+        val featureLine = s"* $featureStatus ${LightBlue}Feature: ${feature.name}"
 
         val scenarioLines = feature.scenarios.map { scenario =>
           val scenarioId = s"${feature.name}-${scenario.name}".hashCode.toString
           val steps      = featureSteps.find(_.headOption.exists(_.scenarioId.contains(scenarioId))).getOrElse(Nil)
-          val isIgnored  = scenario.metadata.isIgnored || !scenario.tags.contains("positive") || steps.isEmpty
+          val isIgnored  = scenario.metadata.isIgnored || steps.isEmpty
           val scenarioStatus =
             if (isIgnored) s"${LightGray}[IGNORED]${Reset}"
             else if (steps.exists(!_.succeeded)) s"${LightRed}[FAILED]${Reset}"
             else s"${LightGreen}[PASSED]${Reset}"
-          val scenarioLine = s"  ${LightYellow}◉${Reset} $scenarioStatus ${scenario.name}"
+          val scenarioLine = s"  ${LightYellow}◉ $scenarioStatus ${LightYellow}${scenario.name}"
 
           val stepLines = steps
             .zip(scenario.steps)
@@ -129,7 +129,7 @@ class PrettyReporter extends Reporter {
                     case InternalLogLevel.Error   => PaleRed
                     case InternalLogLevel.Fatal   => PaleRed
                   }
-                  s"      ${LightGray}├─${Reset} $color${entry.level}: ${entry.message}$Reset"
+                  s"      ${LightGray}├─${Reset} $color ${entry.message}$Reset"
                 }
                 .mkString("\n")
 
