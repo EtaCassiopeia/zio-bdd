@@ -9,7 +9,8 @@ import zio.bdd.example.Config
   featureDir = "example/src/test/resources/features",
   reporters = Array("pretty", "junitxml"),
   parallelism = 1,
-  includeTags = Array("positive") // Pre-filter to only run @positive scenarios
+  includeTags = Array("positive"), // Pre-filter to only run @positive scenarios
+  logLevel = "debug"
 )
 object SimpleSpec extends ZIOSteps.Default[GreetingService] {
   Given("a user named {string}") { name =>
@@ -17,7 +18,7 @@ object SimpleSpec extends ZIOSteps.Default[GreetingService] {
   }
 
   When("the user is greeted") { (name: String) =>
-    ZIO.serviceWithZIO[GreetingService](_.greet(name))
+    ZIO.logInfo("Greeting user") *> ZIO.serviceWithZIO[GreetingService](_.greet(name))
   }
 
   Then("the greeting should be {string}") { case (actualGreeting: String, expectedGreeting: String) =>

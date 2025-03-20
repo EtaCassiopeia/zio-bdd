@@ -1,8 +1,7 @@
 package zio.bdd.core.report
 
 import zio.*
-import zio.bdd.core.CollectedLogs
-
+import zio.bdd.core.{CollectedLogs, LogEntry, InternalLogLevel, LogSource}
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 import scala.xml.{Elem, NodeSeq, PrettyPrinter}
@@ -30,7 +29,7 @@ object JUnitXMLFormatter {
     case object JUnit5 extends Format
   }
 
-  def generateXML(suite: TestSuite, format: Format = Format.JUnit5): ZIO[Any, Nothing, String] =
+  def generateXML(suite: TestSuite, format: Format = Format.JUnit5)(implicit trace: Trace): ZIO[Any, Nothing, String] =
     ZIO.succeed {
       format match {
         case Format.JUnit4 => generateJUnit4XML(suite)
@@ -65,8 +64,7 @@ object JUnitXMLFormatter {
   }
 
   private def toJUnit4TestCaseXML(testCase: TestCase): NodeSeq = {
-    val stdout = testCase.logs.stdout.map(_.message).mkString("\n")
-    val stderr = testCase.logs.stderr.map(_.message).mkString("\n")
+    val (stdout, stderr) = partitionLogs(testCase.logs)
     <testcase
     name={testCase.name}
     time={(testCase.duration / 1000.0).toString}
@@ -79,8 +77,7 @@ object JUnitXMLFormatter {
   }
 
   private def toJUnit5TestCaseXML(testCase: TestCase): NodeSeq = {
-    val stdout = testCase.logs.stdout.map(_.message).mkString("\n")
-    val stderr = testCase.logs.stderr.map(_.message).mkString("\n")
+    val (stdout, stderr) = partitionLogs(testCase.logs)
     <testcase
     name={testCase.name}
     time={(testCase.duration / 1000.0).toString}
@@ -91,9 +88,23 @@ object JUnitXMLFormatter {
     </testcase>
   }
 
-  def writeToFile(suite: TestSuite, filePath: String, format: Format = Format.JUnit5): ZIO[Any, Throwable, Unit] =
+  private def partitionLogs(logs: CollectedLogs): (String, String) = {
+    val stdout = logs.entries
+      .filter(_.source == LogSource.Stdout)
+      .map(entry => s"[${entry.level}] [${DateTimeFormatter.ISO_INSTANT.format(entry.timestamp)}] ${entry.message}")
+      .mkString("\n")
+    val stderr = logs.entries
+      .filter(_.source == LogSource.Stderr)
+      .map(entry => s"[${entry.level}] [${DateTimeFormatter.ISO_INSTANT.format(entry.timestamp)}] ${entry.message}")
+      .mkString("\n")
+    (stdout, stderr)
+  }
+
+  def writeToFile(suite: TestSuite, filePath: String, format: Format = Format.JUnit5)(implicit
+    trace: Trace
+  ): ZIO[Any, Throwable, Unit] =
     for {
       xml <- generateXML(suite, format)
-      _   <- ZIO.blocking(ZIO.attempt(scala.util.Using.resource(new java.io.PrintWriter(filePath))(_.print(xml))))
+      _   <- ZIO.attemptBlocking(scala.util.Using.resource(new java.io.PrintWriter(filePath))(_.print(xml)))
     } yield ()
 }

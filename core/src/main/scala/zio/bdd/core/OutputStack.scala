@@ -17,11 +17,20 @@ object OutputStack {
   def peek(stackRef: Ref[Chunk[StepRecord]]): UIO[Option[StepRecord]] =
     stackRef.get.map(_.headOption)
 
+  def peek(stackRef: Ref[Chunk[StepRecord]], scenarioId: String): UIO[Option[StepRecord]] =
+    stackRef.get.map(_.find(_.scenarioId == scenarioId))
+
   // Removes and returns the top record
   def pop(stackRef: Ref[Chunk[StepRecord]]): UIO[Option[StepRecord]] =
     stackRef.modify { chunk =>
       if (chunk.isEmpty) (None, chunk)
       else (Some(chunk.head), chunk.tail)
+    }
+
+  def pop(stackRef: Ref[Chunk[StepRecord]], scenarioId: String): UIO[Option[StepRecord]] =
+    stackRef.modify { chunk =>
+      val (matching, remaining) = chunk.partition(_.scenarioId == scenarioId)
+      (matching.headOption, remaining ++ matching.drop(1))
     }
 
   // Clears the stack
@@ -31,6 +40,20 @@ object OutputStack {
   // Checks if the stack is empty
   def isEmpty(stackRef: Ref[Chunk[StepRecord]]): UIO[Boolean] =
     stackRef.get.map(_.isEmpty)
+
+  def isEmpty(stackRef: Ref[Chunk[StepRecord]], scenarioId: String): UIO[Boolean] =
+    stackRef.get.map(_.forall(_.scenarioId != scenarioId))
+
+  // Method to get and combine prior output for a scenario
+  def getPriorOutput[I](
+    stackRef: Ref[Chunk[StepRecord]],
+    scenarioId: String,
+    params: List[Any]
+  )(implicit iTag: Tag[I]): ZIO[Any, Throwable, I] =
+    peek(stackRef, scenarioId).flatMap { maybeRecord =>
+      val priorOutput = maybeRecord.map(_.output).getOrElse(())
+      combineTyped(priorOutput, params)
+    }
 
   // Type-safe combine previous output with step parameters into a single input value with runtime validation
   private[core] def combineTyped[I](prev: Any, params: List[Any])(implicit iTag: Tag[I]): ZIO[Any, Throwable, I] = {

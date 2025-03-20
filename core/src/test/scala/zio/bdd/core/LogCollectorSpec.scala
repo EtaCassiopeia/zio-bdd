@@ -5,7 +5,7 @@ import zio.test.*
 
 object LogCollectorSpec extends ZIOSpecDefault {
 
-  def spec: Spec[Any, Any] = suite("LogCollectorSpec")(
+  override def spec: Spec[Any, Any] = suite("LogCollectorSpec")(
     test("captures and isolates logs from different logging styles") {
       val scenarioId = "test-scenario"
       val stepId     = "test-step"
@@ -13,19 +13,20 @@ object LogCollectorSpec extends ZIOSpecDefault {
         ZIO.logAnnotate("stepId", stepId) { // Set the annotation
           for {
             // Direct LogCollector usage
-            _ <- LogCollector.logStdout(scenarioId, stepId, "Direct stdout log")
-            _ <- LogCollector.logStderr(scenarioId, stepId, "Direct stderr log")
+            _ <- LogCollector.log(scenarioId, stepId, "Direct stdout log", InternalLogLevel.Info)
+            _ <- LogCollector.log(scenarioId, stepId, "Direct stderr log", InternalLogLevel.Error)
 
             // ZIO built-in logging
             _ <- ZIO.logInfo("ZIO info log")
             _ <- ZIO.logError("ZIO error log")
 
-            collectedLogs <- LogCollector.getLogs(scenarioId, stepId) // Fetch logs for this scenarioId
+            collectedLogs <-
+              ZIO.serviceWithZIO[LogCollector](_.getLogs(scenarioId, stepId)) // Fetch logs for this scenarioId/stepId
           } yield assertTrue(
-            collectedLogs.stdout.exists(_.message.contains("Direct stdout log")),
-            collectedLogs.stderr.exists(_.message.contains("Direct stderr log")),
-            collectedLogs.stdout.exists(_.message.contains("ZIO info log")),
-            collectedLogs.stderr.exists(_.message.contains("ZIO error log"))
+            collectedLogs.entries.exists(e => e.source == LogSource.Stdout && e.message.contains("Direct stdout log")),
+            collectedLogs.entries.exists(e => e.source == LogSource.Stderr && e.message.contains("Direct stderr log")),
+            collectedLogs.entries.exists(e => e.source == LogSource.Stdout && e.message.contains("ZIO info log")),
+            collectedLogs.entries.exists(e => e.source == LogSource.Stderr && e.message.contains("ZIO error log"))
           )
         }
       }

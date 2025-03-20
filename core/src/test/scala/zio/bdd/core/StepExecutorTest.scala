@@ -124,7 +124,7 @@ object StepExecutorTest extends ZIOSpecDefault {
       (for {
         executor <- makeExecutor(steps)
         step      = GherkinStep(StepType.GivenStep, "the account is active", Some("test.feature"), Some(1))
-        result   <- executor.executeStep(step)
+        result   <- executor.executeStep("test-feature", "test-scenario", step)
       } yield assertTrue(
         result.succeeded,
         result.output == "Account status: is"
