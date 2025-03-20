@@ -64,13 +64,8 @@ object FeatureRunner {
       logCollector    <- ZIO.service[LogCollector]
       reporter        <- ZIO.service[Reporter]
       _               <- logCollector.setLogLevelConfig(config.logLevelConfig)
-      _               <- ZIO.debug(s"Loaded ${features.length} features with ${features.flatMap(_.scenarios).length} scenarios")
+      _               <- ZIO.debug(s"Loaded ${features.length} features")
       filteredFeatures = filterFeatures(features, config.includeTags, config.excludeTags)
-      _ <-
-        ZIO.debug(
-          s"After filtering: ${filteredFeatures.length} features with ${filteredFeatures.flatMap(_.scenarios).length} scenarios"
-        )
-
       results <- if (filteredFeatures.isEmpty) {
                    ZIO.debug("No features or scenarios match the tag filters").as(Nil)
                  } else {
