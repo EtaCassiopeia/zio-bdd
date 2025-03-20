@@ -46,5 +46,5 @@ case class StepRecord(
   stepType: StepType, // The type of step (Given, When, Then, And)
   stepText: String,   // The step's text
   output: Any,        // The output produced by the step
-  scenarioId: String  //
+  scenarioId: String  //  Scenario ID used to look up the steps of a scenario
 )

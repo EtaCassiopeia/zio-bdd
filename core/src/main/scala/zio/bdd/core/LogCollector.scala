@@ -26,6 +26,8 @@ case class CollectedLogs(entries: List[LogEntry] = Nil) {
   def add(entry: LogEntry): CollectedLogs = copy(entries = entry :: entries)
   def toStepResultLogs: List[(String, Instant, InternalLogLevel)] =
     entries.map(entry => (entry.message, entry.timestamp, entry.level))
+
+  def ++(other: CollectedLogs): CollectedLogs = CollectedLogs(entries ++ other.entries)
 }
 
 case class LogLevelConfig(minLevel: InternalLogLevel = InternalLogLevel.Info)

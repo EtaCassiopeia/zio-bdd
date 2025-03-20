@@ -1,31 +1,17 @@
 package zio.bdd.core.report
 
 import zio.*
-import zio.bdd.core.*
-import zio.bdd.gherkin.{Feature, StepType}
-import java.nio.file.{Files, Paths}
+import zio.bdd.core.{LogCollector, CollectedLogs, StepResult}
+import zio.bdd.gherkin.Feature
 import java.time.Instant
+import java.nio.file.{Files, Paths}
 
 case class JUnitReporterConfig(
   outputDir: String = "target/test-results",
   format: JUnitXMLFormatter.Format = JUnitXMLFormatter.Format.JUnit5
 )
 
-class JUnitReporter(config: JUnitReporterConfig) extends Reporter {
-  private def ensureOutputDir: ZIO[Any, Throwable, Unit] =
-    ZIO.attemptBlocking(Files.createDirectories(Paths.get(config.outputDir))).unit
-
-  override def startFeature(feature: String): ZIO[Any, Nothing, Unit] = ZIO.unit
-  override def endFeature(
-    feature: String,
-    results: List[List[StepResult]],
-    ignoredCount: Int
-  ): ZIO[LogCollector, Nothing, Unit] = ZIO.unit
-  override def startScenario(scenario: String): ZIO[Any, Nothing, Unit]                                   = ZIO.unit
-  override def endScenario(scenario: String, results: List[StepResult]): ZIO[LogCollector, Nothing, Unit] = ZIO.unit
-  override def startStep(step: String): ZIO[Any, Nothing, Unit]                                           = ZIO.unit
-  override def endStep(step: String, result: StepResult): ZIO[Any, Nothing, Unit]                         = ZIO.unit
-  override def reportIgnoredScenario(scenario: String): ZIO[Any, Nothing, Unit]                           = ZIO.unit
+class JUnitXMLReporter(config: JUnitReporterConfig) extends Reporter {
 
   override def generateFinalReport(
     features: List[Feature],
@@ -34,154 +20,90 @@ class JUnitReporter(config: JUnitReporterConfig) extends Reporter {
   ): ZIO[LogCollector, Nothing, String] =
     for {
       logCollector <- ZIO.service[LogCollector]
-      _            <- ensureOutputDir.orDie
-      reportPaths <- ZIO.foreach(features) { feature =>
-                       val allSteps            = results.flatten.filter(_.featureId.contains(feature.name.hashCode.toString))
-                       val executedScenarioIds = allSteps.flatMap(_.scenarioId).toSet
+      reports      <- ZIO.foreach(features)(feature => buildJUnitReportForFeature(feature, logCollector, results))
+      outputPaths  <- ZIO.foreach(reports)(report => writeReport(report))
+      _            <- ZIO.foreachDiscard(outputPaths)(path => ZIO.logInfo(s"JUnit XML report written to $path"))
+    } yield outputPaths.mkString(", ")
 
-                       // Build test cases for executed scenarios
-                       val scenarioTestCases = feature.scenarios
-                         .filter(scenario =>
-                           executedScenarioIds.contains(s"${feature.name}-${scenario.name}".hashCode.toString)
-                         )
-                         .map { scenario =>
-                           val scenarioId    = s"${feature.name}-${scenario.name}".hashCode.toString
-                           val scenarioSteps = allSteps.filter(_.scenarioId.contains(scenarioId))
-                           for {
-                             scenarioLogs <- logCollector.getScenarioLogs(scenarioId)
-                             detailedLogs <-
-                               ZIO.collectAll(scenarioSteps.map { step =>
-                                 logCollector
-                                   .getLogs(scenarioId, step.stepId.getOrElse(step.step.hashCode.toString))
-                                   .map { stepLogs =>
-                                     val stepType = scenario.steps
-                                       .find(_.pattern == step.step)
-                                       .map(_.stepType)
-                                       .getOrElse(StepType.GivenStep)
-                                     val stepPrefix = stepType match {
-                                       case StepType.GivenStep => "Given"
-                                       case StepType.WhenStep  => "When"
-                                       case StepType.ThenStep  => "Then"
-                                       case StepType.AndStep   => "And"
-                                     }
-                                     val status = if (step.succeeded) "[PASSED]" else "[FAILED]"
-                                     val timing =
-                                       s"(start: ${step.startTime}, duration: ${step.duration.toMillis}ms${step.file
-                                           .map(f => s", file: $f:${step.line.getOrElse(-1)}")
-                                           .getOrElse("")})"
-                                     val stepHeader = s"$stepPrefix $status ${step.step} $timing"
-                                     val stepLogEntries = stepLogs.entries.map { log =>
-                                       LogEntry(
-                                         message = s"[${log.level}] ${log.message}",
-                                         timestamp = log.timestamp,
-                                         source = log.source,
-                                         level = log.level,
-                                         stepId = step.stepId.getOrElse("unknown")
-                                       )
-                                     }
-                                     val errorEntries = step.error.map { e =>
-                                       val trace = e.trace
-                                         .flatMap(Trace.unapply)
-                                         .map { case (loc, file, line) =>
-                                           LogEntry(
-                                             s"Trace: $loc ($file:$line)",
-                                             step.startTime,
-                                             LogSource.Stderr,
-                                             InternalLogLevel.Error,
-                                             step.stepId.getOrElse("unknown")
-                                           )
-                                         }
-                                         .toList
-                                       val cause = e.cause.map { c =>
-                                         val stack = c.getStackTrace
-                                           .take(5)
-                                           .map(st =>
-                                             LogEntry(
-                                               st.toString,
-                                               step.startTime,
-                                               LogSource.Stderr,
-                                               InternalLogLevel.Error,
-                                               step.stepId.getOrElse("unknown")
-                                             )
-                                           )
-                                         LogEntry(
-                                           s"Cause: ${c.getMessage}",
-                                           step.startTime,
-                                           LogSource.Stderr,
-                                           InternalLogLevel.Error,
-                                           step.stepId.getOrElse("unknown")
-                                         ) :: stack.toList
-                                       }.getOrElse(Nil)
-                                       LogEntry(
-                                         s"Error: ${e.message}",
-                                         step.startTime,
-                                         LogSource.Stderr,
-                                         InternalLogLevel.Error,
-                                         step.stepId.getOrElse("unknown")
-                                       ) :: (trace ++ cause)
-                                     }.getOrElse(Nil)
-                                     (stepHeader, stepLogEntries ++ errorEntries)
-                                   }
-                               })
-                           } yield {
-                             val combinedLogs = CollectedLogs(
-                               (scenarioLogs.entries ++ detailedLogs.flatMap(_._2)).sortBy(_.timestamp)
-                             )
-                             JUnitXMLFormatter.TestCase(
-                               name = scenario.name,
-                               succeeded = scenarioSteps.forall(_.succeeded),
-                               logs = CollectedLogs(
-                                 detailedLogs.map { case (header, logs) =>
-                                   LogEntry(
-                                     header,
-                                     scenarioSteps.headOption.map(_.startTime).getOrElse(Instant.now()),
-                                     LogSource.Stdout,
-                                     InternalLogLevel.Info,
-                                     "scenario"
-                                   )
-                                 } ++ combinedLogs.entries
-                               ),
-                               timestamp = scenarioSteps.headOption.map(_.startTime).getOrElse(Instant.now()),
-                               duration = scenarioSteps.map(_.duration.toMillis).sum
-                             )
-                           }
-                         }
+  private def ensureOutputDir: ZIO[Any, Nothing, Unit] = ZIO.attempt {
+    val dir = Paths.get(config.outputDir)
+    Files.createDirectories(dir)
+    ()
+  }.orDie
 
-                       // Handle ignored scenarios
-                       val ignoredTestCases = feature.scenarios
-                         .filter(scenario =>
-                           !executedScenarioIds.contains(
-                             s"${feature.name}-${scenario.name}".hashCode.toString
-                           ) || scenario.metadata.isIgnored
-                         )
-                         .map { scenario =>
-                           JUnitXMLFormatter.TestCase(
-                             name = scenario.name,
-                             succeeded = true,
-                             logs = CollectedLogs(Nil),
-                             timestamp = Instant.now(),
-                             duration = 0
-                           )
-                         }
+  private def writeReport(report: JUnitXMLFormatter.TestSuite): ZIO[Any, Nothing, String] =
+    for {
+      _         <- ensureOutputDir
+      outputPath = s"${config.outputDir}/${sanitizeFileName(report.name)}.xml"
+      _         <- JUnitXMLFormatter.writeToFile(report, outputPath, config.format).orDie
+    } yield outputPath
 
-                       for {
-                         testCases <- ZIO.collectAll(scenarioTestCases).map(_ ++ ignoredTestCases)
-                         writeResult <- {
-                           val suite    = JUnitXMLFormatter.TestSuite(feature.name, testCases.toList, Instant.now())
-                           val filePath = s"${config.outputDir}/${feature.name.replaceAll("[^a-zA-Z0-9]", "_")}.xml"
-                           JUnitXMLFormatter
-                             .writeToFile(suite, filePath, config.format)
-                             .foldZIO(
-                               error => ZIO.succeed(s"Failed to write report for ${feature.name}: ${error.getMessage}"),
-                               _ => ZIO.succeed(s"Generated report for ${feature.name} at $filePath")
-                             )
-                         }
-                       } yield writeResult
-                     }
-    } yield reportPaths.mkString("\n")
+  private def sanitizeFileName(name: String): String =
+    // Replace invalid filename characters with underscores and trim to reasonable length
+    name.replaceAll("[^a-zA-Z0-9-_]", "_").take(100)
+
+  private def buildJUnitReportForFeature(
+    feature: Feature,
+    logCollector: LogCollector,
+    results: List[List[StepResult]]
+  ): ZIO[Any, Nothing, JUnitXMLFormatter.TestSuite] = {
+    // Convert scenarios iterator to ZIO effect
+    val testCasesEffect = ZIO.foreach(feature.scenarios) { scenario =>
+      val scenarioId = s"${feature.name}-${scenario.name}".hashCode.toString
+      val steps      = ZIO.succeed(results.find(_.headOption.exists(_.scenarioId.contains(scenarioId))).getOrElse(Nil))
+
+      steps.flatMap { scenarioSteps =>
+        val isIgnored = scenario.metadata.isIgnored || scenarioSteps.isEmpty
+
+        if (isIgnored) {
+          // For ignored scenarios, create a minimal test case
+          ZIO.succeed(
+            JUnitXMLFormatter.TestCase(
+              name = s"Scenario: ${scenario.name}",
+              succeeded = true, // Ignored tests are not failures in JUnit
+              logs = CollectedLogs(List.empty),
+              timestamp = Instant.now(),
+              duration = 0L
+            )
+          )
+        } else {
+          val succeeded = ZIO.succeed(scenarioSteps.forall(_.succeeded))
+          val startTime = ZIO.succeed(scenarioSteps.headOption.map(_.startTime).getOrElse(Instant.now()))
+          val duration  = ZIO.succeed(scenarioSteps.map(_.duration.toMillis).sum)
+
+          val logsEffect = ZIO
+            .foreach(scenarioSteps) { step =>
+              logCollector.getLogs(scenarioId, step.stepId.getOrElse(step.step.hashCode.toString))
+            }
+            .map(_.reduceOption(_ ++ _).getOrElse(CollectedLogs(List.empty)))
+
+          for {
+            succ <- succeeded
+            time <- startTime
+            dur  <- duration
+            logs <- logsEffect
+          } yield JUnitXMLFormatter.TestCase(
+            name = s"Scenario: ${scenario.name}",
+            succeeded = succ,
+            logs = logs,
+            timestamp = time,
+            duration = dur
+          )
+        }
+      }
+    }
+
+    testCasesEffect.map { testCases =>
+      JUnitXMLFormatter.TestSuite(
+        name = feature.name,
+        cases = testCases,
+        timestamp = Instant.now()
+      )
+    }
+  }
 }
 
-object JUnitReporter {
+object JUnitXMLReporter {
   def live(config: JUnitReporterConfig = JUnitReporterConfig()): ZLayer[Any, Nothing, Reporter] =
-    ZLayer.succeed(new JUnitReporter(config))
+    ZLayer.succeed(new JUnitXMLReporter(config))
 }

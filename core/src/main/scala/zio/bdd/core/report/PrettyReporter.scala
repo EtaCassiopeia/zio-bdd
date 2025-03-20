@@ -18,18 +18,6 @@ class PrettyReporter extends Reporter {
   private val PaleYellow = "\u001b[38;2;245;245;220m" // Warning (pale beige/yellow)
   private val PaleRed    = "\u001b[38;2;255;182;193m" // Error, Fatal (pale red/pink)
 
-  override def startFeature(feature: String): ZIO[Any, Nothing, Unit] = ZIO.unit
-  override def endFeature(
-    feature: String,
-    results: List[List[StepResult]],
-    ignoredCount: Int
-  ): ZIO[LogCollector, Nothing, Unit] = ZIO.unit
-  override def startScenario(scenario: String): ZIO[Any, Nothing, Unit]                                   = ZIO.unit
-  override def endScenario(scenario: String, results: List[StepResult]): ZIO[LogCollector, Nothing, Unit] = ZIO.unit
-  override def startStep(step: String): ZIO[Any, Nothing, Unit]                                           = ZIO.unit
-  override def endStep(step: String, result: StepResult): ZIO[Any, Nothing, Unit]                         = ZIO.unit
-  override def reportIgnoredScenario(scenario: String): ZIO[Any, Nothing, Unit]                           = ZIO.unit
-
   override def generateFinalReport(
     features: List[Feature],
     results: List[List[StepResult]],

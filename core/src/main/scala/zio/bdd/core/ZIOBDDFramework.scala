@@ -3,7 +3,7 @@ package zio.bdd.core
 import sbt.testing.*
 import zio.bdd.core.report.{
   ConsoleReporter,
-  JUnitReporter,
+  JUnitXMLReporter,
   JUnitReporterConfig,
   JUnitXMLFormatter,
   PrettyReporter,
@@ -187,7 +187,7 @@ class ZIOBDDTask(
           runtime.unsafe
             .run(
               ZIO.scoped(
-                JUnitReporter
+                JUnitXMLReporter
                   .live(JUnitReporterConfig(outputDir = defaultTestResultDir, format = JUnitXMLFormatter.Format.JUnit5))
                   .build
                   .map(_.get[Reporter])
@@ -292,7 +292,7 @@ class ZIOBDDTask(
             runtime.unsafe
               .run(
                 ZIO.scoped(
-                  JUnitReporter
+                  JUnitXMLReporter
                     .live(
                       JUnitReporterConfig(outputDir = defaultTestResultDir, format = JUnitXMLFormatter.Format.JUnit5)
                     )
