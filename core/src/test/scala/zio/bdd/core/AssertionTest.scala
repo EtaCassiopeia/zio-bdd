@@ -60,7 +60,7 @@ object AssertionTest extends ZIOSpecDefault {
       for {
         executor <- makeExecutor(demoSteps)
         step      = GherkinStep(StepType.GivenStep, "a cart with id C1 and 2 items", None, None)
-        result   <- executor.executeStep(step)
+        result   <- executor.executeStep("test-feature", "test-scenario", step)
         _        <- Assertions.assertTrue(result.succeeded, "Step execution should succeed")
       } yield assertTrue(true)
     },
@@ -68,7 +68,7 @@ object AssertionTest extends ZIOSpecDefault {
       for {
         executor <- makeExecutor(demoSteps)
         step      = GherkinStep(StepType.GivenStep, "a cart with id C1 and 2 items", None, None)
-        result   <- executor.executeStep(step)
+        result   <- executor.executeStep("test-feature", "test-scenario", step)
         cart      = result.output.asInstanceOf[Cart]
         _        <- Assertions.assertEquals(cart.id, "C1", "Cart ID mismatch")
       } yield assertTrue(true)
@@ -77,7 +77,7 @@ object AssertionTest extends ZIOSpecDefault {
       for {
         executor <- makeExecutor(demoSteps)
         step      = GherkinStep(StepType.ThenStep, "an error occurs", None, None)
-        result   <- executor.executeStep(step)
+        result   <- executor.executeStep("test-feature", "test-scenario", step)
         _        <- Assertions.assertTrue(!result.succeeded, "Step should fail")
         _        <- Assertions.assertSome(result.error, "Step should have an error")
         _ <- Assertions.assertTrue(
@@ -91,8 +91,8 @@ object AssertionTest extends ZIOSpecDefault {
         executor   <- makeExecutor(demoSteps)
         givenStep   = GherkinStep(StepType.GivenStep, "a cart with id C1 and 2 items", None, None)
         whenStep    = GherkinStep(StepType.WhenStep, "a discount of 5.0 is applied", None, None)
-        _          <- executor.executeStep(givenStep)
-        result     <- executor.executeStep(whenStep)
+        _          <- executor.executeStep("test-feature", "test-scenario", givenStep)
+        result     <- executor.executeStep("test-feature", "test-scenario", whenStep)
         updatedCart = result.output.asInstanceOf[Cart]
         _          <- Assertions.assertSome(updatedCart.discount, "Discount should be present")
       } yield assertTrue(true)
@@ -102,8 +102,8 @@ object AssertionTest extends ZIOSpecDefault {
         executor   <- makeExecutor(demoSteps)
         givenStep   = GherkinStep(StepType.GivenStep, "a cart with id C1 and 2 items", None, None)
         whenStep    = GherkinStep(StepType.WhenStep, "a discount of 5.0 is applied", None, None)
-        _          <- executor.executeStep(givenStep)
-        result     <- executor.executeStep(whenStep)
+        _          <- executor.executeStep("test-feature", "test-scenario", givenStep)
+        result     <- executor.executeStep("test-feature", "test-scenario", whenStep)
         updatedCart = result.output.asInstanceOf[Cart]
         _          <- Assertions.assertSomeEquals(updatedCart.discount, 5.0, "Discount value mismatch")
       } yield assertTrue(true)
@@ -112,7 +112,7 @@ object AssertionTest extends ZIOSpecDefault {
       for {
         executor <- makeExecutor(demoSteps)
         step      = GherkinStep(StepType.GivenStep, "a cart with id C1 and 2 items", None, None)
-        result   <- executor.executeStep(step)
+        result   <- executor.executeStep("test-feature", "test-scenario", step)
         cart      = result.output.asInstanceOf[Cart]
         _        <- Assertions.assertNone(cart.discount, "Discount should not be present")
       } yield assertTrue(true)
@@ -122,8 +122,8 @@ object AssertionTest extends ZIOSpecDefault {
         executor <- makeExecutor(demoSteps)
         givenStep = GherkinStep(StepType.GivenStep, "a cart with id C1 and 2 items", None, None)
         whenStep  = GherkinStep(StepType.WhenStep, "an order is placed", None, None)
-        _        <- executor.executeStep(givenStep)
-        result   <- executor.executeStep(whenStep)
+        _        <- executor.executeStep("test-feature", "test-scenario", givenStep)
+        result   <- executor.executeStep("test-feature", "test-scenario", whenStep)
         order     = result.output.asInstanceOf[Order]
         _        <- Assertions.assertRight(order.result, "Order result should be Right")
       } yield assertTrue(true)
@@ -133,9 +133,9 @@ object AssertionTest extends ZIOSpecDefault {
         executor   <- makeExecutor(demoSteps)
         givenStep   = GherkinStep(StepType.GivenStep, "a cart with id C1 and 2 items", None, None)
         whenStep    = GherkinStep(StepType.WhenStep, "an order is placed", None, None)
-        cartResult <- executor.executeStep(givenStep)
+        cartResult <- executor.executeStep("test-feature", "test-scenario", givenStep)
         cart        = cartResult.output.asInstanceOf[Cart]
-        result     <- executor.executeStep(whenStep)
+        result     <- executor.executeStep("test-feature", "test-scenario", whenStep)
         order       = result.output.asInstanceOf[Order]
         _          <- Assertions.assertRightEquals(order.result, cart, "Order result cart mismatch")
       } yield assertTrue(true)
@@ -160,7 +160,7 @@ object AssertionTest extends ZIOSpecDefault {
       for {
         executor <- makeExecutor(errorSteps)
         step      = GherkinStep(StepType.WhenStep, "an order fails", None, None)
-        result   <- executor.executeStep(step)
+        result   <- executor.executeStep("test-feature", "test-scenario", step)
         order     = result.output.asInstanceOf[Order]
         _        <- Assertions.assertLeft(order.result, "Order result should be Left")
       } yield assertTrue(true)
@@ -185,7 +185,7 @@ object AssertionTest extends ZIOSpecDefault {
       for {
         executor <- makeExecutor(errorSteps)
         step      = GherkinStep(StepType.WhenStep, "an order fails", None, None)
-        result   <- executor.executeStep(step)
+        result   <- executor.executeStep("test-feature", "test-scenario", step)
         order     = result.output.asInstanceOf[Order]
         _        <- Assertions.assertLeftEquals(order.result, "Order failed", "Order error message mismatch")
       } yield assertTrue(true)
@@ -194,7 +194,7 @@ object AssertionTest extends ZIOSpecDefault {
       for {
         executor <- makeExecutor(demoSteps)
         step      = GherkinStep(StepType.GivenStep, "a cart with id C1 and 2 items", None, None)
-        result   <- executor.executeStep(step)
+        result   <- executor.executeStep("test-feature", "test-scenario", step)
         cart      = result.output.asInstanceOf[Cart]
         _        <- Assertions.assertContainsAll(cart.items, Map("P1" -> 2), "Cart items exact match failed")
       } yield assertTrue(true)
@@ -203,7 +203,7 @@ object AssertionTest extends ZIOSpecDefault {
       for {
         executor <- makeExecutor(demoSteps)
         step      = GherkinStep(StepType.GivenStep, "a cart with id C1 and 2 items", None, None)
-        result   <- executor.executeStep(step)
+        result   <- executor.executeStep("test-feature", "test-scenario", step)
         cart      = result.output.asInstanceOf[Cart]
         _        <- Assertions.assertContainsSubset(cart.items.keys, Set("P1"), "Cart items subset failed")
       } yield assertTrue(true)
@@ -212,7 +212,7 @@ object AssertionTest extends ZIOSpecDefault {
       for {
         executor <- makeExecutor(demoSteps)
         step      = GherkinStep(StepType.GivenStep, "a cart with id C1 and 2 items", None, None)
-        result   <- executor.executeStep(step)
+        result   <- executor.executeStep("test-feature", "test-scenario", step)
         cart      = result.output.asInstanceOf[Cart]
         _ <-
           Assertions.assertHasField(cart, "items", _.items, Assertion.hasSize(equalTo(1)), "Cart item count mismatch")
@@ -222,7 +222,7 @@ object AssertionTest extends ZIOSpecDefault {
       for {
         executor <- makeExecutor(demoSteps)
         step      = GherkinStep(StepType.GivenStep, "a cart with id C1 and 2 items", None, None)
-        result   <- executor.executeStep(step)
+        result   <- executor.executeStep("test-feature", "test-scenario", step)
         cart      = result.output.asInstanceOf[Cart]
         _        <- Assertions.assertFieldEquals(cart, "id", _.id, "C1", "Cart ID field mismatch")
       } yield assertTrue(true)
@@ -232,8 +232,8 @@ object AssertionTest extends ZIOSpecDefault {
         executor   <- makeExecutor(demoSteps)
         givenStep   = GherkinStep(StepType.GivenStep, "a cart with id C1 and 2 items", None, None)
         whenStep    = GherkinStep(StepType.WhenStep, "a discount of 5.0 is applied", None, None)
-        _          <- executor.executeStep(givenStep)
-        result     <- executor.executeStep(whenStep)
+        _          <- executor.executeStep("test-feature", "test-scenario", givenStep)
+        result     <- executor.executeStep("test-feature", "test-scenario", whenStep)
         updatedCart = result.output.asInstanceOf[Cart]
         _ <-
           Assertions.assertNested(updatedCart, "discount", _.discount, Assertion.isSome, "Discount presence mismatch")
@@ -244,8 +244,8 @@ object AssertionTest extends ZIOSpecDefault {
         executor   <- makeExecutor(demoSteps)
         givenStep   = GherkinStep(StepType.GivenStep, "a cart with id C1 and 2 items", None, None)
         whenStep    = GherkinStep(StepType.WhenStep, "a discount of 5.0 is applied", None, None)
-        _          <- executor.executeStep(givenStep)
-        result     <- executor.executeStep(whenStep)
+        _          <- executor.executeStep("test-feature", "test-scenario", givenStep)
+        result     <- executor.executeStep("test-feature", "test-scenario", whenStep)
         updatedCart = result.output.asInstanceOf[Cart]
         _          <- Assertions.assertNestedEquals(updatedCart, "discount", _.discount, Some(5.0), "Discount value mismatch")
       } yield assertTrue(true)

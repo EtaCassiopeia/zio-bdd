@@ -1,7 +1,14 @@
 package zio.bdd.core
 
 import sbt.testing.*
-import zio.bdd.core.report.{ConsoleReporter, JUnitXMLFormatter, JUnitXMLReporter, PrettyReporter, Reporter}
+import zio.bdd.core.report.{
+  ConsoleReporter,
+  JUnitReporter,
+  JUnitReporterConfig,
+  JUnitXMLFormatter,
+  PrettyReporter,
+  Reporter
+}
 import zio.bdd.gherkin.{Feature, GherkinParser}
 import zio.{Ref, Runtime, Unsafe, ZIO, ZLayer}
 
@@ -180,7 +187,10 @@ class ZIOBDDTask(
           runtime.unsafe
             .run(
               ZIO.scoped(
-                JUnitXMLReporter.live(JUnitXMLFormatter.Format.JUnit5, defaultTestResultDir).build.map(_.get[Reporter])
+                JUnitReporter
+                  .live(JUnitReporterConfig(outputDir = defaultTestResultDir, format = JUnitXMLFormatter.Format.JUnit5))
+                  .build
+                  .map(_.get[Reporter])
               )
             )
             .getOrThrowFiberFailure()
@@ -198,7 +208,7 @@ class ZIOBDDTask(
           parallelism = a.parallelism(),
           includeTags = a.includeTags().toSet,
           excludeTags = a.excludeTags().toSet,
-          logLevel = parseLogLevelFromAnnotation(a.logLevel()) // Parse from annotation
+          logLevel = parseLogLevelFromAnnotation(a.logLevel())
         )
       )
       .getOrElse(BDDTestConfig())
@@ -209,7 +219,7 @@ class ZIOBDDTask(
       parallelism = parseParallelism(args),
       includeTags = parseIncludeTags(args),
       excludeTags = parseExcludeTags(args),
-      logLevel = parseLogLevel(args, loggers) // Parse from CLI
+      logLevel = parseLogLevel(args, loggers)
     )
 
     BDDTestConfig(
@@ -282,8 +292,10 @@ class ZIOBDDTask(
             runtime.unsafe
               .run(
                 ZIO.scoped(
-                  JUnitXMLReporter
-                    .live(JUnitXMLFormatter.Format.JUnit5, defaultTestResultDir)
+                  JUnitReporter
+                    .live(
+                      JUnitReporterConfig(outputDir = defaultTestResultDir, format = JUnitXMLFormatter.Format.JUnit5)
+                    )
                     .build
                     .map(_.get[Reporter])
                 )

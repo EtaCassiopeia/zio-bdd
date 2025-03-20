@@ -45,5 +45,6 @@ case class StepResult(
 case class StepRecord(
   stepType: StepType, // The type of step (Given, When, Then, And)
   stepText: String,   // The step's text
-  output: Any         // The output produced by the step
+  output: Any,        // The output produced by the step
+  scenarioId: String  //
 )

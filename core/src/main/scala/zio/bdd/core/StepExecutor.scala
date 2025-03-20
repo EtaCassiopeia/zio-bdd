@@ -59,7 +59,10 @@ case class StepExecutor[R](
                       )
         _ <- reporter.endStep(gherkinStep.pattern, finalResult)
         // Record the step's result in the stack for use by subsequent steps
-        _            <- OutputStack.push(stackRef, StepRecord(gherkinStep.stepType, gherkinStep.pattern, finalResult.output))
+        _ <- OutputStack.push(
+               stackRef,
+               StepRecord(gherkinStep.stepType, gherkinStep.pattern, finalResult.output, scenarioId)
+             )
         updatedStack <- stackRef.get
 //        _ <- logCollector.log(
 //               scenarioId,
@@ -140,10 +143,7 @@ case class StepExecutor[R](
     currentStepType: StepType,
     iTag: Tag[I]
   )(implicit trace: Trace): ZIO[Any, Throwable, I] =
-    stackRef.get.flatMap { stack =>
-      val priorOutput = stack.headOption.map(_.output).getOrElse(())
-      OutputStack.combineTyped(priorOutput, params)(iTag)
-    }
+    OutputStack.getPriorOutput(stackRef, scenarioId, params)(iTag)
 
   // Runs the step's function and constructs the result, handling success and failure
   private def executeStepFunction[I <: Matchable, O](
