@@ -16,12 +16,15 @@
 
 - [X] Gherkin parser
   - [X] Feature: Defines a feature with a name and optional tags
+    - [ ] Language: Supports multiple languages for feature files
+    - [ ] Description: Provides a description for the feature
   - [X] Background: Specifies steps that run before each scenario in a feature
   - [X] Scenario: Defines a single test scenario with steps
   - [X] Scenario Outline: Supports parameterized scenarios with placeholders
   - [X] Examples: Provides data tables for Scenario Outlines
   - [X] Step: Supports `Given`, `When`, `Then`, and `And` keywords with text patterns
   - [X] Tags: Allows `@tag` annotations for filtering and test aspects (e.g., `@flaky`, `@retry(n)`)
+  - [ ] Data Table: Supports tabular data for steps
   - [ ] Rule: Groups scenarios under a rule
   - [ ] Doc String: Multi-line string arguments for steps
 - [X] Step definition and macro expansion
