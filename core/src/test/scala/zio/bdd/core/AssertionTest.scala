@@ -29,28 +29,20 @@ object AssertionTest extends ZIOSpecDefault {
     }
 
   // Define a simple step definition for testing assertions
-  private val demoSteps = new ZIOSteps[Any] {
-    type Env = Any
-    private var steps: List[StepDef[? <: Matchable, ?]]     = Nil
-    override def getSteps: List[StepDef[? <: Matchable, ?]] = steps.reverse
-    override protected def register[I <: Matchable: Tag, O: Tag](
-      stepType: StepType,
-      pattern: String,
-      fn: Step[I, O]
-    ): Unit =
-      steps = StepDef(stepType, pattern, fn) :: steps
-    override def environment: ZLayer[Any, Nothing, Any] = ZLayer.empty
-
-    Given("a cart with id {string} and {int} items") { case (id: String, itemCount: Int) =>
+  private val demoSteps = new ZIOSteps.Default[Any] {
+    Given("a cart with id {string} and {int} items") { (id: String, itemCount: Int) =>
       ZIO.succeed(Cart(id, Map("P1" -> itemCount), None))
     }
-    When("a discount of {double} is applied") { case (cart: Cart, discount: Double) =>
+
+    When("a discount of {double} is applied") { (cart: Cart, discount: Double) =>
       ZIO.succeed(cart.copy(discount = Some(discount)))
     }
+
     When("an order is placed") { (cart: Cart) =>
       ZIO.succeed(Order(cart.items.getOrElse("P1", 0) * 10.0, Right(cart)))
     }
-    Then("an error occurs") { _ =>
+
+    Then("an error occurs") { () =>
       ZIO.fail(new RuntimeException("Simulated error"))
     }
   }
@@ -141,19 +133,8 @@ object AssertionTest extends ZIOSpecDefault {
       } yield assertTrue(true)
     },
     test("assertLeft checks for error case") {
-      val errorSteps = new ZIOSteps[Any] {
-        type Env = Any
-        private var steps: List[StepDef[? <: Matchable, ?]]     = Nil
-        override def getSteps: List[StepDef[? <: Matchable, ?]] = steps.reverse
-        override protected def register[I <: Matchable: Tag, O: Tag](
-          stepType: StepType,
-          pattern: String,
-          fn: Step[I, O]
-        ): Unit =
-          steps = StepDef(stepType, pattern, fn) :: steps
-        override def environment: ZLayer[Any, Nothing, Any] = ZLayer.empty
-
-        When("an order fails") { (_: Any) =>
+      val errorSteps = new ZIOSteps.Default[Any] {
+        When("an order fails") { () =>
           ZIO.succeed(Order(0.0, Left("Order failed")))
         }
       }
@@ -166,19 +147,8 @@ object AssertionTest extends ZIOSpecDefault {
       } yield assertTrue(true)
     },
     test("assertLeftEquals checks error message") {
-      val errorSteps = new ZIOSteps[Any] {
-        type Env = Any
-        private var steps: List[StepDef[? <: Matchable, ?]]     = Nil
-        override def getSteps: List[StepDef[? <: Matchable, ?]] = steps.reverse
-        override protected def register[I <: Matchable: Tag, O: Tag](
-          stepType: StepType,
-          pattern: String,
-          fn: Step[I, O]
-        ): Unit =
-          steps = StepDef(stepType, pattern, fn) :: steps
-        override def environment: ZLayer[Any, Nothing, Any] = ZLayer.empty
-
-        When("an order fails") { (_: Any) =>
+      val errorSteps = new ZIOSteps.Default[Any] {
+        When("an order fails") { () =>
           ZIO.succeed(Order(0.0, Left("Order failed")))
         }
       }

@@ -3,7 +3,7 @@ package zio.bdd.core
 import zio.*
 import zio.bdd.core.Assertions.assertTrue
 
-object UserSteps extends ZIOSteps.Default[UserRepo & EmailService & LogCollector] {
+object UserSteps extends ZIOSteps.Default[UserRepo & EmailService] {
   case class User(name: String, email: String)
 
   Given("a user exists with name {name:String}") { (name: String) =>
@@ -29,13 +29,13 @@ object UserSteps extends ZIOSteps.Default[UserRepo & EmailService & LogCollector
     } yield ()
   }
 
-  override def beforeFeature: ZIO[UserRepo & EmailService & LogCollector, Throwable, Unit] =
+  override def beforeFeature: ZIO[UserRepo & EmailService, Throwable, Unit] =
     ZIO.logInfo("Preparing feature: setting up user system")
 
-  override def beforeScenario(scenarioId: String): ZIO[UserRepo & EmailService & LogCollector, Throwable, Unit] =
+  override def beforeScenario(scenarioId: String): ZIO[UserRepo & EmailService, Throwable, Unit] =
     ZIO.logInfo(s"Starting scenario with ID: $scenarioId")
 
-  override def beforeStep(scenarioId: String): ZIO[UserRepo & EmailService & LogCollector, Throwable, Unit] =
+  override def beforeStep(scenarioId: String): ZIO[UserRepo & EmailService, Throwable, Unit] =
     ZIO.logInfo(s"Before step in scenario $scenarioId")
 }
 

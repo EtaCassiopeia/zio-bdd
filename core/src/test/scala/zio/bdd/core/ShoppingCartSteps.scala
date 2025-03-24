@@ -6,16 +6,15 @@ import zio.bdd.core.Assertions.assertTrue
 object ShoppingCartSteps
     extends ZIOSteps.Default[ProductCatalog & ShoppingCart & OrderService & PaymentGateway & LogCollector] {
 
-  Given(
-    "a product {productId:String} exists with name {name:String} price {price:Float} and stock {stock:Int}"
-  ) { case (productId: String, name: String, price: Float, stock: Int) =>
-    for {
-      catalog <- ZIO.service[ProductCatalog]
-      _       <- catalog.updateProduct(productId, name, price.toDouble, stock)
-    } yield ScenarioContext(products = Map(productId -> Product(productId, name, price.toDouble, stock)))
+  Given("a product {productId:String} exists with name {name:String} price {price:Float} and stock {stock:Int}") {
+    (productId: String, name: String, price: Float, stock: Int) =>
+      for {
+        catalog <- ZIO.service[ProductCatalog]
+        _       <- catalog.updateProduct(productId, name, price.toDouble, stock)
+      } yield ScenarioContext(products = Map(productId -> Product(productId, name, price.toDouble, stock)))
   }
 
-  Given("an empty shopping cart exists") { _ =>
+  Given("an empty shopping cart exists") { (context: ScenarioContext) =>
     for {
       cartService <- ZIO.service[ShoppingCart]
       cart        <- cartService.createCart
@@ -23,7 +22,7 @@ object ShoppingCartSteps
   }
 
   When("the user adds {quantity:Int} of product {productId:String} to the cart") {
-    case (cart: Cart, quantity: Int, productId: String) =>
+    (cart: Cart, quantity: Int, productId: String) =>
       for {
         cartService <- ZIO.service[ShoppingCart]
         catalog     <- ZIO.service[ProductCatalog]
@@ -50,21 +49,24 @@ object ShoppingCartSteps
     } yield payment
   }
 
-  Then("the order total should be {total:Float}") {
-    case (cart: Cart, total: Float) =>
-      for {
-        catalog <- ZIO.service[ProductCatalog]
-        products <- ZIO
-                      .collectAll(cart.items.keys.map(id => catalog.getProduct(id).map(_.map(p => (id, p)))).toList)
-                      .map(_.flatten.toMap)
-        cartTotal = cart.total(products)
-        _        <- assertAlmostEqual(cartTotal, total.toDouble, s"Cart total $cartTotal != $total")
-      } yield ()
-    case (order: Order, total: Float) =>
-      assertAlmostEqual(order.total, total.toDouble, s"Order total ${order.total} != $total")
-    case (payment: Payment, total: Float) =>
-      val order = payment.order
-      assertAlmostEqual(order.total, total.toDouble, s"Order total ${order.total} != $total")
+  Then("the order total should be {total:Float}") { (cart: Cart, total: Float) =>
+    for {
+      catalog <- ZIO.service[ProductCatalog]
+      products <- ZIO
+                    .collectAll(cart.items.keys.map(id => catalog.getProduct(id).map(_.map(p => (id, p)))).toList)
+                    .map(_.flatten.toMap)
+      cartTotal = cart.total(products)
+      _        <- assertAlmostEqual(cartTotal, total.toDouble, s"Cart total $cartTotal != $total")
+    } yield ()
+  }
+
+  Then("the order total should be {total:Float}") { (order: Order, total: Float) =>
+    assertAlmostEqual(order.total, total.toDouble, s"Order total ${order.total} != $total")
+  }
+
+  Then("the order total should be {total:Float}") { (payment: Payment, total: Float) =>
+    val order = payment.order
+    assertAlmostEqual(order.total, total.toDouble, s"Order total ${order.total} != $total")
   }
 
   private def assertAlmostEqual(actual: Double, expected: Double, context: String) = {
@@ -84,7 +86,7 @@ object ShoppingCartSteps
 
   And(
     "the cart contains {quantity:Int} of product {productId:String}"
-  ) { case (context: ScenarioContext, quantity: Int, productId: String) =>
+  ) { (context: ScenarioContext, quantity: Int, productId: String) =>
     for {
       cartService <- ZIO.service[ShoppingCart]
       cart        <- ZIO.fromOption(context.cart).orElseFail(new Exception("No cart in context"))
