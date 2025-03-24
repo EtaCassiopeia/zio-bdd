@@ -1,89 +1,77 @@
 package zio.bdd.core
 
 import izumi.reflect.Tag
-import zio.*
 import zio.bdd.gherkin.StepType
-import scala.quoted.*
+import zio.{ZIO, ZLayer}
 
-trait ZIOSteps[R] extends Hooks[R] {
-  type Step[I <: Matchable, O] = I => ZIO[R, Throwable, O]
+trait ZIOSteps[R] extends Hooks[R] with GeneratedStepMethods[R] {
+  type Step[I, O] = I => ZIO[R, Throwable, O]
 
-  final case class StepDef[I <: Matchable, O](
-    stepType: StepType,
-    pattern: String,
-    fn: Step[I, O]
-  )(implicit val iTag: Tag[I], val oTag: Tag[O])
+  def getSteps: List[StepDef[R, ?, ?]]
 
-  def getSteps: List[StepDef[? <: Matchable, ?]]
-
-  protected def register[I <: Matchable: Tag, O: Tag](stepType: StepType, pattern: String, fn: Step[I, O]): Unit
+  protected def register[I: Tag, O: Tag](stepType: StepType, pattern: String, fn: Step[I, O]): Unit
 
   def environment: ZLayer[Any, Any, R]
-
-  inline def Given[I <: Matchable: Tag, O: Tag](pattern: String)(fn: Step[I, O]): Unit =
-    ${ ZIOSteps.givenImpl[R, I, O]('pattern, 'fn, 'this) }
-
-  inline def When[I <: Matchable: Tag, O: Tag](pattern: String)(fn: Step[I, O]): Unit =
-    ${ ZIOSteps.whenImpl[R, I, O]('pattern, 'fn, 'this) }
-
-  inline def Then[I <: Matchable: Tag, O: Tag](pattern: String)(fn: Step[I, O]): Unit =
-    ${ ZIOSteps.thenImpl[R, I, O]('pattern, 'fn, 'this) }
-
-  inline def And[I <: Matchable: Tag, O: Tag](pattern: String)(fn: Step[I, O]): Unit =
-    ${ ZIOSteps.andImpl[R, I, O]('pattern, 'fn, 'this) }
 }
+
+case class StepDef[R, I, O](
+  stepType: StepType,
+  pattern: String,
+  fn: I => ZIO[R, Throwable, O],
+  iTag: Tag[I],
+  oTag: Tag[O],
+  paramTags: List[Tag[Any]]
+)
 
 object ZIOSteps {
   trait Default[R] extends ZIOSteps[R] {
-    private var steps: List[StepDef[? <: Matchable, ?]] = Nil
+    private var steps: List[StepDef[R, ?, ?]] = Nil
 
-    override def getSteps: List[StepDef[? <: Matchable, ?]] = steps.reverse
+    override def getSteps: List[StepDef[R, ?, ?]] = steps.reverse
 
-    override protected def register[I <: Matchable: Tag, O: Tag](
+    override protected def register[I: Tag, O: Tag](
       stepType: StepType,
       pattern: String,
       fn: Step[I, O]
-    ): Unit =
-      steps = StepDef(stepType, pattern, fn) :: steps
+    ): Unit = {
+      val iTag      = implicitly[Tag[I]]
+      val oTag      = implicitly[Tag[O]]
+      val paramTags = extractParamTags(pattern)
+      steps = StepDef[R, I, O](stepType, pattern, fn, iTag, oTag, paramTags) :: steps
+    }
+
+    private def extractParamTags(pattern: String): List[Tag[Any]] =
+      if (pattern.startsWith("^") && pattern.endsWith("$")) {
+        // Regular expression pattern
+        val placeholderPattern = """\((?:[^()]+|\((?:[^()]+|\([^()]*\))*\))*\)""".r
+        val placeholders       = placeholderPattern.findAllIn(pattern).toList
+        placeholders.map(_ => Tag[String].asInstanceOf[Tag[Any]])
+      } else {
+        // Gherkin-style pattern
+        val tokens             = pattern.split("\\s+")
+        val placeholderPattern = """\{[^:]+(?::[^}]+)?\}""".r
+        val placeholders       = tokens.filter(token => placeholderPattern.pattern.matcher(token).matches()).toList
+
+        val typeMap: Map[String, Tag[_]] = Map(
+          "int"     -> Tag[Int],
+          "string"  -> Tag[String],
+          "float"   -> Tag[Float],
+          "double"  -> Tag[Double],
+          "boolean" -> Tag[Boolean]
+        )
+
+        placeholders.map { placeholder =>
+          val placeholderType = placeholder.stripPrefix("{").stripSuffix("}").split(":").last.toLowerCase
+          typeMap.getOrElse(placeholderType, Tag[String]).asInstanceOf[Tag[Any]]
+        }
+      }
 
     override def environment: ZLayer[Any, Any, R] = ZLayer.empty.asInstanceOf[ZLayer[Any, Any, R]]
   }
 
-  def givenImpl[R: Type, I <: Matchable: Type, O: Type](
-    pattern: Expr[String],
-    fn: Expr[I => ZIO[R, Throwable, O]],
-    self: Expr[ZIOSteps[R]]
-  )(using Quotes): Expr[Unit] = '{
-    $self.register(StepType.GivenStep, $pattern, $fn)
-  }
-
-  def whenImpl[R: Type, I <: Matchable: Type, O: Type](
-    pattern: Expr[String],
-    fn: Expr[I => ZIO[R, Throwable, O]],
-    self: Expr[ZIOSteps[R]]
-  )(using Quotes): Expr[Unit] = '{
-    $self.register(StepType.WhenStep, $pattern, $fn)
-  }
-
-  def thenImpl[R: Type, I <: Matchable: Type, O: Type](
-    pattern: Expr[String],
-    fn: Expr[I => ZIO[R, Throwable, O]],
-    self: Expr[ZIOSteps[R]]
-  )(using Quotes): Expr[Unit] = '{
-    $self.register(StepType.ThenStep, $pattern, $fn)
-  }
-
-  def andImpl[R: Type, I <: Matchable: Type, O: Type](
-    pattern: Expr[String],
-    fn: Expr[I => ZIO[R, Throwable, O]],
-    self: Expr[ZIOSteps[R]]
-  )(using Quotes): Expr[Unit] = '{
-    $self.register(StepType.AndStep, $pattern, $fn)
-  }
-
   def empty[R]: ZIOSteps[R] = new ZIOSteps[R] {
-    override def getSteps: List[StepDef[? <: Matchable, ?]] = Nil
-    override protected def register[I <: Matchable: Tag, O: Tag](
+    override def getSteps: List[StepDef[R, ?, ?]] = Nil
+    override protected def register[I: Tag, O: Tag](
       stepType: StepType,
       pattern: String,
       fn: Step[I, O]

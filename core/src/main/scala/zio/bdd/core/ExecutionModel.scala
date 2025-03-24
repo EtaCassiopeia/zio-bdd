@@ -1,9 +1,9 @@
 package zio.bdd.core
 
 import zio.bdd.gherkin.StepType
-import java.time.Instant
-import zio.{Duration, Trace}
 import zio.*
+
+import java.time.Instant
 
 sealed trait TestError {
   def message: String
@@ -12,11 +12,8 @@ sealed trait TestError {
 }
 
 object TestError {
-  case class GenericError(message: String, cause: Option[Throwable], trace: Option[Trace]) extends TestError
-  case class TypeMismatch(expected: String, actual: String, input: Any, cause: Option[Throwable], trace: Option[Trace])
-      extends TestError {
-    def message: String = s"Type mismatch: expected $expected, got $actual for input $input"
-  }
+  case class GenericError(message: String, cause: Option[Throwable], trace: Option[Trace])             extends TestError
+  case class TypeMismatch(message: String, input: Any, cause: Option[Throwable], trace: Option[Trace]) extends TestError
   case class MissingStep(step: String, cause: Option[Throwable], trace: Option[Trace]) extends TestError {
     def message: String = s"No step definition matches: $step"
   }
@@ -43,8 +40,9 @@ case class StepResult(
 
 // Represents a recorded step in the output stack
 case class StepRecord(
-  stepType: StepType, // The type of step (Given, When, Then, And)
-  stepText: String,   // The step's text
-  output: Any,        // The output produced by the step
-  scenarioId: String  //  Scenario ID used to look up the steps of a scenario
+  stepType: StepType,     // The type of step (Given, When, Then, And)
+  stepText: String,       // The step's text
+  output: Any,            // The output produced by the step
+  scenarioId: String,     //  Scenario ID used to look up the steps of a scenario
+  outputTag: LightTypeTag // To store the output type tag
 )

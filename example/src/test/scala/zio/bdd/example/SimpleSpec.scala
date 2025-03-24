@@ -13,7 +13,7 @@ import zio.bdd.example.Config
   logLevel = "debug"
 )
 object SimpleSpec extends ZIOSteps.Default[GreetingService] {
-  Given("a user named {string}") { name =>
+  Given("a user named {string}") { (name: String) =>
     ZIO.succeed(name)
   }
 
@@ -21,7 +21,7 @@ object SimpleSpec extends ZIOSteps.Default[GreetingService] {
     ZIO.logInfo("Greeting user") *> ZIO.serviceWithZIO[GreetingService](_.greet(name))
   }
 
-  Then("the greeting should be {string}") { case (actualGreeting: String, expectedGreeting: String) =>
+  Then("the greeting should be {string}") { (actualGreeting: String, expectedGreeting: String) =>
     ZIO.succeed(assertTrue(actualGreeting == expectedGreeting, s"Expected '$expectedGreeting', but got '$actualGreeting'"))
   }
 

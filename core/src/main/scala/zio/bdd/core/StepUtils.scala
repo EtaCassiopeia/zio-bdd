@@ -1,65 +1,70 @@
 package zio.bdd.core
 
 import scala.util.matching.Regex
+import izumi.reflect.Tag
 
 object StepUtils {
-  def convertToRegex(pattern: String): Regex = {
-    val baseRegex = if (pattern.contains("{") || pattern.contains("}")) {
-      pattern
+  def convertToRegex(pattern: String): Regex =
+    if (pattern.startsWith("^") && pattern.endsWith("$")) {
+      // Regular expression pattern, use as-is
+      pattern.r
+    } else {
+      // Gherkin-style pattern, wrap with ^ and $ and convert placeholders
+      val baseRegex = pattern
         .replace("{string}", "(.+)")
         .replace("{int}", "(-?\\d+)")
         .replace("{float}", "(-?\\d+\\.\\d+)")
         .replace("{double}", "(-?\\d+\\.\\d+)")
         .replace("{boolean}", "(true|false)")
         .replaceAll("\\{[^:]+:[^}]+\\}", "(.+)")
+      s"^$baseRegex$$".r
+    }
+
+  def extractParams(pattern: Regex, line: String, patternString: String): (List[Any], List[Tag[Any]]) = {
+    val trimmedLine = line.trim
+    val matchResult = pattern.findFirstMatchIn(trimmedLine)
+    val subgroups   = matchResult.map(_.subgroups).getOrElse(Nil)
+
+    val (placeholders, isRegexPattern) = if (patternString.startsWith("^") && patternString.endsWith("$")) {
+      // Regular expression pattern, extract capturing groups
+      val placeholderPattern = """\((?:[^()]+|\((?:[^()]+|\([^()]*\))*\))*\)""".r
+      (placeholderPattern.findAllIn(patternString).toList, true)
     } else {
-      pattern
+      // Gherkin-style pattern, extract {} placeholders
+      val tokens             = patternString.split("\\s+")
+      val placeholderPattern = """\{[^:]+(?::[^}]+)?\}""".r
+      val placeholders       = tokens.filter(token => placeholderPattern.pattern.matcher(token).matches()).toList
+      (placeholders, false)
     }
 
-    // Add anchors only if not already present
-    val startsWithAnchor = baseRegex.startsWith("^")
-    val endsWithAnchor   = baseRegex.endsWith("$")
-    val anchoredPattern = (startsWithAnchor, endsWithAnchor) match {
-      case (true, true)   => baseRegex
-      case (true, false)  => s"$baseRegex$$"
-      case (false, true)  => s"^$baseRegex"
-      case (false, false) => s"^$baseRegex$$"
-    }
-
-    anchoredPattern.r
-  }
-
-  def extractParams(pattern: Regex, line: String, patternString: String): List[Any] = {
-    val trimmedLine  = line.trim
-    val matchResult  = pattern.findFirstMatchIn(trimmedLine)
-    val subgroups    = matchResult.map(_.subgroups).getOrElse(Nil)
-    val placeholders = patternString.split("\\s+").filter(_.matches("\\{[^:]+(:[^}]+)?\\}")).toList
-
-    if (subgroups.isEmpty) {
-      List()
-    } else if (placeholders.isEmpty) {
-      subgroups
-    } else if (subgroups.length != placeholders.length) {
-      List()
+    if (subgroups.isEmpty || placeholders.isEmpty || subgroups.length != placeholders.length) {
+      (List(), List())
     } else {
-      val params = subgroups.zip(placeholders).map { case (param, placeholder) =>
-        val parsed = parseParam(param, placeholder)
-        parsed
-      }
-      params
-    }
-  }
+      val typeMap: Map[String, (String => Any, Tag[_])] = Map(
+        "int"     -> ((s: String) => s.toInt, Tag[Int]),
+        "string"  -> ((s: String) => s.trim, Tag[String]),
+        "float"   -> ((s: String) => s.toFloat, Tag[Float]),
+        "double"  -> ((s: String) => s.toDouble, Tag[Double]),
+        "boolean" -> ((s: String) => s.toBoolean, Tag[Boolean])
+      )
 
-  def parseParam(param: String, placeholder: String): Any = {
-    val parts           = placeholder.stripPrefix("{").stripSuffix("}").split(":")
-    val placeholderType = if (parts.length > 1) parts(1).toLowerCase else parts(0).toLowerCase
-    placeholderType match {
-      case "int"     => param.toInt
-      case "float"   => param.toFloat
-      case "double"  => param.toDouble
-      case "boolean" => param.toBoolean
-      case "string"  => param.trim
-      case _         => param.trim
+      val (values, tags) = subgroups
+        .zip(placeholders)
+        .map { case (param, placeholder) =>
+          if (isRegexPattern) {
+            // Regex pattern: treat capturing groups as String
+            (param, Tag[String].asInstanceOf[Tag[Any]])
+          } else {
+            // Gherkin-style: parse type from placeholder
+            val placeholderType = placeholder.stripPrefix("{").stripSuffix("}").split(":").last.toLowerCase
+            val (parser, tag)   = typeMap.getOrElse(placeholderType, typeMap("string"))
+            val parsedValue     = parser(param)
+            (parsedValue, tag.asInstanceOf[Tag[Any]])
+          }
+        }
+        .unzip
+
+      (values, tags)
     }
   }
 }
