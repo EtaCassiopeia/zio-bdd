@@ -94,8 +94,12 @@ object StepExecutorTest extends ZIOSpecDefault {
           ("^the account (is|is not) active$", "the account is not active", List("is not")),
           ("^user (\\w+) logged in$", "user alice logged in", List("alice")),
           ("^added (\\d+) items$", "added 42 items", List("42")),
-          ("^price is (\\d+\\.\\d+)$", "price is 12.34", List("12.34"))
-          // Add more test cases as needed
+          ("^price is (\\d+\\.\\d+)$", "price is 12.34", List("12.34")),
+          ("^enabled is (true|false)$", "enabled is true", List("true")),
+          ("^name is (.+)$", "name is John Doe", List("John Doe")),
+          ("^value is (-?\\d+\\.\\d+)$", "value is 1.23", List("1.23")),
+          ("^plain text$", "plain text", List.empty[Any]),
+          ("^the user (\\w+) (is|is not) active$", "the user alice is active", List("alice", "is"))
         )
         val results = testCases.zipWithIndex.map { case ((patternString, line, expected), testIdx) =>
           val regex       = StepUtils.convertToRegex(patternString)
