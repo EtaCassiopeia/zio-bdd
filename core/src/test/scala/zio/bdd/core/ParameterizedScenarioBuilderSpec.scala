@@ -12,7 +12,7 @@ object ParameterizedScenarioBuilderSpec extends ZIOSpecDefault {
     pattern: String,
     file: Option[String] = Some("unknown.feature"),
     line: Option[Int] = None
-  ): GherkinStep = GherkinStep(stepType, pattern, file, line)
+  ): GherkinStep = GherkinStep(stepType, pattern, file = file, line = line)
 
   override def spec: Spec[Any, ParameterizedScenarioBuilder.BuildError] =
     suite("ParameterizedScenarioBuilder")(

@@ -32,8 +32,17 @@ enum StepType {
   case AndStep
 }
 
-case class Step(stepType: StepType, pattern: String, file: Option[String] = None, line: Option[Int] = None) {
+case class DataTableRow(cells: List[String])
 
+case class DataTable(headers: List[String], rows: List[DataTableRow])
+
+case class Step(
+  stepType: StepType,
+  pattern: String,
+  dataTable: Option[DataTable] = None,
+  file: Option[String] = None,
+  line: Option[Int] = None
+) {
   def id: String = file.zip(line).map { case (f, l) => s"$f:$l" }.getOrElse("unknown")
 
   override def toString: String =
@@ -82,16 +91,33 @@ object GherkinParser {
   def background(ctx: ParseContext)(using P[?]): P[List[Step]] =
     P("Background" ~ ":" ~/ ws ~ step(ctx).rep).map(_.toList)
 
+  // DataTable parser: captures a table with headers and rows
+  def dataTableParser(using P[?]): P[DataTable] = {
+    import NoWhitespace._
+    def cell: P[String] = P(CharsWhile(c => !"|\n".contains(c)).!).map(_.trim)
+
+    def row: P[DataTableRow] = P(CharsWhile(_.isWhitespace).? ~ "|" ~ cell.rep(1, sep = "|") ~ "|" ~ "\n").map {
+      cells => DataTableRow(cells.toList)
+    }
+
+    P(row.rep(1)).map { rows =>
+      val headerRow = rows.head
+      val dataRows  = rows.tail
+      DataTable(headerRow.cells, dataRows.toList)
+    }
+  }
+
   // Step parser: captures step type as StepType and pattern separately
   def step(ctx: ParseContext)(using P[?]): P[Step] =
-    P(Index ~ ("Given" | "When" | "Then" | "And").! ~ ":".? ~/ text).map { case (idx, stepTypeStr, pattern) =>
-      val stepType = stepTypeStr match {
-        case "Given" => StepType.GivenStep
-        case "When"  => StepType.WhenStep
-        case "Then"  => StepType.ThenStep
-        case "And"   => StepType.AndStep
-      }
-      Step(stepType, pattern.trim, Some(ctx.file), Some(ctx.lineAt(idx)))
+    P(Index ~ ("Given" | "When" | "Then" | "And").! ~ ":".? ~/ text ~ dataTableParser.?).map {
+      case (idx, stepTypeStr, pattern, dataTableOpt) =>
+        val stepType = stepTypeStr match {
+          case "Given" => StepType.GivenStep
+          case "When"  => StepType.WhenStep
+          case "Then"  => StepType.ThenStep
+          case "And"   => StepType.AndStep
+        }
+        Step(stepType, pattern.trim, dataTableOpt, Some(ctx.file), Some(ctx.lineAt(idx)))
     }
 
   // Examples parser: parses the Examples section with header and data rows
