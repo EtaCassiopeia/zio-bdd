@@ -2,6 +2,7 @@ package zio.bdd.core
 
 import zio.test._
 import zio.test.Assertion._
+import izumi.reflect.Tag
 import zio.Chunk
 import zio.bdd.gherkin.{DataTable, DataTableRow}
 
@@ -79,6 +80,37 @@ object DataTableMapperSpec extends ZIOSpecDefault {
           val result = mapper.map(dt)
 
           assertTrue(result == Right(Chunk.empty[Person]))
+        },
+        test("should infer List[Person] type from Tag and map DataTable to Chunk[Person]") {
+          val dt = DataTable(
+            headers = List("name", "age"),
+            rows = List(
+              DataTableRow(List("Alice", "20")),
+              DataTableRow(List("Bob", "30"))
+            )
+          )
+
+          val listPersonTag: Tag[List[Person]] = Tag[List[Person]]
+          val mapper                           = DataTableMapper.mapperForListElement(listPersonTag)
+          val result                           = mapper.map(dt)
+
+          val expected = Right(Chunk(Person("Alice", 20), Person("Bob", 30)))
+          assertTrue(result == expected)
+        },
+        test("should map DataTable to List[Person]") {
+          val dt = DataTable(
+            headers = List("name", "age"),
+            rows = List(
+              DataTableRow(List("Alice", "20")),
+              DataTableRow(List("Bob", "30"))
+            )
+          )
+
+          val listPersonTag: Tag[List[Person]] = Tag[List[Person]]
+          val result                           = DataTableUtils.mapDataTableToList(listPersonTag, dt)
+
+          val expected = Right(List(Person("Alice", 20), Person("Bob", 30)))
+          assertTrue(result == expected)
         }
       ),
       suite("additional flat case class scenarios")(

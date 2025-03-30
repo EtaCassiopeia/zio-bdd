@@ -22,8 +22,7 @@ object StepGeneratorPlugin extends AutoPlugin {
              |import zio.ZIO
              |import zio.bdd.gherkin.StepType
              |
-             |trait GeneratedStepMethods[R] {
-             |  protected def register[I: Tag, O: Tag](stepType: StepType, pattern: String, fn: I => ZIO[R, Throwable, O]): Unit
+             |trait GeneratedStepMethods[R] { self: ZIOSteps[R] =>
              |
              |$content
              |}

@@ -1,7 +1,7 @@
 package zio.bdd.core
 
 import izumi.reflect.Tag
-import zio.bdd.gherkin.StepType
+import zio.bdd.gherkin.{DataTable, StepType}
 import zio.{ZIO, ZLayer}
 
 trait ZIOSteps[R] extends Hooks[R] with GeneratedStepMethods[R] {
