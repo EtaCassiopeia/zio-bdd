@@ -1,7 +1,7 @@
 package zio.bdd.example
 
 import zio.*
-import zio.bdd.core.Assertions.assertTrue
+import .assertTrue
 import zio.bdd.core.{Suite, ZIOSteps}
 import zio.bdd.example.Config
 
