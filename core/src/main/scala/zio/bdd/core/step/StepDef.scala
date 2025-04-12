@@ -36,11 +36,6 @@ trait TypedExtractor[A] {
 }
 
 object TypedExtractor {
-//  implicit val string: TypedExtractor[String] = new TypedExtractor[String] {
-//    def extract(input: StepInput, groups: List[String], groupIndex: Int): Either[String, (String, Int)] =
-//      groups.lift(groupIndex).map(s => (s.trim, groupIndex + 1)).toRight(s"Expected string at group $groupIndex")
-//    def regexPart: String = "(.*)"
-//  }
 
   implicit val string: TypedExtractor[String] = new TypedExtractor[String] {
     def extract(input: StepInput, groups: List[String], groupIndex: Int): Either[String, (String, Int)] =
@@ -242,7 +237,6 @@ class StepPatternBuilder(
   def /(literal: String): StepPatternBuilder =
     new StepPatternBuilder(
       segments :+ Left(literal),
-//      regexParts :+ java.util.regex.Pattern.quote(literal),
       regexParts :+ literal,
       extractors
     )
