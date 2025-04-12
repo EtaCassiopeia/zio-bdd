@@ -2,7 +2,7 @@ package zio.bdd.core.step
 
 import zio.*
 import zio.bdd.core.Assertions
-import zio.bdd.core.step.StepPatternBuilder.stringToStepPatternBuilder
+//import zio.bdd.core.step.StepPatternBuilder.stringToStepPatternBuilder
 import zio.bdd.gherkin.*
 import zio.schema.{DeriveSchema, Schema}
 import TypedExtractor.*

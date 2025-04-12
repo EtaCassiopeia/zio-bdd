@@ -6,6 +6,7 @@ import zio.bdd.core.Hooks
 import zio.bdd.gherkin.DataTable
 import zio.schema.{DynamicValue, Schema, StandardType}
 
+import java.util.regex.Pattern
 import scala.annotation.tailrec
 import scala.collection.immutable.ListMap
 import scala.collection.mutable
@@ -32,12 +33,12 @@ case class StepInput(text: String, table: Option[DataTable] = None)
 
 trait TypedExtractor[A] {
   def extract(input: StepInput, groups: List[String], groupIndex: Int): Either[String, (A, Int)]
-  def regexPart: String
+  def pattern: String
 }
 
 object TypedExtractor {
 
-  implicit val string: TypedExtractor[String] = new TypedExtractor[String] {
+  val string: TypedExtractor[String] = new TypedExtractor[String] {
     def extract(input: StepInput, groups: List[String], groupIndex: Int): Either[String, (String, Int)] =
       groups
         .lift(groupIndex)
@@ -52,40 +53,40 @@ object TypedExtractor {
         }
         .toRight(s"Expected string at group $groupIndex")
 
-    def regexPart: String = "(\".*\"|.*)" // Match quoted strings explicitly
+    def pattern: String = "(\".*\"|.*)"
   }
 
-  implicit val int: TypedExtractor[Int] = new TypedExtractor[Int] {
+  val int: TypedExtractor[Int] = new TypedExtractor[Int] {
     def extract(input: StepInput, groups: List[String], groupIndex: Int): Either[String, (Int, Int)] =
       groups
         .lift(groupIndex)
         .flatMap(s => scala.util.Try(s.toInt).toOption)
         .map(i => (i, groupIndex + 1))
         .toRight(s"Expected int at group $groupIndex")
-    def regexPart: String = "(\\d+)"
+    def pattern: String = "(\\d+)"
   }
 
-  implicit val double: TypedExtractor[Double] = new TypedExtractor[Double] {
+  val double: TypedExtractor[Double] = new TypedExtractor[Double] {
     def extract(input: StepInput, groups: List[String], groupIndex: Int): Either[String, (Double, Int)] =
       groups
         .lift(groupIndex)
         .flatMap(s => scala.util.Try(s.toDouble).toOption)
         .map(d => (d, groupIndex + 1))
         .toRight(s"Expected double at group $groupIndex")
-    def regexPart: String = "([-+]?[0-9]*\\.?[0-9]+)"
+    def pattern: String = "([-+]?[0-9]*\\.?[0-9]+)"
   }
 
-  implicit val long: TypedExtractor[Long] = new TypedExtractor[Long] {
+  val long: TypedExtractor[Long] = new TypedExtractor[Long] {
     def extract(input: StepInput, groups: List[String], groupIndex: Int): Either[String, (Long, Int)] =
       groups
         .lift(groupIndex)
         .flatMap(s => scala.util.Try(s.toLong).toOption)
         .map(l => (l, groupIndex + 1))
         .toRight(s"Expected long at group $groupIndex")
-    def regexPart: String = "(\\d+)"
+    def pattern: String = "(\\d+)"
   }
 
-  implicit def table[T](implicit schema: Schema[T]): TypedExtractor[List[T]] = TableExtractor(schema)
+  def table[T](implicit schema: Schema[T]): TypedExtractor[List[T]] = TableExtractor(schema)
 }
 
 case class TableExtractor[T](schema: Schema[T]) extends TypedExtractor[List[T]] {
@@ -159,125 +160,79 @@ case class TableExtractor[T](schema: Schema[T]) extends TypedExtractor[List[T]] 
     }
   }
 
-  def regexPart: String = ""
+  def pattern: String = ""
 }
 
-trait StepPattern[T] {
-  def regex: String
-  def segments: List[Either[String, TypedExtractor[_]]]
-  def extract(input: StepInput): Option[T]
-}
+sealed trait StepPart
+case class Literal(value: String)                     extends StepPart
+case class Extractor[T](extractor: TypedExtractor[T]) extends StepPart
 
-case class StepPattern0(regex: String, segments: List[Either[String, TypedExtractor[_]]]) extends StepPattern[Unit] {
-  def extract(input: StepInput): Option[Unit] =
-    if (regex.r.findFirstIn(input.text).isDefined) Some(()) else None
-}
+case class StepExpression[Out <: Tuple](parts: List[StepPart]) {
+  private def regex: String = parts.map {
+    case Literal(s)   => Pattern.quote(s)
+    case Extractor(e) => e.pattern
+  }.mkString
 
-case class StepPattern1[T](regex: String, segments: List[Either[String, TypedExtractor[_]]], e1: TypedExtractor[T])
-    extends StepPattern[T] {
-  def extract(input: StepInput): Option[T] = {
-    val matcher = regex.r.pattern.matcher(input.text)
+  def extract(input: StepInput): Option[Out] = {
+    val pattern = regex.r.pattern
+    val matcher = pattern.matcher(input.text)
     if (matcher.matches()) {
       val groups = (1 to matcher.groupCount()).map(matcher.group).toList
-      e1.extract(input, groups, 0).toOption.map(_._1)
-    } else None
+      extractValues(input, groups, 0, parts.collect { case Extractor(e) => e })
+    } else {
+      None
+    }
   }
+
+  private def extractValues(
+    input: StepInput,
+    groups: List[String],
+    index: Int,
+    extractors: List[TypedExtractor[_]]
+  ): Option[Out] =
+    extractors match {
+      case Nil => Some(EmptyTuple.asInstanceOf[Out])
+      case head :: tail =>
+        head.extract(input, groups, index) match {
+          case Right((value, nextIndex)) =>
+            extractValues(input, groups, nextIndex, tail).map { rest =>
+              (value *: rest).asInstanceOf[Out]
+            }
+          case Left(_) => None
+        }
+    }
 }
 
-case class StepPattern2[T1, T2](
-  regex: String,
-  segments: List[Either[String, TypedExtractor[_]]],
-  e1: TypedExtractor[T1],
-  e2: TypedExtractor[T2]
-) extends StepPattern[(T1, T2)] {
-  def extract(input: StepInput): Option[(T1, T2)] = {
-    val matcher = regex.r.pattern.matcher(input.text)
-    if (matcher.matches()) {
-      val groups = (1 to matcher.groupCount()).map(matcher.group).toList
-      for {
-        (a, idx1) <- e1.extract(input, groups, 0).toOption
-        (b, _)    <- e2.extract(input, groups, idx1).toOption
-      } yield (a, b)
-    } else None
-  }
-}
+extension [Out <: Tuple](se: StepExpression[Out])
+  def /(literal: String): StepExpression[Out] =
+    StepExpression(se.parts :+ Literal(literal))
+  def /[T](extractor: TypedExtractor[T]): StepExpression[Tuple.Concat[Out, Tuple1[T]]] =
+    StepExpression(se.parts :+ Extractor(extractor))
 
-case class StepPattern3[T1, T2, T3](
-  regex: String,
-  segments: List[Either[String, TypedExtractor[_]]],
-  e1: TypedExtractor[T1],
-  e2: TypedExtractor[T2],
-  e3: TypedExtractor[T3]
-) extends StepPattern[(T1, T2, T3)] {
-  def extract(input: StepInput): Option[(T1, T2, T3)] = {
-    val matcher = regex.r.pattern.matcher(input.text)
-    if (matcher.matches()) {
-      val groups = (1 to matcher.groupCount()).map(matcher.group).toList
-      for {
-        (a, idx1) <- e1.extract(input, groups, 0).toOption
-        (b, idx2) <- e2.extract(input, groups, idx1).toOption
-        (c, _)    <- e3.extract(input, groups, idx2).toOption
-      } yield (a, b, c)
-    } else None
-  }
-}
-
-class StepPatternBuilder(
-  val segments: List[Either[String, TypedExtractor[_]]] = Nil,
-  val regexParts: List[String] = Nil,
-  val extractors: List[TypedExtractor[_]] = Nil
-) {
-  def /[A](extractor: TypedExtractor[A]): StepPatternBuilder =
-    new StepPatternBuilder(
-      segments :+ Right(extractor),
-      regexParts :+ extractor.regexPart,
-      extractors :+ extractor
-    )
-
-  def /(literal: String): StepPatternBuilder =
-    new StepPatternBuilder(
-      segments :+ Left(literal),
-      regexParts :+ literal,
-      extractors
-    )
-
-  def build: (String, List[Either[String, TypedExtractor[_]]], List[TypedExtractor[_]]) =
-    (regexParts.mkString, segments, extractors)
-}
-
-object StepPatternBuilder {
-  implicit def stringToStepPatternBuilder(str: String): StepPatternBuilder =
-    new StepPatternBuilder(List(Left(str)), List(str), Nil)
-}
+implicit def stringToStepExpression(str: String): StepExpression[EmptyTuple] =
+  StepExpression(List(Literal(str)))
 
 trait StepDef[R, S] {
   def tryExecute(input: StepInput): Option[RIO[R with State[S], Unit]]
 }
 
-case class StepDefImpl[R, S, T](pattern: StepPattern[T], f: T => RIO[R with State[S], Unit]) extends StepDef[R, S] {
+case class StepDefImpl[R, S, Out <: Tuple](stepExpr: StepExpression[Out], f: Out => RIO[R with State[S], Unit])
+    extends StepDef[R, S] {
   def tryExecute(input: StepInput): Option[RIO[R with State[S], Unit]] =
-    pattern.extract(input).map(f)
+    stepExpr.extract(input).map(f)
 }
 
 trait ZIOSteps[R, S] extends Hooks[R] with GeneratedStepMethods[R, S] {
   type Step[I, O] = I => ZIO[R, Throwable, O]
 
-  // Mutable list to collect steps during initialization
   private val steps: mutable.ListBuffer[StepDef[R, S]] = mutable.ListBuffer.empty
 
-  // Retrieve the collected steps
   def getSteps: List[StepDef[R, S]] = steps.toList
 
-  // Register a step by adding it to the list
   def register(step: StepDef[R, S]): Unit =
     steps += step
 
-  // Environment required for step execution
   def environment: ZLayer[Any, Any, R] = ZLayer.empty.asInstanceOf[ZLayer[Any, Any, R]]
-}
-
-object ZIOSteps {
-  trait Default[R, S] extends ZIOSteps[R, S]
 }
 
 trait StepRegistry[R, S] {
@@ -299,98 +254,39 @@ object StepRegistry {
     ZIO.serviceWithZIO[StepRegistry[R, S]](_.findStep(input))
 }
 
-//trait GeneratedStepMethods[R, S] { self: ZIOSteps [R, S] =>
-//  def Given[T](builder: StepPatternBuilder)(f: T => RIO[R with State[S], Unit]): Unit =
-//    StepMacro.stepDef[R, S, T](builder, f, self)
-//
-//  def Given[T1, T2](builder: StepPatternBuilder)(f: (T1, T2) => RIO[R & State[S], Unit]): Unit = {
-//    val adaptedF: ((T1, T2)) => RIO[R & State[S], Unit] = {
-//      case (t1, t2) => f(t1, t2)
-//    }
-//    StepMacro.stepDef[R, S, (T1, T2)](builder, adaptedF, self)
-//  }
-//
-//  def When[T](builder: StepPatternBuilder)(f: T => RIO[R with State[S], Unit]): Unit =
-//    StepMacro.stepDef[R, S, T](builder, f, self)
-//
-//  def Then[T](builder: StepPatternBuilder)(f: T => RIO[R with State[S], Unit]): Unit =
-//    StepMacro.stepDef[R, S, T](builder, f,self)
-//}
-
 trait GeneratedStepMethods[R, S] { self: ZIOSteps[R, S] =>
-  // For no parameters
-  def Given(builder: StepPatternBuilder)(f: => RIO[R with State[S], Unit]): Unit = {
-    val (regex, segments, extractors) = builder.build
-    if (extractors.length != 0) {
-      throw new Exception(s"Expected 0 parameters but got ${extractors.length} extractors")
-    }
-    val pattern                                      = StepPattern0(regex, segments)
-    val adaptedF: Unit => RIO[R with State[S], Unit] = _ => f
-    self.register(StepDefImpl[R, S, Unit](pattern, adaptedF))
+  def Given(stepExpr: StepExpression[EmptyTuple])(f: => RIO[R with State[S], Unit]): Unit = {
+    val adaptedF: EmptyTuple => RIO[R with State[S], Unit] = _ => f
+    self.register(StepDefImpl[R, S, EmptyTuple](stepExpr, adaptedF))
   }
 
-  def Given[T1](builder: StepPatternBuilder)(f: T1 => RIO[R with State[S], Unit]): Unit = {
-    val (regex, segments, extractors) = builder.build
-    if (extractors.length != 1) {
-      throw new Exception(s"Expected 1 parameter but got ${extractors.length} extractors")
-    }
-    val e1      = extractors(0).asInstanceOf[TypedExtractor[T1]]
-    val pattern = StepPattern1[T1](regex, segments, e1)
-    self.register(StepDefImpl[R, S, T1](pattern, f))
+  def Given[A](stepExpr: StepExpression[Tuple1[A]])(f: A => RIO[R with State[S], Unit]): Unit = {
+    val adaptedF: Tuple1[A] => RIO[R with State[S], Unit] = tuple => f(tuple._1)
+    self.register(StepDefImpl[R, S, Tuple1[A]](stepExpr, adaptedF))
   }
 
-  def Given[T1, T2](builder: StepPatternBuilder)(f: (T1, T2) => RIO[R with State[S], Unit]): Unit = {
-    val (regex, segments, extractors) = builder.build
-    if (extractors.length != 2) {
-      throw new Exception(s"Expected 2 parameters but got ${extractors.length} extractors")
-    }
-    val e1                                                 = extractors(0).asInstanceOf[TypedExtractor[T1]]
-    val e2                                                 = extractors(1).asInstanceOf[TypedExtractor[T2]]
-    val pattern                                            = StepPattern2[T1, T2](regex, segments, e1, e2)
-    val adaptedF: ((T1, T2)) => RIO[R with State[S], Unit] = tup => f(tup._1, tup._2)
-    self.register(StepDefImpl[R, S, (T1, T2)](pattern, adaptedF))
+  def Given[A, B](stepExpr: StepExpression[(A, B)])(f: (A, B) => RIO[R with State[S], Unit]): Unit = {
+    val adaptedF: ((A, B)) => RIO[R with State[S], Unit] = { case (a, b) => f(a, b) }
+    self.register(StepDefImpl[R, S, (A, B)](stepExpr, adaptedF))
   }
 
-  def Given[T1, T2, T3](builder: StepPatternBuilder)(f: (T1, T2, T3) => RIO[R with State[S], Unit]): Unit = {
-    val (regex, segments, extractors) = builder.build
-    if (extractors.length != 3) {
-      throw new Exception(s"Expected 3 parameters but got ${extractors.length} extractors")
-    }
-    val e1                                                     = extractors(0).asInstanceOf[TypedExtractor[T1]]
-    val e2                                                     = extractors(1).asInstanceOf[TypedExtractor[T2]]
-    val e3                                                     = extractors(2).asInstanceOf[TypedExtractor[T3]]
-    val pattern                                                = StepPattern3[T1, T2, T3](regex, segments, e1, e2, e3)
-    val adaptedF: ((T1, T2, T3)) => RIO[R with State[S], Unit] = tup => f(tup._1, tup._2, tup._3)
-    self.register(StepDefImpl[R, S, (T1, T2, T3)](pattern, adaptedF))
+  def When(stepExpr: StepExpression[EmptyTuple])(f: => RIO[R with State[S], Unit]): Unit = {
+    val adaptedF: EmptyTuple => RIO[R with State[S], Unit] = _ => f
+    self.register(StepDefImpl[R, S, EmptyTuple](stepExpr, adaptedF))
   }
 
-  def When(builder: StepPatternBuilder)(f: => RIO[R with State[S], Unit]): Unit = {
-    val (regex, segments, extractors) = builder.build
-    if (extractors.length != 0) {
-      throw new Exception(s"Expected 0 parameters but got ${extractors.length} extractors")
-    }
-    val pattern                                      = StepPattern0(regex, segments)
-    val adaptedF: Unit => RIO[R with State[S], Unit] = _ => f
-    self.register(StepDefImpl[R, S, Unit](pattern, adaptedF))
+  def When[A](stepExpr: StepExpression[Tuple1[A]])(f: A => RIO[R with State[S], Unit]): Unit = {
+    val adaptedF: Tuple1[A] => RIO[R with State[S], Unit] = tuple => f(tuple._1)
+    self.register(StepDefImpl[R, S, Tuple1[A]](stepExpr, adaptedF))
   }
 
-  def When[T](builder: StepPatternBuilder)(f: T => RIO[R with State[S], Unit]): Unit = {
-    val (regex, segments, extractors) = builder.build
-    if (extractors.length != 1) {
-      throw new Exception(s"Expected 1 parameter but got ${extractors.length} extractors, ${regex}")
-    }
-    val e1      = extractors(0).asInstanceOf[TypedExtractor[T]]
-    val pattern = StepPattern1[T](regex, segments, e1)
-    self.register(StepDefImpl[R, S, T](pattern, f))
+  def Then(stepExpr: StepExpression[EmptyTuple])(f: => RIO[R with State[S], Unit]): Unit = {
+    val adaptedF: EmptyTuple => RIO[R with State[S], Unit] = _ => f
+    self.register(StepDefImpl[R, S, EmptyTuple](stepExpr, adaptedF))
   }
 
-  def Then[T](builder: StepPatternBuilder)(f: T => RIO[R with State[S], Unit]): Unit = {
-    val (regex, segments, extractors) = builder.build
-    if (extractors.length != 1) {
-      throw new Exception(s"Expected 1 parameter but got ${extractors.length} extractors")
-    }
-    val e1      = extractors(0).asInstanceOf[TypedExtractor[T]]
-    val pattern = StepPattern1[T](regex, segments, e1)
-    self.register(StepDefImpl[R, S, T](pattern, f))
+  def Then[A](stepExpr: StepExpression[Tuple1[A]])(f: A => RIO[R with State[S], Unit]): Unit = {
+    val adaptedF: Tuple1[A] => RIO[R with State[S], Unit] = tuple => f(tuple._1)
+    self.register(StepDefImpl[R, S, Tuple1[A]](stepExpr, adaptedF))
   }
 }
