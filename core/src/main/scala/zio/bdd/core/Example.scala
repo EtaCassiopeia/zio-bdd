@@ -1,11 +1,9 @@
-package zio.bdd.core.step
+package zio.bdd.core
 
 import zio.*
-import zio.bdd.core.Assertions
-//import zio.bdd.core.step.StepPatternBuilder.stringToStepPatternBuilder
+import zio.bdd.core.step.*
 import zio.bdd.gherkin.*
 import zio.schema.{DeriveSchema, Schema}
-import TypedExtractor.*
 
 case class User(name: String, age: Int)
 
@@ -63,7 +61,6 @@ object ExampleApp extends ZIOAppDefault {
     ),
     tags = Nil,
     examples = Nil,
-    metadata = ScenarioMetadata(),
     file = None,
     line = None
   )

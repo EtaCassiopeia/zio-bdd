@@ -1,8 +1,9 @@
-package zio.bdd.core.step
+package zio.bdd.core
 
-import zio.*
-import zio.bdd.gherkin.{Scenario, Step}
 import izumi.reflect.Tag
+import zio.*
+import zio.bdd.core.step.{State, StepInput, StepRegistry}
+import zio.bdd.gherkin.{Scenario, Step}
 
 object ScenarioExecutor {
   def executeScenario[R: Tag, S: Tag](scenario: Scenario, initialState: => S): RIO[R with StepRegistry[R, S], Unit] =

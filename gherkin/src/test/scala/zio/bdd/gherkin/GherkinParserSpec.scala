@@ -34,10 +34,7 @@ object GherkinParserSpec extends ZIOSpecDefault {
             Step(StepType.WhenStep, "a user is created", file = Some(testFile), line = Some(5)),
             Step(StepType.ThenStep, "the user exists", file = Some(testFile), line = Some(6))
           ),
-          feature.scenarios.head.examples.isEmpty,
-          !feature.scenarios.head.metadata.isFlaky,
-          feature.scenarios.head.metadata.repeatCount == 1,
-          feature.scenarios.head.metadata.retryCount == 0
+          feature.scenarios.head.examples.isEmpty
         )
       }
     },
@@ -72,7 +69,7 @@ object GherkinParserSpec extends ZIOSpecDefault {
     test("parse scenario with tags") {
       val content = """
                       |Feature: Payment Processing
-                      |  @retry(3) @flaky @ignore
+                      |  @ignore
                       |  Scenario: Process payment
                       |    Given a payment request
                       |    When payment is processed
@@ -87,10 +84,7 @@ object GherkinParserSpec extends ZIOSpecDefault {
           scenario.name == "Process payment",
           scenario.file.contains(testFile),
           scenario.line.contains(4),
-          scenario.metadata.retryCount == 3,
-          scenario.metadata.isFlaky,
-          scenario.metadata.isIgnored,
-          scenario.metadata.repeatCount == 1,
+          scenario.isIgnored,
           scenario.steps == List(
             Step(StepType.GivenStep, "a payment request", file = Some(testFile), line = Some(5)),
             Step(StepType.WhenStep, "payment is processed", file = Some(testFile), line = Some(6)),
@@ -417,7 +411,6 @@ object GherkinParserSpec extends ZIOSpecDefault {
                       |    Given system ready
                       |    When create user
                       |    Then user exists
-                      |  @repeat(2)
                       |  Scenario: Delete user
                       |    Given user exists
                       |    When delete user
@@ -439,13 +432,12 @@ object GherkinParserSpec extends ZIOSpecDefault {
           ),
           feature.scenarios(1).name == "Delete user",
           feature.scenarios(1).file.contains(testFile),
-          feature.scenarios(1).line.contains(8),
+          feature.scenarios(1).line.contains(7),
           feature.scenarios(1).steps == List(
-            Step(StepType.GivenStep, "user exists", file = Some(testFile), line = Some(9)),
-            Step(StepType.WhenStep, "delete user", file = Some(testFile), line = Some(10)),
-            Step(StepType.ThenStep, "user gone", file = Some(testFile), line = Some(11))
-          ),
-          feature.scenarios(1).metadata.repeatCount == 2
+            Step(StepType.GivenStep, "user exists", file = Some(testFile), line = Some(8)),
+            Step(StepType.WhenStep, "delete user", file = Some(testFile), line = Some(9)),
+            Step(StepType.ThenStep, "user gone", file = Some(testFile), line = Some(10))
+          )
         )
       }
     },
@@ -455,7 +447,6 @@ object GherkinParserSpec extends ZIOSpecDefault {
                       |  Background:
                       |    Given system running
                       |    And database ready
-                      |  @retry(2) @flaky @repeat(3)
                       |  Scenario Outline: Complex scenario
                       |    Given user <name>
                       |    When action <action>
@@ -475,16 +466,13 @@ object GherkinParserSpec extends ZIOSpecDefault {
             Step(StepType.GivenStep, "system running", file = Some(testFile), line = Some(4)),
             Step(StepType.AndStep, "database ready", file = Some(testFile), line = Some(5))
           ),
-          scenario.metadata.retryCount == 2,
-          scenario.metadata.isFlaky,
-          scenario.metadata.repeatCount == 3,
           scenario.file.contains(testFile),
-          scenario.line.contains(7),
+          scenario.line.contains(6),
           scenario.steps == List(
-            Step(StepType.GivenStep, "user <name>", file = Some(testFile), line = Some(8)),
-            Step(StepType.WhenStep, "action <action>", file = Some(testFile), line = Some(9)),
-            Step(StepType.ThenStep, "result <result>", file = Some(testFile), line = Some(10)),
-            Step(StepType.AndStep, "cleanup done", file = Some(testFile), line = Some(11))
+            Step(StepType.GivenStep, "user <name>", file = Some(testFile), line = Some(7)),
+            Step(StepType.WhenStep, "action <action>", file = Some(testFile), line = Some(8)),
+            Step(StepType.ThenStep, "result <result>", file = Some(testFile), line = Some(9)),
+            Step(StepType.AndStep, "cleanup done", file = Some(testFile), line = Some(10))
           ),
           scenario.examples.head.data == Map(
             "name"   -> "Alice",
@@ -526,10 +514,7 @@ object GherkinParserSpec extends ZIOSpecDefault {
               line = Some(8)
             )
           ),
-          feature.scenarios.head.examples.isEmpty,
-          !feature.scenarios.head.metadata.isFlaky,
-          feature.scenarios.head.metadata.repeatCount == 1,
-          feature.scenarios.head.metadata.retryCount == 0
+          feature.scenarios.head.examples.isEmpty
         )
       }
     },
@@ -570,11 +555,7 @@ object GherkinParserSpec extends ZIOSpecDefault {
               file = Some(testFile),
               line = Some(14)
             )
-          ),
-          feature.scenarios.head.examples.isEmpty,
-          !feature.scenarios.head.metadata.isFlaky,
-          feature.scenarios.head.metadata.repeatCount == 1,
-          feature.scenarios.head.metadata.retryCount == 0
+          )
         )
       }
     },

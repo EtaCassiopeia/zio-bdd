@@ -20,10 +20,11 @@ case class Scenario(
   tags: List[String] = Nil,
   steps: List[Step],
   examples: List[ExampleRow],
-  metadata: ScenarioMetadata,
   file: Option[String] = None,
   line: Option[Int] = None
-)
+) {
+  def isIgnored: Boolean = tags.exists(_.contains("ignore"))
+}
 
 enum StepType {
   case GivenStep
@@ -50,13 +51,6 @@ case class Step(
 }
 
 case class ExampleRow(data: Map[String, String])
-
-case class ScenarioMetadata(
-  retryCount: Int = 0,
-  isFlaky: Boolean = false,
-  repeatCount: Int = 1,
-  isIgnored: Boolean = false
-)
 
 object GherkinParser {
   // Context to track file and content for line numbers
@@ -135,13 +129,11 @@ object GherkinParser {
         ctx
       ).rep ~ examples.?
     ).map { case (tags, idx, name, steps, examplesOpt) =>
-      val metadata = parseMetadata(tags)
       Scenario(
         name.trim,
         tags,
         steps.toList,
         examplesOpt.getOrElse(Nil),
-        metadata,
         Some(ctx.file),
         Some(ctx.lineAt(idx))
       )
@@ -183,15 +175,6 @@ object GherkinParser {
           )
       }
     }
-
-  // Parse metadata from tags
-  private def parseMetadata(tags: List[String]): ScenarioMetadata = {
-    val retryCount  = tags.collectFirst { case s"retry($n)" => n.toInt }.getOrElse(0)
-    val isFlaky     = tags.contains("flaky")
-    val repeatCount = tags.collectFirst { case s"repeat($n)" => n.toInt }.getOrElse(1)
-    val isIgnored   = tags.contains("ignore")
-    ScenarioMetadata(retryCount, isFlaky, repeatCount, isIgnored)
-  }
 
   // Parse a single feature file
   def parseFeatureFile(file: File): ZIO[Any, Throwable, Feature] =
