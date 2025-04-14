@@ -24,7 +24,6 @@ object GherkinParserSpec extends ZIOSpecDefault {
           feature.name == "User Management",
           feature.file.contains(testFile),
           feature.line.contains(2),
-          feature.background.isEmpty,
           feature.scenarios.length == 1,
           feature.scenarios.head.name == "Create user",
           feature.scenarios.head.file.contains(testFile),
@@ -33,12 +32,11 @@ object GherkinParserSpec extends ZIOSpecDefault {
             Step(StepType.GivenStep, "a system is running", file = Some(testFile), line = Some(4)),
             Step(StepType.WhenStep, "a user is created", file = Some(testFile), line = Some(5)),
             Step(StepType.ThenStep, "the user exists", file = Some(testFile), line = Some(6))
-          ),
-          feature.scenarios.head.examples.isEmpty
+          )
         )
       }
     },
-    test("parse feature with background") {
+    test("parse with background") {
       val content = """
                       |Feature: User Authentication
                       |  Background:
@@ -52,14 +50,12 @@ object GherkinParserSpec extends ZIOSpecDefault {
           feature.name == "User Authentication",
           feature.file.contains(testFile),
           feature.line.contains(2),
-          feature.background == List(
-            Step(StepType.GivenStep, "a system is running", file = Some(testFile), line = Some(4))
-          ),
           feature.scenarios.length == 1,
           feature.scenarios.head.name == "Login",
           feature.scenarios.head.file.contains(testFile),
           feature.scenarios.head.line.contains(5),
           feature.scenarios.head.steps == List(
+            Step(StepType.GivenStep, "a system is running", file = Some(testFile), line = Some(4)),
             Step(StepType.WhenStep, "user logs in", file = Some(testFile), line = Some(6)),
             Step(StepType.ThenStep, "user is authenticated", file = Some(testFile), line = Some(7))
           )
@@ -106,67 +102,25 @@ object GherkinParserSpec extends ZIOSpecDefault {
                       |    | Bob   | wrong    | fails    |
         """.stripMargin
       checkParse(content, testFile) { feature =>
-        val scenario = feature.scenarios.head
+        val scenario1 = feature.scenarios.head
+        val scenario2 = feature.scenarios(1)
         assertTrue(
           feature.name == "Login Validation",
           feature.file.contains(testFile),
           feature.line.contains(2),
-          scenario.name == "Validate credentials",
-          scenario.file.contains(testFile),
-          scenario.line.contains(3),
-          scenario.steps == List(
-            Step(StepType.GivenStep, "user <name> exists", file = Some(testFile), line = Some(4)),
-            Step(StepType.WhenStep, "user enters password <password>", file = Some(testFile), line = Some(5)),
-            Step(StepType.ThenStep, "login <result>", file = Some(testFile), line = Some(6))
+          scenario1.name == "Validate credentials - Example 1",
+          scenario2.name == "Validate credentials - Example 2",
+          scenario1.file.contains(testFile),
+          scenario1.line.contains(3),
+          scenario1.steps == List(
+            Step(StepType.GivenStep, "user Alice exists", file = Some(testFile), line = Some(4)),
+            Step(StepType.WhenStep, "user enters password pass123", file = Some(testFile), line = Some(5)),
+            Step(StepType.ThenStep, "login succeeds", file = Some(testFile), line = Some(6))
           ),
-          scenario.examples.length == 2,
-          scenario.examples.head.data == Map(
-            "name"     -> "Alice",
-            "password" -> "pass123",
-            "result"   -> "succeeds"
-          ),
-          scenario.examples(1).data == Map(
-            "name"     -> "Bob",
-            "password" -> "wrong",
-            "result"   -> "fails"
-          )
-        )
-      }
-    },
-    test("parse scenario outline with typed placeholders ({name:String})") {
-      val content = """
-                      |Feature: User Validation
-                      |  Scenario Outline: Validate reset emails
-                      |    Given a user exists with name {name:String}
-                      |    When the user requests a password reset
-                      |    Then an email should be sent to {email:String}
-                      |  Examples:
-                      |    | name  | email             |
-                      |    | Alice | alice@example.com |
-                      |    | Bob   | bob@example.com   |
-                """.stripMargin
-      checkParse(content, testFile) { feature =>
-        val scenario = feature.scenarios.head
-        assertTrue(
-          feature.name == "User Validation",
-          feature.file.contains(testFile),
-          feature.line.contains(2),
-          scenario.name == "Validate reset emails",
-          scenario.file.contains(testFile),
-          scenario.line.contains(3),
-          scenario.steps == List(
-            Step(StepType.GivenStep, "a user exists with name {name:String}", file = Some(testFile), line = Some(4)),
-            Step(StepType.WhenStep, "the user requests a password reset", file = Some(testFile), line = Some(5)),
-            Step(StepType.ThenStep, "an email should be sent to {email:String}", file = Some(testFile), line = Some(6))
-          ),
-          scenario.examples.length == 2,
-          scenario.examples.head.data == Map(
-            "name"  -> "Alice",
-            "email" -> "alice@example.com"
-          ),
-          scenario.examples(1).data == Map(
-            "name"  -> "Bob",
-            "email" -> "bob@example.com"
+          scenario2.steps == List(
+            Step(StepType.GivenStep, "user Bob exists", file = Some(testFile), line = Some(4)),
+            Step(StepType.WhenStep, "user enters password wrong", file = Some(testFile), line = Some(5)),
+            Step(StepType.ThenStep, "login fails", file = Some(testFile), line = Some(6))
           )
         )
       }
@@ -211,8 +165,7 @@ object GherkinParserSpec extends ZIOSpecDefault {
             line = Some(7)
           ),
           scenario
-            .steps(2) == Step(StepType.ThenStep, "the user is logged in", None, file = Some(testFile), line = Some(8)),
-          scenario.examples.isEmpty
+            .steps(2) == Step(StepType.ThenStep, "the user is logged in", None, file = Some(testFile), line = Some(8))
         )
       }
     },
@@ -259,8 +212,7 @@ object GherkinParserSpec extends ZIOSpecDefault {
             None,
             file = Some(testFile),
             line = Some(9)
-          ),
-          scenario.examples.isEmpty
+          )
         )
       }
     },
@@ -311,8 +263,7 @@ object GherkinParserSpec extends ZIOSpecDefault {
             Some(7)
           ),
           scenario
-            .steps(2) == Step(StepType.ThenStep, "results are verified", None, file = Some(testFile), line = Some(10)),
-          scenario.examples.isEmpty
+            .steps(2) == Step(StepType.ThenStep, "results are verified", None, file = Some(testFile), line = Some(10))
         )
       }
     },
@@ -352,8 +303,7 @@ object GherkinParserSpec extends ZIOSpecDefault {
             Some(4)
           ),
           scenario
-            .steps(1) == Step(StepType.ThenStep, "the data is stored", None, file = Some(testFile), line = Some(8)),
-          scenario.examples.isEmpty
+            .steps(1) == Step(StepType.ThenStep, "the data is stored", None, file = Some(testFile), line = Some(8))
         )
       }
     },
@@ -374,14 +324,18 @@ object GherkinParserSpec extends ZIOSpecDefault {
           feature.name == "User Setup",
           feature.file.contains(testFile),
           feature.line.contains(2),
-          feature.background == List(
-            Step(StepType.GivenStep, "the system is initialized", None, file = Some(testFile), line = Some(4))
-          ),
           scenario.name == "Add users with details",
           scenario.file.contains(testFile),
           scenario.line.contains(5),
-          scenario.steps.length == 2,
+          scenario.steps.length == 3,
           scenario.steps(0) == Step(
+            StepType.GivenStep,
+            "the system is initialized",
+            None,
+            file = Some(testFile),
+            line = Some(4)
+          ),
+          scenario.steps(1) == Step(
             StepType.GivenStep,
             "users are configured",
             Some(
@@ -393,14 +347,13 @@ object GherkinParserSpec extends ZIOSpecDefault {
             Some(testFile),
             Some(6)
           ),
-          scenario.steps(1) == Step(
+          scenario.steps(2) == Step(
             StepType.ThenStep,
             "the configuration is applied",
             None,
             file = Some(testFile),
             line = Some(9)
-          ),
-          scenario.examples.isEmpty
+          )
         )
       }
     },
@@ -462,22 +415,15 @@ object GherkinParserSpec extends ZIOSpecDefault {
           feature.name == "Complex Feature",
           feature.file.contains(testFile),
           feature.line.contains(2),
-          feature.background == List(
-            Step(StepType.GivenStep, "system running", file = Some(testFile), line = Some(4)),
-            Step(StepType.AndStep, "database ready", file = Some(testFile), line = Some(5))
-          ),
           scenario.file.contains(testFile),
           scenario.line.contains(6),
           scenario.steps == List(
-            Step(StepType.GivenStep, "user <name>", file = Some(testFile), line = Some(7)),
-            Step(StepType.WhenStep, "action <action>", file = Some(testFile), line = Some(8)),
-            Step(StepType.ThenStep, "result <result>", file = Some(testFile), line = Some(9)),
+            Step(StepType.GivenStep, "system running", file = Some(testFile), line = Some(4)),
+            Step(StepType.AndStep, "database ready", file = Some(testFile), line = Some(5)),
+            Step(StepType.GivenStep, "user Alice", file = Some(testFile), line = Some(7)),
+            Step(StepType.WhenStep, "action login", file = Some(testFile), line = Some(8)),
+            Step(StepType.ThenStep, "result ok", file = Some(testFile), line = Some(9)),
             Step(StepType.AndStep, "cleanup done", file = Some(testFile), line = Some(10))
-          ),
-          scenario.examples.head.data == Map(
-            "name"   -> "Alice",
-            "action" -> "login",
-            "result" -> "ok"
           )
         )
       }
@@ -497,14 +443,12 @@ object GherkinParserSpec extends ZIOSpecDefault {
           feature.name == "User Password Reset",
           feature.file.contains(testFile),
           feature.line.contains(2),
-          feature.background == List(
-            Step(StepType.GivenStep, """a user exists with name "Default"""", file = Some(testFile), line = Some(4))
-          ),
           feature.scenarios.length == 1,
           feature.scenarios.head.name == "Successful password reset with logging",
           feature.scenarios.head.file.contains(testFile),
           feature.scenarios.head.line.contains(5),
           feature.scenarios.head.steps == List(
+            Step(StepType.GivenStep, """a user exists with name "Default"""", file = Some(testFile), line = Some(4)),
             Step(StepType.WhenStep, "the user requests a password reset", file = Some(testFile), line = Some(6)),
             Step(StepType.AndStep, "the reset email is logged", file = Some(testFile), line = Some(7)),
             Step(
@@ -513,8 +457,7 @@ object GherkinParserSpec extends ZIOSpecDefault {
               file = Some(testFile),
               line = Some(8)
             )
-          ),
-          feature.scenarios.head.examples.isEmpty
+          )
         )
       }
     },
@@ -539,14 +482,12 @@ object GherkinParserSpec extends ZIOSpecDefault {
           feature.name == "User Password Reset with Comments",
           feature.file.contains(testFile),
           feature.line.contains(3),
-          feature.background == List(
-            Step(StepType.GivenStep, """a user exists with name "Default"""", file = Some(testFile), line = Some(7))
-          ),
           feature.scenarios.length == 1,
           feature.scenarios.head.name == "Successful password reset with logging",
           feature.scenarios.head.file.contains(testFile),
           feature.scenarios.head.line.contains(8),
           feature.scenarios.head.steps == List(
+            Step(StepType.GivenStep, """a user exists with name "Default"""", file = Some(testFile), line = Some(7)),
             Step(StepType.WhenStep, "the user requests a password reset", file = Some(testFile), line = Some(10)),
             Step(StepType.AndStep, "the reset email is logged", file = Some(testFile), line = Some(12)),
             Step(

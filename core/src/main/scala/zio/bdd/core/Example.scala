@@ -60,7 +60,6 @@ object ExampleApp extends ZIOAppDefault {
       )
     ),
     tags = Nil,
-    examples = Nil,
     file = None,
     line = None
   )
