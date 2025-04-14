@@ -35,55 +35,74 @@ trait Example extends ZIOSteps[Any, List[User]] {
 
 object ExampleApp extends ZIOAppDefault {
 
-  val scenario = Scenario(
-    name = "Example Scenario",
-    steps = List(
-      Step(
-        stepType = StepType.GivenStep,
-        pattern = "the following users with role \"admin\"",
-        dataTable = Some(
-          DataTable(
-            headers = List("name", "age"),
-            rows = List(DataTableRow(List("Alice", "30")), DataTableRow(List("Bob", "25")))
+  def report(result: FeatureResult): ZIO[Any, Nothing, Unit] =
+    for {
+      _ <- ZIO.debug(s"Feature: ${result.feature.name} (${if (result.isPassed) "PASSED" else "FAILED"})")
+      _ <- ZIO.foreachDiscard(result.scenarioResults) { scenarioResult =>
+             ZIO.debug(
+               s"  Scenario: ${scenarioResult.scenario.name} (${if (scenarioResult.isPassed) "PASSED" else "FAILED"})"
+             ) *>
+               ZIO.foreach(scenarioResult.stepResults) { stepResult =>
+                 stepResult.outcome match {
+                   case Right(_) =>
+                     ZIO.debug(s"    Step: ${stepResult.step} - PASSED")
+                   case Left(cause) =>
+                     val location = s"${stepResult.step.file.getOrElse("unknown")}:${stepResult.step.line.getOrElse(0)}"
+                     ZIO.debug(s"    Step: ${stepResult.step} - FAILED at $location\n      Cause: ${cause.prettyPrint}")
+                 }
+               }
+           }
+    } yield ()
+
+  val feature = Feature(
+    name = "User Management",
+    scenarios = List(
+      Scenario(
+        name = "Example Scenario",
+        steps = List(
+          Step(
+            stepType = StepType.GivenStep,
+            pattern = "the following users with role \"admin\"",
+            dataTable = Some(
+              DataTable(
+                headers = List("name", "age"),
+                rows = List(DataTableRow(List("Alice", "30")), DataTableRow(List("Bob", "25")))
+              )
+            ),
+            file = Some("example.feature"),
+            line = Some(5)
+          ),
+          Step(
+            stepType = StepType.WhenStep,
+            pattern = "the system starts",
+            dataTable = None,
+            file = Some("example.feature"),
+            line = Some(10)
+          ),
+          Step(
+            stepType = StepType.ThenStep,
+            pattern = "the user count is 2",
+            dataTable = None,
+            file = Some("example.feature"),
+            line = Some(15)
           )
-        )
-      ),
-      Step(
-        stepType = StepType.WhenStep,
-        pattern = "the system starts",
-        dataTable = None
-      ),
-      Step(
-        stepType = StepType.ThenStep,
-        pattern = "the user count is 2",
-        dataTable = None
+        ),
+        tags = Nil,
+        file = Some("example.feature"),
+        line = Some(3)
       )
     ),
-    tags = Nil,
-    file = None,
-    line = None
+    file = Some("example.feature"),
+    line = Some(1)
   )
-
-  def runScenario[R: Tag, S: Tag](
-    scenario: Scenario,
-    initialState: S,
-    steps: List[StepDef[R, S]]
-  ): RIO[R with StepRegistry[R, S] with State[S], Unit] =
-    ScenarioExecutor.executeScenario[R, S](scenario, initialState)
 
   def run = {
     val initialState: List[User] = Nil
     val example                  = new Example {}
     val steps                    = example.getSteps
-    ZIO.scoped {
-      for {
-        fiberRef <- FiberRef.make(initialState)
-        program   = runScenario[Any, List[User]](scenario, initialState, steps)
-        _ <- program.provide(
-               StepRegistry.layer[Any, List[User]](steps),
-               State.layer[List[User]](fiberRef)
-             )
-      } yield ()
+    val program                  = FeatureExecutor.executeFeature[Any, List[User]](feature, initialState, steps)
+    program.tap { result =>
+      report(result)
     }
   }
 }
