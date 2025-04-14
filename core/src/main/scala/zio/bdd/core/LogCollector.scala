@@ -23,11 +23,9 @@ case class LogEntry(
 )
 
 case class CollectedLogs(entries: List[LogEntry] = Nil) {
-  def add(entry: LogEntry): CollectedLogs = copy(entries = entry :: entries)
+  def add(entry: LogEntry): CollectedLogs = copy(entries = entries :+ entry)
   def toStepResultLogs: List[(String, Instant, InternalLogLevel)] =
     entries.map(entry => (entry.message, entry.timestamp, entry.level))
-
-  def ++(other: CollectedLogs): CollectedLogs = CollectedLogs(entries ++ other.entries)
 }
 
 case class LogLevelConfig(minLevel: InternalLogLevel = InternalLogLevel.Info)
@@ -39,11 +37,8 @@ case class LogLevelConfig(minLevel: InternalLogLevel = InternalLogLevel.Info)
  */
 trait LogCollector {
   def log(scenarioId: String, stepId: String, message: String, level: InternalLogLevel): ZIO[Any, Nothing, Unit]
-  def logFeature(featureId: String, message: String, level: InternalLogLevel): ZIO[Any, Nothing, Unit]
   def getLogs(scenarioId: String, stepId: String): ZIO[Any, Nothing, CollectedLogs]
   def getScenarioLogs(scenarioId: String): ZIO[Any, Nothing, CollectedLogs]
-  def getFeatureLogs(featureId: String): ZIO[Any, Nothing, CollectedLogs]
-  def getAllLogs: ZIO[Any, Nothing, Map[(String, String), CollectedLogs]]
   def setLogLevelConfig(config: LogLevelConfig): ZIO[Any, Nothing, Unit]
 }
 
@@ -60,7 +55,6 @@ object LogCollector {
   private val collectorImpl: ZLayer[Any, Nothing, LogCollector] = ZLayer.scoped {
     for {
       ref         <- Ref.make(Map.empty[(String, String), CollectedLogs])
-      featureRef  <- Ref.make(Map.empty[String, CollectedLogs])
       logLevelRef <- Ref.make(LogLevelConfig())
     } yield new LogCollector {
       def setLogLevelConfig(config: LogLevelConfig): ZIO[Any, Nothing, Unit] =
@@ -102,13 +96,6 @@ object LogCollector {
           _      <- updateLogsIfLevelSufficient(ref, (scenarioId, stepId), entry, config)
         } yield ()
 
-      def logFeature(featureId: String, message: String, level: InternalLogLevel): ZIO[Any, Nothing, Unit] =
-        for {
-          config <- logLevelRef.get
-          entry  <- createLogEntry(message, level, "feature")
-          _      <- updateLogsIfLevelSufficient(featureRef, featureId, entry, config)
-        } yield ()
-
       def getLogs(scenarioId: String, stepId: String): ZIO[Any, Nothing, CollectedLogs] =
         ref.get.map(_.getOrElse((scenarioId, stepId), CollectedLogs()))
 
@@ -116,13 +103,6 @@ object LogCollector {
         ref.get.map(_.foldLeft(CollectedLogs()) { case (acc, ((sid, _), logs)) =>
           if (sid == scenarioId) acc.copy(entries = logs.entries ++ acc.entries) else acc
         })
-
-      def getFeatureLogs(featureId: String): ZIO[Any, Nothing, CollectedLogs] =
-        featureRef.get.map(_.getOrElse(featureId, CollectedLogs()))
-
-      def getAllLogs: ZIO[Any, Nothing, Map[(String, String), CollectedLogs]] =
-        ref.get
-
     }
   }
 
@@ -144,20 +124,24 @@ object LogCollector {
       spans: List[LogSpan],
       annotations: Map[String, String]
     ) => {
-      val formattedMessage = formatLogger(trace, fiberId, logLevel, message, cause, context, spans, annotations)
-      Unsafe.unsafe { implicit u =>
-        Runtime.default.unsafe.run {
-          val scenarioId = annotations.getOrElse("scenarioId", "default")
-          val stepId     = annotations.getOrElse("stepId", "unknown")
-          val level = logLevel match {
-            case LogLevel.Debug   => InternalLogLevel.Debug
-            case LogLevel.Info    => InternalLogLevel.Info
-            case LogLevel.Warning => InternalLogLevel.Warning
-            case LogLevel.Error   => InternalLogLevel.Error
-            case LogLevel.Fatal   => InternalLogLevel.Fatal
+      annotations.get("stepId") match {
+        case Some(stepId) =>
+          val formattedMessage = formatLogger(trace, fiberId, logLevel, message, cause, context, spans, annotations)
+          Unsafe.unsafe { implicit u =>
+            Runtime.default.unsafe.run {
+              val scenarioId = annotations.getOrElse("scenarioId", "default")
+              val level = logLevel match {
+                case LogLevel.Debug   => InternalLogLevel.Debug
+                case LogLevel.Info    => InternalLogLevel.Info
+                case LogLevel.Warning => InternalLogLevel.Warning
+                case LogLevel.Error   => InternalLogLevel.Error
+                case LogLevel.Fatal   => InternalLogLevel.Fatal
+              }
+              collector.log(scenarioId, stepId, formattedMessage, level)
+            }.getOrThrowFiberFailure()
           }
-          collector.log(scenarioId, stepId, formattedMessage, level)
-        }.getOrThrowFiberFailure()
+        case None =>
+          () // Do nothing, let default loggers handle it
       }
     }
   }
@@ -188,7 +172,4 @@ object LogCollector {
     level: InternalLogLevel
   ): ZIO[LogCollector, Nothing, Unit] =
     ZIO.serviceWithZIO[LogCollector](_.log(scenarioId, stepId, message, level))
-
-  def logFeature(featureId: String, message: String, level: InternalLogLevel): ZIO[LogCollector, Nothing, Unit] =
-    ZIO.serviceWithZIO[LogCollector](_.logFeature(featureId, message, level))
 }
