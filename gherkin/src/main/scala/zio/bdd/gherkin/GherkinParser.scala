@@ -51,8 +51,6 @@ case class Step(
     s"${stepType.toString.replace("Step", "")} $pattern ${file.zip(line).map { case (f, l) => s"($f:$l)" }.getOrElse("")}"
 }
 
-case class ExampleRow(data: Map[String, String])
-
 object GherkinParser {
   // Context to track file and content for line numbers
   private case class ParseContext(file: String, content: String) {
@@ -116,6 +114,8 @@ object GherkinParser {
         }
         Step(stepType, pattern.trim, dataTableOpt, Some(ctx.file), Some(ctx.lineAt(idx)))
     }
+
+  private case class ExampleRow(data: Map[String, String])
 
   // Examples parser: parses the Examples section with header and data rows
   private def examples(using P[?]): P[List[ExampleRow]] =
