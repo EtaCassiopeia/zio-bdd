@@ -80,6 +80,8 @@ object ExampleApp extends ZIOAppDefault {
     line = Some(1)
   )
 
+  private val logConfig = LogLevelConfig(InternalLogLevel.Debug)
+
   def run = {
     val initialState: List[User] = Nil
     val example                  = new Example {}
@@ -88,5 +90,5 @@ object ExampleApp extends ZIOAppDefault {
     program.tap { result =>
       reporter.report(List(result))
     }
-  }.provide(LogCollector.live)
+  }.provide(LogCollector.live(logConfig))
 }

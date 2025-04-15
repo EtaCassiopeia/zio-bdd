@@ -39,7 +39,6 @@ trait LogCollector {
   def log(scenarioId: String, stepId: String, message: String, level: InternalLogLevel): ZIO[Any, Nothing, Unit]
   def getLogs(scenarioId: String, stepId: String): ZIO[Any, Nothing, CollectedLogs]
   def getScenarioLogs(scenarioId: String): ZIO[Any, Nothing, CollectedLogs]
-  def setLogLevelConfig(config: LogLevelConfig): ZIO[Any, Nothing, Unit]
 }
 
 /**
@@ -49,69 +48,47 @@ trait LogCollector {
  */
 object LogCollector {
 
-  /**
-   * Implements the LogCollector service to store CollectedLogs.
-   */
-  private val collectorImpl: ZLayer[Any, Nothing, LogCollector] = ZLayer.scoped {
-    for {
-      ref         <- Ref.make(Map.empty[(String, String), CollectedLogs])
-      logLevelRef <- Ref.make(LogLevelConfig())
-    } yield new LogCollector {
-      def setLogLevelConfig(config: LogLevelConfig): ZIO[Any, Nothing, Unit] =
-        logLevelRef.set(config)
+  private class LogCollectorImpl(config: LogLevelConfig, ref: Ref[Map[(String, String), CollectedLogs]])
+      extends LogCollector {
+    private def logSourceForLevel(level: InternalLogLevel): LogSource =
+      level match {
+        case InternalLogLevel.Error | InternalLogLevel.Fatal => LogSource.Stderr
+        case _                                               => LogSource.Stdout
+      }
 
-      // method to determine LogSource based on level
-      private def logSourceForLevel(level: InternalLogLevel): LogSource =
-        level match {
-          case InternalLogLevel.Error | InternalLogLevel.Fatal => LogSource.Stderr
-          case _                                               => LogSource.Stdout
-        }
+    private def createLogEntry(
+      message: String,
+      level: InternalLogLevel,
+      stepId: String
+    ): ZIO[Any, Nothing, LogEntry] =
+      Clock.instant.map { now =>
+        LogEntry(message, now, logSourceForLevel(level), level, stepId)
+      }
 
-      private def createLogEntry(
-        message: String,
-        level: InternalLogLevel,
-        stepId: String
-      ): ZIO[Any, Nothing, LogEntry] =
-        Clock.instant.map { now =>
-          LogEntry(message, now, logSourceForLevel(level), level, stepId)
-        }
-
-      // method to update logs if level is sufficient
-      private def updateLogsIfLevelSufficient[K](
-        ref: Ref[Map[K, CollectedLogs]],
-        key: K,
-        entry: LogEntry,
-        config: LogLevelConfig
-      ): ZIO[Any, Nothing, Unit] =
-        if (entry.level.ordinal >= config.minLevel.ordinal) {
-          ref.update(_.updatedWith(key)(_.map(_.add(entry)).orElse(Some(CollectedLogs().add(entry)))))
-        } else {
-          ZIO.unit
-        }
-
-      def log(scenarioId: String, stepId: String, message: String, level: InternalLogLevel): ZIO[Any, Nothing, Unit] =
+    def log(scenarioId: String, stepId: String, message: String, level: InternalLogLevel): ZIO[Any, Nothing, Unit] =
+      if (level.ordinal >= config.minLevel.ordinal) {
         for {
-          config <- logLevelRef.get
-          entry  <- createLogEntry(message, level, stepId)
-          _      <- updateLogsIfLevelSufficient(ref, (scenarioId, stepId), entry, config)
+          entry <- createLogEntry(message, level, stepId)
+          _ <- ref.update(_.updatedWith((scenarioId, stepId)) {
+                 case Some(logs) => Some(logs.add(entry))
+                 case None       => Some(CollectedLogs().add(entry))
+               })
         } yield ()
+      } else {
+        ZIO.unit
+      }
 
-      def getLogs(scenarioId: String, stepId: String): ZIO[Any, Nothing, CollectedLogs] =
-        ref.get.map(_.getOrElse((scenarioId, stepId), CollectedLogs()))
+    def getLogs(scenarioId: String, stepId: String): ZIO[Any, Nothing, CollectedLogs] =
+      ref.get.map(_.getOrElse((scenarioId, stepId), CollectedLogs()))
 
-      def getScenarioLogs(scenarioId: String): ZIO[Any, Nothing, CollectedLogs] =
-        ref.get.map(_.foldLeft(CollectedLogs()) { case (acc, ((sid, _), logs)) =>
+    def getScenarioLogs(scenarioId: String): ZIO[Any, Nothing, CollectedLogs] =
+      ref.get.map { map =>
+        map.foldLeft(CollectedLogs()) { case (acc, ((sid, _), logs)) =>
           if (sid == scenarioId) acc.copy(entries = logs.entries ++ acc.entries) else acc
-        })
-    }
+        }
+      }
   }
 
-  /**
-   * Creates a custom ZLogger that formats log messages using LogFormat.default
-   * and routes them to the LogCollector based on log level: Error/Fatal to
-   * stderr, others to stdout. This logger captures all ZIO log calls (e.g.,
-   * ZIO.logInfo, ZIO.logError) and directs them to the collector.
-   */
   private def customLogger(collector: LogCollector): ZLogger[String, Unit] = {
     val formatLogger = LogFormat.default.toLogger
     (
@@ -141,29 +118,21 @@ object LogCollector {
             }.getOrThrowFiberFailure()
           }
         case None =>
-          () // Do nothing, let default loggers handle it
+          () // Do nothing
       }
     }
   }
 
-  /**
-   * A ZLayer that configures the ZIO Runtime to use only the custom logger by
-   * removing default loggers and adding the custom one. This ensures all ZIO
-   * log calls (e.g., ZIO.logInfo, ZIO.logError) are captured by LogCollector,
-   * replacing any console or SLF4J loggers.
-   */
-  private val loggingLayer: ZLayer[LogCollector, Nothing, Unit] = ZLayer.scoped {
-    for {
-      collector <- ZIO.service[LogCollector]
-      _ <-
-        FiberRef.currentLoggers.locallyScoped(
-          Runtime.defaultLoggers -- Runtime.defaultLoggers ++ Chunk(customLogger(collector))
-        ) // Use `Runtime.addLogger(customLogger(collector))` to add the custom logger without replacing all existing loggers
-    } yield ()
-  }
-
-  val live: ZLayer[Any, Nothing, LogCollector] =
-    collectorImpl >>> (collectorImpl ++ loggingLayer) >>> ZLayer.service[LogCollector]
+  def live(config: LogLevelConfig): ZLayer[Any, Nothing, LogCollector] =
+    ZLayer.scoped {
+      for {
+        ref      <- Ref.make(Map.empty[(String, String), CollectedLogs])
+        collector = new LogCollectorImpl(config, ref)
+        _        <- FiberRef.currentLoggers.locallyScoped(Set(customLogger(collector)))
+        // If the intent is to preserve default loggers, replace it with:
+        // _ <- FiberRef.currentLoggers.locallyScoped(Runtime.defaultLoggers + customLogger(collector))
+      } yield collector
+    }
 
   def log(
     scenarioId: String,
