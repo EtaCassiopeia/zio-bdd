@@ -11,17 +11,30 @@ object FeatureExecutor {
     initialState: => S,
     steps: List[StepDef[R, S]]
   ): ZIO[R, Nothing, FeatureResult] =
-    ZIO
-      .logAnnotate("featureId", feature.id.toString) {
-        ZIO
-          .foreach(feature.scenarios) { scenario =>
-            ZIO.logAnnotate("scenarioId", scenario.id.toString) {
-              ScenarioExecutor.executeScenario[R, S](scenario, initialState)
-            }
-          }
-          .map { scenarioResults =>
-            FeatureResult(feature, scenarioResults)
-          }
+    if (feature.isIgnored) {
+      // Handle ignored feature: create a FeatureResult with ignored scenarios
+      val ignoredScenarios = feature.scenarios.map { scenario =>
+        ScenarioResult(
+          scenario = scenario,
+          stepResults = List.empty, // No steps executed
+          setupError = None
+        )
       }
-      .provideSomeLayer[R](StepRegistry.layer[R, S](steps))
+      ZIO.succeed(FeatureResult(feature, ignoredScenarios))
+    } else {
+      // Execute scenarios for non-ignored feature
+      ZIO
+        .logAnnotate("featureId", feature.id.toString) {
+          ZIO
+            .foreach(feature.scenarios) { scenario =>
+              ZIO.logAnnotate("scenarioId", scenario.id.toString) {
+                ScenarioExecutor.executeScenario[R, S](scenario, initialState)
+              }
+            }
+            .map { scenarioResults =>
+              FeatureResult(feature, scenarioResults)
+            }
+        }
+        .provideSomeLayer[R](StepRegistry.layer[R, S](steps))
+    }
 }

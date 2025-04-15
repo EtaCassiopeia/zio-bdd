@@ -12,9 +12,11 @@ case class ScenarioResult(
   stepResults: List[StepResult],
   setupError: Option[Cause[Throwable]] = None
 ) {
-  def isPassed: Boolean = stepResults.forall(_.isPassed)
+  def isPassed: Boolean  = stepResults.forall(_.isPassed)
+  def isIgnored: Boolean = scenario.isIgnored
 }
 
 case class FeatureResult(feature: Feature, scenarioResults: List[ScenarioResult]) {
-  def isPassed: Boolean = scenarioResults.forall(_.isPassed)
+  def isPassed: Boolean  = scenarioResults.forall(_.isPassed)
+  def isIgnored: Boolean = feature.isIgnored || scenarioResults.forall(_.isIgnored)
 }

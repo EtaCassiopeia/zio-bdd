@@ -16,7 +16,8 @@ case class Feature(
   file: Option[String] = None,
   line: Option[Int] = None
 ) {
-  def id: Int = s"feature:$name:${file.getOrElse("unknown")}:${line.getOrElse(0)}".hashCode
+  def id: Int            = s"feature:$name:${file.getOrElse("unknown")}:${line.getOrElse(0)}".hashCode
+  def isIgnored: Boolean = tags.exists(_.contains("ignore"))
 }
 
 case class Scenario(
