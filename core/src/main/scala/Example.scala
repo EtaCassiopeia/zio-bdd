@@ -90,12 +90,11 @@ object ExampleApp extends ZIOAppDefault {
   private val logConfig = LogLevelConfig(InternalLogLevel.Debug)
 
   def run = {
-    val initialState: List[User] = Nil
-    val example                  = new Example {}
-    val steps                    = example.getSteps
-    val program                  = FeatureExecutor.executeFeature[Any, List[User]](feature, initialState, steps, example)
+    val example = new Example {}
+    val steps   = example.getSteps
+    val program = FeatureExecutor.executeFeatures[Any, List[User]](List(feature), steps, example)
     program.tap { result =>
-      reporter.report(List(result))
+      reporter.report(result)
     }
   }.provide(LogCollector.live(logConfig))
 }

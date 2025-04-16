@@ -6,9 +6,8 @@ import zio.bdd.core.step.{State, StepInput, StepRegistry}
 import zio.bdd.gherkin.{Scenario, Step, StepType}
 
 object ScenarioExecutor {
-  def executeScenario[R: Tag, S: Tag](
+  def executeScenario[R: Tag, S: Tag: Default](
     scenario: Scenario,
-    initialState: => S,
     hooks: Hooks[R, S]
   ): ZIO[R with StepRegistry[R, S], Nothing, ScenarioResult] =
     if (scenario.isIgnored) {
@@ -17,7 +16,7 @@ object ScenarioExecutor {
     } else {
       ZIO.scoped {
         for {
-          stateRef <- FiberRef.make(initialState)
+          stateRef <- FiberRef.make(Default[S].default)
           scenarioResult <- (for {
                               _                    <- hooks.beforeScenarioHook
                               stepsWithTypesResult <- computeEffectiveStepTypes(scenario.steps).either

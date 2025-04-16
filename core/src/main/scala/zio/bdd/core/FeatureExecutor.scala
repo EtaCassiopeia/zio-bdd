@@ -6,9 +6,8 @@ import zio.bdd.core.step.{StepDef, StepRegistry}
 import zio.bdd.gherkin.Feature
 
 object FeatureExecutor {
-  def executeFeature[R: Tag, S: Tag](
+  def executeFeature[R: Tag, S: Tag: Default](
     feature: Feature,
-    initialState: => S,
     steps: List[StepDef[R, S]],
     hooks: Hooks[R, S]
   ): ZIO[R, Nothing, FeatureResult] =
@@ -31,7 +30,7 @@ object FeatureExecutor {
             featureResult <- ZIO
                                .foreach(feature.scenarios) { scenario =>
                                  ZIO.logAnnotate("scenarioId", scenario.id.toString) {
-                                   ScenarioExecutor.executeScenario[R, S](scenario, initialState, hooks)
+                                   ScenarioExecutor.executeScenario[R, S](scenario, hooks)
                                  }
                                }
                                .map { scenarioResults =>
@@ -41,5 +40,14 @@ object FeatureExecutor {
           } yield featureResult
         }
         .provideSomeLayer[R](StepRegistry.layer[R, S](steps))
+    }
+
+  def executeFeatures[R: Tag, S: Tag: Default](
+    features: List[Feature],
+    steps: List[StepDef[R, S]],
+    hooks: Hooks[R, S]
+  ): ZIO[R, Nothing, List[FeatureResult]] =
+    ZIO.foreach(features) { feature =>
+      executeFeature(feature, steps, hooks)
     }
 }
