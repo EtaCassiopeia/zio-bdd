@@ -125,7 +125,7 @@ class ZIOBDDTask(
 
     val updateFeatures = filterFeatures(features, config)
 
-    val program = suiteInstance.run(updateFeatures)
+    val program = suiteInstance.run(updateFeatures).tap(reporter.report)
 
     val results =
       try {
