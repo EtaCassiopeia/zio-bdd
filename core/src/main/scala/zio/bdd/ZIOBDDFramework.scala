@@ -68,25 +68,23 @@ class ZIOBDDTask(
     val includeTags = config.includeTags
     val excludeTags = config.excludeTags
 
-    // Determine if a set of tags should result in ignoring the feature or scenario
-    def shouldIgnore(tags: List[String]): Boolean = {
+    // For features, only check excludeTags
+    def shouldIgnoreFeature(tags: List[String]): Boolean =
+      tags.exists(excludeTags.contains)
+
+    // For scenarios, check both excludeTags and includeTags
+    def shouldIgnoreScenario(tags: List[String]): Boolean = {
       val hasExcludeTag     = tags.exists(excludeTags.contains)
       val missingIncludeTag = includeTags.nonEmpty && !tags.exists(includeTags.contains)
       hasExcludeTag || missingIncludeTag
     }
 
-    // Process each feature and its scenarios
     features.map { feature =>
-      // Update feature tags if it should be ignored
-      val featureTags = if (shouldIgnore(feature.tags)) feature.tags :+ "ignore" else feature.tags
-
-      // Update each scenario's tags if it should be ignored
+      val featureTags = if (shouldIgnoreFeature(feature.tags)) feature.tags :+ "ignore" else feature.tags
       val updatedScenarios = feature.scenarios.map { scenario =>
-        val scenarioTags = if (shouldIgnore(scenario.tags)) scenario.tags :+ "ignore" else scenario.tags
+        val scenarioTags = if (shouldIgnoreScenario(scenario.tags)) scenario.tags :+ "ignore" else scenario.tags
         scenario.copy(tags = scenarioTags)
       }
-
-      // Return a new Feature with updated tags and scenarios
       feature.copy(tags = featureTags, scenarios = updatedScenarios)
     }
   }
