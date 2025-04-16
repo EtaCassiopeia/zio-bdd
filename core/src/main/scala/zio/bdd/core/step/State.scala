@@ -8,6 +8,13 @@ trait State[S] {
   def update(f: S => S): UIO[Unit]
 }
 
+trait StateOps[S: Tag] {
+  object ScenarioContext {
+    def get: ZIO[State[S], Nothing, S]                  = State.get[S]
+    def update(f: S => S): ZIO[State[S], Nothing, Unit] = State.update[S](f)
+  }
+}
+
 object State {
   def get[S: Tag]: ZIO[State[S], Nothing, S]                  = ZIO.serviceWithZIO[State[S]](_.get)
   def update[S: Tag](f: S => S): ZIO[State[S], Nothing, Unit] = ZIO.serviceWithZIO[State[S]](_.update(f))

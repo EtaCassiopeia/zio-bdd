@@ -6,7 +6,7 @@ import zio.bdd.core.Hooks
 import scala.collection.mutable
 import scala.language.implicitConversions
 
-trait ZIOSteps[R, S] extends Hooks[R] with GeneratedStepMethods[R, S] with DefaultTypedExtractor {
+trait ZIOSteps[R, S] extends Hooks[R, S] with GeneratedStepMethods[R, S] with DefaultTypedExtractor with StateOps[S] {
 
   type Step[I, O] = I => ZIO[R, Throwable, O]
 

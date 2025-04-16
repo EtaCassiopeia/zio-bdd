@@ -9,7 +9,8 @@ object FeatureExecutor {
   def executeFeature[R: Tag, S: Tag](
     feature: Feature,
     initialState: => S,
-    steps: List[StepDef[R, S]]
+    steps: List[StepDef[R, S]],
+    hooks: Hooks[R, S]
   ): ZIO[R, Nothing, FeatureResult] =
     if (feature.isIgnored) {
       // Handle ignored feature: create a FeatureResult with ignored scenarios
@@ -25,15 +26,19 @@ object FeatureExecutor {
       // Execute scenarios for non-ignored feature
       ZIO
         .logAnnotate("featureId", feature.id.toString) {
-          ZIO
-            .foreach(feature.scenarios) { scenario =>
-              ZIO.logAnnotate("scenarioId", scenario.id.toString) {
-                ScenarioExecutor.executeScenario[R, S](scenario, initialState)
-              }
-            }
-            .map { scenarioResults =>
-              FeatureResult(feature, scenarioResults)
-            }
+          for {
+            _ <- hooks.beforeFeatureHook
+            featureResult <- ZIO
+                               .foreach(feature.scenarios) { scenario =>
+                                 ZIO.logAnnotate("scenarioId", scenario.id.toString) {
+                                   ScenarioExecutor.executeScenario[R, S](scenario, initialState, hooks)
+                                 }
+                               }
+                               .map { scenarioResults =>
+                                 FeatureResult(feature, scenarioResults)
+                               }
+            _ <- hooks.afterFeatureHook
+          } yield featureResult
         }
         .provideSomeLayer[R](StepRegistry.layer[R, S](steps))
     }
