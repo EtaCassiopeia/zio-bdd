@@ -1,5 +1,5 @@
 import xerial.sbt.Sonatype.sonatypeCentralHost
-//import StepGeneratorPlugin.autoImport._
+import StepGeneratorPlugin.autoImport.*
 
 inThisBuild(
   List(
@@ -21,19 +21,19 @@ inThisBuild(
 )
 
 lazy val commonDependencies = Seq(
-  "dev.zio" %% "zio"          % "2.1.17",
-  "dev.zio" %% "zio-schema"   % "1.6.6",
+  "dev.zio" %% "zio"                   % "2.1.17",
+  "dev.zio" %% "zio-schema"            % "1.6.6",
   "dev.zio" %% "zio-schema-derivation" % "1.6.6",
-  "dev.zio" %% "zio-logging"  % "2.5.0",
-  "dev.zio" %% "zio-test"     % "2.1.17",
-  "dev.zio" %% "zio-test-sbt" % "2.1.17" % Test
+  "dev.zio" %% "zio-logging"           % "2.5.0",
+  "dev.zio" %% "zio-test"              % "2.1.17",
+  "dev.zio" %% "zio-test-sbt"          % "2.1.17" % Test
 )
 
 lazy val root = (project in file("."))
   .aggregate(core, gherkin)
   .settings(
-    name        := "zio-bdd-root",
-    description := "A ZIO-based BDD testing framework for Scala 3",
+    name           := "zio-bdd-root",
+    description    := "A ZIO-based BDD testing framework for Scala 3",
     publish / skip := true
   )
   .dependsOn(core, gherkin)
@@ -44,14 +44,14 @@ lazy val core = (project in file("core"))
     name := "zio-bdd",
     libraryDependencies ++= commonDependencies,
     // libraryDependencies += "org.scala-lang" % "scala-reflect"  % scalaVersion.value % "provided",
-      libraryDependencies ++= Seq(
+    libraryDependencies ++= Seq(
       "org.scala-sbt"           % "test-interface" % "1.0" % "provided",
       "org.scala-lang.modules" %% "scala-xml"      % "2.3.0",
       "dev.zio"                %% "zio-streams"    % "2.1.17",
-      "dev.zio" %% "izumi-reflect" % "3.0.2"
+      "dev.zio"                %% "izumi-reflect"  % "3.0.2"
     ),
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
-   //stepMethodGeneratorSettings
+    stepMethodGeneratorSettings
   )
 
 lazy val gherkin = (project in file("gherkin"))
