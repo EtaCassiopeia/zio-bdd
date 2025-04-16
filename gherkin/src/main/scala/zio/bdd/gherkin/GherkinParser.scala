@@ -18,6 +18,14 @@ case class Feature(
 ) {
   def id: Int            = s"feature:$name:${file.getOrElse("unknown")}:${line.getOrElse(0)}".hashCode
   def isIgnored: Boolean = tags.exists(_.contains("ignore"))
+
+  def prettyString(indentLevel: Int = 0): String = {
+    val indent       = "  " * indentLevel
+    val tagsStr      = if (tags.nonEmpty) indent + tags.map("@" + _).mkString(" ") + "\n" else ""
+    val featureLine  = indent + "Feature: " + name + "\n"
+    val scenariosStr = scenarios.map(_.prettyString(indentLevel + 1)).mkString("\n")
+    tagsStr + featureLine + scenariosStr
+  }
 }
 
 case class Scenario(
@@ -29,15 +37,50 @@ case class Scenario(
 ) {
   def id: Int            = s"scenario:$name:${file.getOrElse("unknown")}:${line.getOrElse(0)}".hashCode
   def isIgnored: Boolean = tags.exists(_.contains("ignore"))
+
+  def prettyString(indentLevel: Int): String = {
+    val indent       = "  " * indentLevel
+    val tagsStr      = if (tags.nonEmpty) indent + tags.map("@" + _).mkString(" ") + "\n" else ""
+    val scenarioLine = indent + "Scenario: " + name + "\n"
+    val stepsStr     = steps.map(_.prettyString(indentLevel + 1)).mkString("\n")
+    tagsStr + scenarioLine + stepsStr
+  }
 }
 
 enum StepType {
   case GivenStep, WhenStep, ThenStep, AndStep
 }
 
-case class DataTableRow(cells: List[String])
+case class DataTableRow(cells: List[String]) {
+  def prettyString(indentLevel: Int, widths: List[Int]): String = {
+    val indent = "  " * indentLevel
+    val paddedCells = cells.zip(widths).map { case (cell, width) =>
+      cell.padTo(width, ' ').mkString
+    }
+    indent + "| " + paddedCells.mkString(" | ") + " |"
+  }
+}
 
-case class DataTable(headers: List[String], rows: List[DataTableRow])
+case class DataTable(headers: List[String], rows: List[DataTableRow]) {
+  def prettyString(indentLevel: Int): String = {
+    val indent     = "  " * indentLevel
+    val numColumns = headers.size
+    val columnWidths = (0 until numColumns).map { j =>
+      val headerLength  = headers(j).length
+      val maxCellLength = rows.map(row => row.cells(j).length).maxOption.getOrElse(0)
+      Math.max(headerLength, maxCellLength)
+    }.toList
+
+    val headerRow = indent + "| " + headers
+      .zip(columnWidths)
+      .map { case (cell, width) =>
+        cell.padTo(width, ' ').mkString
+      }
+      .mkString(" | ") + " |"
+    val dataRows = rows.map(_.prettyString(indentLevel, columnWidths))
+    (headerRow +: dataRows).mkString("\n")
+  }
+}
 
 case class Step(
   stepType: StepType,
@@ -50,6 +93,19 @@ case class Step(
 
   override def toString: String =
     s"${stepType.toString.replace("Step", "")} $pattern ${file.zip(line).map { case (f, l) => s"($f:$l)" }.getOrElse("")}"
+
+  def prettyString(indentLevel: Int): String = {
+    val indent = "  " * indentLevel
+    val stepTypeStr = stepType match {
+      case StepType.GivenStep => "Given"
+      case StepType.WhenStep  => "When"
+      case StepType.ThenStep  => "Then"
+      case StepType.AndStep   => "And"
+    }
+    val stepLine     = indent + stepTypeStr + " " + pattern + "\n"
+    val dataTableStr = dataTable.map(_.prettyString(indentLevel + 1)).getOrElse("")
+    stepLine + dataTableStr
+  }
 }
 
 object GherkinParser {

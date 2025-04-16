@@ -87,6 +87,8 @@ object ExampleApp extends ZIOAppDefault {
 
   private val logConfig = LogLevelConfig(InternalLogLevel.Debug)
 
+  println(feature.prettyString())
+
   def run = {
     val example = new Example {}
     val program = example.run(List(feature))
