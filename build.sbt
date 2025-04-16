@@ -43,7 +43,6 @@ lazy val core = (project in file("core"))
   .settings(
     name := "zio-bdd",
     libraryDependencies ++= commonDependencies,
-    // libraryDependencies += "org.scala-lang" % "scala-reflect"  % scalaVersion.value % "provided",
     libraryDependencies ++= Seq(
       "org.scala-sbt"           % "test-interface" % "1.0" % "provided",
       "org.scala-lang.modules" %% "scala-xml"      % "2.3.0",
@@ -67,7 +66,7 @@ lazy val example = (project in file("example"))
   .settings(
     name := "zio-bdd-example",
     libraryDependencies ++= commonDependencies,
-    Test / testFrameworks    := Seq(new TestFramework("zio.bdd.core.ZIOBDDFramework")),
+    Test / testFrameworks    := Seq(new TestFramework("zio.bdd.ZIOBDDFramework")),
     Test / resourceDirectory := baseDirectory.value / "src" / "test" / "resources" / "features",
     publish / skip           := true
   )

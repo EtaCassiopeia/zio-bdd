@@ -166,3 +166,8 @@ case class PrettyReporter() extends Reporter {
         )
     } yield ()
 }
+
+object PrettyReporter {
+  def live: ZLayer[Any, Nothing, Reporter] =
+    ZLayer.succeed(PrettyReporter())
+}

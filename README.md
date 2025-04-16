@@ -51,7 +51,7 @@ libraryDependencies += "io.github.etacassiopeia" %% "zio-bdd" % "0.1.0" % Test
 libraryDependencies += "dev.zio" %% "zio" % "2.1.16" // Required for ZIO effects
 
 // Enable zio-bdd in sbt
-Test / testFrameworks += new TestFramework("zio.bdd.core.ZIOBDDFramework")
+Test / testFrameworks += new TestFramework("zio.bdd.core.zio.bdd.ZIOBDDFramework")
 ```
 
 ## Usage Example

@@ -43,8 +43,6 @@ trait Example extends ZIOSteps[Any, List[User]] {
 
 object ExampleApp extends ZIOAppDefault {
 
-  val reporter = PrettyReporter()
-
   val feature = Feature(
     name = "User Management",
     scenarios = List(
@@ -93,7 +91,7 @@ object ExampleApp extends ZIOAppDefault {
     val example = new Example {}
     val program = example.run(List(feature))
     program.tap { result =>
-      reporter.report(result)
+      PrettyReporter().report(result)
     }
   }.provide(LogCollector.live(logConfig))
 }

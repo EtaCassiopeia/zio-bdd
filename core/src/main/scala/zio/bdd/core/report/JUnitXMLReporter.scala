@@ -1,7 +1,8 @@
 package zio.bdd.core.report
 
-import zio.ZIO
+import zio.{ZIO, ZLayer}
 import zio.bdd.core.{FeatureResult, LogCollector}
+
 import java.time.Instant
 import java.nio.file.{Files, Paths}
 
@@ -53,4 +54,9 @@ case class JUnitXMLReporter(config: JUnitReporterConfig) extends Reporter {
              }
            }
     } yield ()
+}
+
+object JUnitXMLReporter {
+  def live(config: JUnitReporterConfig = JUnitReporterConfig()): ZLayer[Any, Nothing, Reporter] =
+    ZLayer.succeed(JUnitXMLReporter(config))
 }
