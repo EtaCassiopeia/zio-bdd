@@ -91,8 +91,7 @@ object ExampleApp extends ZIOAppDefault {
 
   def run = {
     val example = new Example {}
-    val steps   = example.getSteps
-    val program = FeatureExecutor.executeFeatures[Any, List[User]](List(feature), steps, example)
+    val program = example.run(List(feature))
     program.tap { result =>
       reporter.report(result)
     }
