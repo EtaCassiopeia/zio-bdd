@@ -123,7 +123,7 @@ object LogCollector {
     }
   }
 
-  def live(config: LogLevelConfig): ZLayer[Any, Nothing, LogCollector] =
+  def live(config: LogLevelConfig = LogLevelConfig()): ZLayer[Any, Nothing, LogCollector] =
     ZLayer.scoped {
       for {
         ref      <- Ref.make(Map.empty[(String, String), CollectedLogs])
