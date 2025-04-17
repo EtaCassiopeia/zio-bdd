@@ -1,14 +1,13 @@
 package zio.bdd.core
 
 import zio.*
-import zio.bdd.core.report.PrettyReporter
 import zio.bdd.core.step.*
 import zio.bdd.gherkin.*
 import zio.schema.{DeriveSchema, Schema}
 import zio.test.*
 import zio.test.Assertion.*
 
-object AssertionTest extends ZIOSpecDefault {
+object AssertionSpec extends ZIOSpecDefault {
 
   object Domain {
     case class Cart(id: String, items: Map[String, Int], discount: Option[Double])
