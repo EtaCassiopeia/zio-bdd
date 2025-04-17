@@ -3,133 +3,280 @@ package zio.bdd.gherkin
 import zio.*
 import fastparse.*
 import fastparse.MultiLineWhitespace.*
+
 import java.io.File
 import scala.io.Source
+import scala.util.boundary
+import scala.util.boundary.break
 
 case class Feature(
   name: String,
   tags: List[String] = Nil,
-  background: List[Step] = Nil,
   scenarios: List[Scenario],
   file: Option[String] = None,
   line: Option[Int] = None
-)
+) {
+  def id: Int            = s"feature:$name:${file.getOrElse("unknown")}:${line.getOrElse(0)}".hashCode
+  def isIgnored: Boolean = tags.exists(_.contains("ignore"))
+
+  def prettyString(indentLevel: Int = 0): String = {
+    val indent       = "  " * indentLevel
+    val tagsStr      = if (tags.nonEmpty) indent + tags.map("@" + _).mkString(" ") + "\n" else ""
+    val featureLine  = indent + "Feature: " + name + "\n"
+    val scenariosStr = scenarios.map(_.prettyString(indentLevel + 1)).mkString("\n")
+    tagsStr + featureLine + scenariosStr
+  }
+}
 
 case class Scenario(
   name: String,
   tags: List[String] = Nil,
   steps: List[Step],
-  examples: List[ExampleRow],
-  metadata: ScenarioMetadata,
   file: Option[String] = None,
   line: Option[Int] = None
-)
+) {
+  def id: Int            = s"scenario:$name:${file.getOrElse("unknown")}:${line.getOrElse(0)}".hashCode
+  def isIgnored: Boolean = tags.exists(_.contains("ignore"))
 
-enum StepType {
-  case GivenStep
-  case WhenStep
-  case ThenStep
-  case AndStep
+  def prettyString(indentLevel: Int): String = {
+    val indent       = "  " * indentLevel
+    val tagsStr      = if (tags.nonEmpty) indent + tags.map("@" + _).mkString(" ") + "\n" else ""
+    val scenarioLine = indent + "Scenario: " + name + "\n"
+    val stepsStr     = steps.map(_.prettyString(indentLevel + 1)).mkString("\n")
+    tagsStr + scenarioLine + stepsStr
+  }
 }
 
-case class Step(stepType: StepType, pattern: String, file: Option[String] = None, line: Option[Int] = None) {
+enum StepType {
+  case GivenStep, WhenStep, ThenStep, AndStep
+}
 
-  def id: String = file.zip(line).map { case (f, l) => s"$f:$l" }.getOrElse("unknown")
+case class DataTableRow(cells: List[String]) {
+  def prettyString(indentLevel: Int, widths: List[Int]): String = {
+    val indent = "  " * indentLevel
+    val paddedCells = cells.zip(widths).map { case (cell, width) =>
+      cell.padTo(width, ' ').mkString
+    }
+    indent + "| " + paddedCells.mkString(" | ") + " |"
+  }
+}
+
+case class DataTable(headers: List[String], rows: List[DataTableRow]) {
+  def prettyString(indentLevel: Int): String = {
+    val indent     = "  " * indentLevel
+    val numColumns = headers.size
+    val columnWidths = (0 until numColumns).map { j =>
+      val headerLength  = headers(j).length
+      val maxCellLength = rows.map(row => row.cells(j).length).maxOption.getOrElse(0)
+      Math.max(headerLength, maxCellLength)
+    }.toList
+
+    val headerRow = indent + "| " + headers
+      .zip(columnWidths)
+      .map { case (cell, width) =>
+        cell.padTo(width, ' ').mkString
+      }
+      .mkString(" | ") + " |"
+    val dataRows = rows.map(_.prettyString(indentLevel, columnWidths))
+    (headerRow +: dataRows).mkString("\n")
+  }
+}
+
+case class Step(
+  stepType: StepType,
+  pattern: String,
+  dataTable: Option[DataTable] = None,
+  file: Option[String] = None,
+  line: Option[Int] = None
+) {
+  def id: Int = s"step:${stepType.toString}:$pattern:${file.getOrElse("unknown")}:${line.getOrElse(0)}".hashCode
 
   override def toString: String =
     s"${stepType.toString.replace("Step", "")} $pattern ${file.zip(line).map { case (f, l) => s"($f:$l)" }.getOrElse("")}"
+
+  def prettyString(indentLevel: Int): String = {
+    val indent = "  " * indentLevel
+    val stepTypeStr = stepType match {
+      case StepType.GivenStep => "Given"
+      case StepType.WhenStep  => "When"
+      case StepType.ThenStep  => "Then"
+      case StepType.AndStep   => "And"
+    }
+    val stepLine     = indent + stepTypeStr + " " + pattern + "\n"
+    val dataTableStr = dataTable.map(_.prettyString(indentLevel + 1)).getOrElse("")
+    stepLine + dataTableStr
+  }
 }
-
-case class ExampleRow(data: Map[String, String])
-
-case class ScenarioMetadata(
-  retryCount: Int = 0,
-  isFlaky: Boolean = false,
-  repeatCount: Int = 1,
-  isIgnored: Boolean = false
-)
 
 object GherkinParser {
   // Context to track file and content for line numbers
-  case class ParseContext(file: String, content: String) {
+  private case class ParseContext(file: String, content: String) {
     def lineAt(index: Int): Int = content.take(index).count(_ == '\n') + 1
   }
 
   // Whitespace parser: handles spaces, tabs, newlines, carriage returns
-  def ws(using P[?]): P[Unit] = P(CharIn(" \t\n\r").rep)
+  private def ws(using P[?]): P[Unit] = P(CharIn(" \t\n\r").rep)
 
   // Tag parser: captures tags like @retry(3), @flaky, @ignore or user-defined tags to organise features and scenarios
-  def tag(using P[?]): P[String] = P("@" ~ CharsWhile(c => c.isLetterOrDigit || c == '_' || c == '(' || c == ')').!)
+  private def tag(using P[?]): P[String] = P(
+    "@" ~ CharsWhile(c => c.isLetterOrDigit || c == '_' || c == '(' || c == ')').!
+  )
 
   // Keyword parser: handles Gherkin keywords with optional colon
-  def keyword(using P[?]): P[String] = P(
+  private def keyword(using P[?]): P[String] = P(
     ("Feature" | "Background" | "Scenario Outline" | "Scenario" | "Given" | "When" | "Then" | "And" | "Examples") ~ (":".?)
   ).!.map(_.stripSuffix(":"))
 
   // Text parser: captures text until newline, including typed placeholders like {name:String}
-  def text(using P[?]): P[String] = P(CharsWhile(_ != '\n').!)
+  private def text(using P[?]): P[String] = P(CharsWhile(_ != '\n').!)
 
   // Cell parser: captures text between '|' characters, trims whitespace
-  def cell(using P[?]): P[String] = P(CharsWhile(_ != '|').!).map(_.trim)
+  private def cell(using P[?]): P[String] = P(CharsWhile(_ != '|').!).map(_.trim)
 
   // Row parser: parses a table row starting and ending with '|'
-  def row(using P[?]): P[List[String]] = P("|" ~/ cell.rep(sep = "|") ~ "|").map(_.toList)
+  private def row(using P[?]): P[List[String]] = P("|" ~/ cell.rep(sep = "|") ~ "|").map(_.toList)
 
   // Tags parser: captures zero or more tags
-  def tags(using P[?]): P[List[String]] = P(tag.rep.map(_.toList))
+  private def tags(using P[?]): P[List[String]] = P(tag.rep.map(_.toList))
 
   // Background parser: captures background steps
-  def background(ctx: ParseContext)(using P[?]): P[List[Step]] =
+  private def background(ctx: ParseContext)(using P[?]): P[List[Step]] =
     P("Background" ~ ":" ~/ ws ~ step(ctx).rep).map(_.toList)
 
-  // Step parser: captures step type as StepType and pattern separately
-  def step(ctx: ParseContext)(using P[?]): P[Step] =
-    P(Index ~ ("Given" | "When" | "Then" | "And").! ~ ":".? ~/ text).map { case (idx, stepTypeStr, pattern) =>
-      val stepType = stepTypeStr match {
-        case "Given" => StepType.GivenStep
-        case "When"  => StepType.WhenStep
-        case "Then"  => StepType.ThenStep
-        case "And"   => StepType.AndStep
-      }
-      Step(stepType, pattern.trim, Some(ctx.file), Some(ctx.lineAt(idx)))
+  // DataTable parser: captures a table with headers and rows
+  private def dataTableParser(using P[?]): P[DataTable] = {
+    import NoWhitespace._
+    def cell: P[String] = P(CharsWhile(c => !"|\n".contains(c)).!).map(_.trim)
+
+    def row: P[DataTableRow] = P(CharsWhile(_.isWhitespace).? ~ "|" ~ cell.rep(1, sep = "|") ~ "|" ~ "\n").map {
+      cells => DataTableRow(cells.toList)
     }
 
+    P(row.rep(1)).map { rows =>
+      val headerRow = rows.head
+      val dataRows  = rows.tail
+      DataTable(headerRow.cells, dataRows.toList)
+    }
+  }
+
+  // Step parser: captures step type as StepType and pattern separately
+  private def step(ctx: ParseContext)(using P[?]): P[Step] =
+    P(Index ~ ("Given" | "When" | "Then" | "And").! ~ ":".? ~/ text ~ dataTableParser.?).map {
+      case (idx, stepTypeStr, pattern, dataTableOpt) =>
+        val stepType = stepTypeStr match {
+          case "Given" => StepType.GivenStep
+          case "When"  => StepType.WhenStep
+          case "Then"  => StepType.ThenStep
+          case "And"   => StepType.AndStep
+        }
+        Step(stepType, pattern.trim, dataTableOpt, Some(ctx.file), Some(ctx.lineAt(idx)))
+    }
+
+  private case class ExampleRow(data: Map[String, String])
+
   // Examples parser: parses the Examples section with header and data rows
-  def examples(using P[?]): P[List[ExampleRow]] =
+  private def examples(using P[?]): P[List[ExampleRow]] =
     P("Examples" ~ ":" ~/ ws ~ row ~ (ws ~ Index ~ row).rep).map { case (header, rows) =>
       rows.map { case (idx, row) =>
         ExampleRow(header.zip(row).toMap)
       }.toList
     }
 
+  private case class RawScenario(
+    name: String,
+    tags: List[String],
+    steps: List[Step],
+    examples: List[ExampleRow],
+    file: Option[String],
+    line: Option[Int]
+  )
+
   // Scenario parser: supports both Scenario and Scenario Outline with tags
-  def scenario(ctx: ParseContext)(using P[?]): P[Scenario] =
+  private def scenario(ctx: ParseContext)(using P[?]): P[RawScenario] =
     P(
       tags ~ Index ~ (("Scenario" ~ !("Outline" ~ ":")) | "Scenario Outline") ~ ":" ~/ text ~ ws ~ step(
         ctx
       ).rep ~ examples.?
     ).map { case (tags, idx, name, steps, examplesOpt) =>
-      val metadata = parseMetadata(tags)
-      Scenario(
+      RawScenario(
         name.trim,
         tags,
         steps.toList,
         examplesOpt.getOrElse(Nil),
-        metadata,
         Some(ctx.file),
         Some(ctx.lineAt(idx))
       )
     }
 
-  // Feature parser: parses feature name, optional background, and one or more scenarios
-  def feature(ctx: ParseContext)(using P[?]): P[Feature] =
+  // Helper to sequence a List[Either[A, B]] into Either[A, List[B]]
+  private implicit class EitherOps[A, B](list: List[Either[A, B]]) {
+    def sequence: Either[A, List[B]] =
+      list.foldRight(Right(Nil): Either[A, List[B]]) { (e, acc) =>
+        for {
+          xs <- acc
+          x  <- e
+        } yield x :: xs
+      }
+  }
+
+  private def feature(ctx: ParseContext)(using P[?]): P[Feature] =
     P(tags ~ "Feature" ~ ":" ~/ Index ~ text ~ ws ~ background(ctx).? ~ scenario(ctx).rep(1)).map {
-      case (tags, idx, name, bgOpt, scenarios) =>
-        Feature(name.trim, tags, bgOpt.getOrElse(Nil), scenarios.toList, Some(ctx.file), Some(ctx.lineAt(idx)))
+      case (tags, idx, name, bgOpt, rawScenarios) =>
+        val backgroundSteps = bgOpt.getOrElse(Nil)
+        val expandedScenarios = rawScenarios.flatMap { scenario =>
+          if (scenario.examples.isEmpty) {
+            // No examples: combine background with scenario steps
+            List(
+              Scenario(
+                name = scenario.name,
+                tags = scenario.tags,
+                steps = backgroundSteps ++ scenario.steps,
+                file = scenario.file,
+                line = scenario.line
+              )
+            )
+          } else {
+            // Examples present: expand into multiple scenarios
+            scenario.examples.zipWithIndex.map { case (row, i) =>
+              val parameterizedBackground = backgroundSteps.map(parameterizeStep(_, row.data)).sequence
+              val parameterizedSteps      = scenario.steps.map(parameterizeStep(_, row.data)).sequence
+              (parameterizedBackground, parameterizedSteps) match {
+                case (Right(bgSteps), Right(scSteps)) =>
+                  Scenario(
+                    name = s"${scenario.name} - Example ${i + 1}",
+                    tags = scenario.tags,
+                    steps = bgSteps ++ scSteps,
+                    file = scenario.file,
+                    line = scenario.line
+                  )
+                case (Left(error), _) => throw new RuntimeException(s"Parameterization error in background: $error")
+                case (_, Left(error)) => throw new RuntimeException(s"Parameterization error in steps: $error")
+              }
+            }
+          }
+        }
+        Feature(name.trim, tags, expandedScenarios.toList, Some(ctx.file), Some(ctx.lineAt(idx)))
     }
 
+  private def parameterizeStep(step: Step, exampleData: Map[String, String]): Either[String, Step] = {
+    val placeholderPattern = "<([^>]+)>".r
+    var newPattern         = step.pattern
+    boundary {
+      for (m <- placeholderPattern.findAllMatchIn(step.pattern)) {
+        val placeholderName = m.group(1)
+        exampleData.get(placeholderName) match {
+          case Some(value) =>
+            newPattern = newPattern.replace(s"<$placeholderName>", value)
+          case None =>
+            break(Left(s"Missing value for placeholder '$placeholderName' in step: ${step.pattern}"))
+        }
+      }
+      Right(step.copy(pattern = newPattern))
+    }
+  }
+
   // Top-level parser: parses the entire Gherkin content
-  def gherkin(ctx: ParseContext)(using P[?]): P[Feature] =
+  private def gherkin(ctx: ParseContext)(using P[?]): P[Feature] =
     P(Start ~/ ws ~ feature(ctx) ~ ws ~ End)
 
   // Preprocess content to remove comments (lines starting with #)
@@ -157,15 +304,6 @@ object GherkinParser {
           )
       }
     }
-
-  // Parse metadata from tags
-  private def parseMetadata(tags: List[String]): ScenarioMetadata = {
-    val retryCount  = tags.collectFirst { case s"retry($n)" => n.toInt }.getOrElse(0)
-    val isFlaky     = tags.contains("flaky")
-    val repeatCount = tags.collectFirst { case s"repeat($n)" => n.toInt }.getOrElse(1)
-    val isIgnored   = tags.contains("ignore")
-    ScenarioMetadata(retryCount, isFlaky, repeatCount, isIgnored)
-  }
 
   // Parse a single feature file
   def parseFeatureFile(file: File): ZIO[Any, Throwable, Feature] =

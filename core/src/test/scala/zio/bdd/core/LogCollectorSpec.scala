@@ -5,6 +5,8 @@ import zio.test.*
 
 object LogCollectorSpec extends ZIOSpecDefault {
 
+  private val logConfig = LogLevelConfig(InternalLogLevel.Debug)
+
   override def spec: Spec[Any, Any] = suite("LogCollectorSpec")(
     test("captures and isolates logs from different logging styles") {
       val scenarioId = "test-scenario"
@@ -31,7 +33,7 @@ object LogCollectorSpec extends ZIOSpecDefault {
         }
       }
 
-      effect.provide(LogCollector.live)
+      effect.provide(LogCollector.live(logConfig))
     }
   )
 }
