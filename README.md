@@ -45,7 +45,7 @@ import zio.schema.{DeriveSchema, Schema}
 // Domain and state
 case class Context(userName: String, greeting: String)
 object Context {
-  implicit val schema: Schema[ScenarioContext] = DeriveSchema.gen[ScenarioContext]
+  implicit val schema: Schema[Context] = DeriveSchema.gen[Context]
 }
 
 // Service
