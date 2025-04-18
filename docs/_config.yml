@@ -1,4 +1,4 @@
-theme: just-the-docs
+theme: jekyll-theme-minimal
 title: zio-bdd Documentation
 description: Documentation for zio-bdd
 url: "https://EtaCassiopeia.github.io/zio-bdd"
