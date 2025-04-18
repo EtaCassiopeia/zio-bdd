@@ -1,4 +1,4 @@
 theme: jekyll-theme-minimal
-title: zio-bdd Documentation
-description: Documentation for zio-bdd
+title: zio-bdd
+description: A BDD testing framework integrating Gherkin-style tests with ZIO’s effect system
 url: "https://EtaCassiopeia.github.io/zio-bdd"
