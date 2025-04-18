@@ -104,5 +104,5 @@ Use parallelism to speed up test execution, but ensure your tests are isolated t
 
 ## Next Steps
 
-- Explore advanced configurations in [Advanced Features](advanced.md).
+- Explore advanced configurations in [Advanced Features](advanced-features.md).
 - See practical examples in [Examples](examples.md).

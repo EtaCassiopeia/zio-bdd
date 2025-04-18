@@ -127,4 +127,4 @@ When("the user is greeted") {
 ## Next Steps
 
 - Learn how to execute your tests in [Running Tests](running-tests.md).
-- Dive into additional features in [Advanced Features](advanced.md).
+- Dive into additional features in [Advanced Features](advanced-features.md).
