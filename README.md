@@ -16,14 +16,14 @@
 
 **Add Dependency**:
 ```scala
-libraryDependencies += "io.github.etacassiopeia" %% "zio-bdd" % "0.1.0" % Test
-libraryDependencies += "dev.zio" %% "zio" % "2.1.17" % Test
-libraryDependencies += "dev.zio" %% "zio-test" % "2.1.17" % Test
+libraryDependencies += "io.github.etacassiopeia" %% "zio-bdd" % "0.1.0" % Test,
+libraryDependencies += "dev.zio" %% "zio" % "2.1.17" % Test,
+libraryDependencies += "dev.zio" %% "zio-test" % "2.1.17" % Test,
 ```
 
 **Enable zio-bdd in sbt**:
 ```scala
-Test / testFrameworks += new TestFramework("zio.bdd.core.ZIOBDDFramework")
+Test / testFrameworks += new TestFramework("zio.bdd.ZIOBDDFramework")
 ```
 
 ## Usage Example
