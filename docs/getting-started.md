@@ -13,15 +13,15 @@ This guide will help you set up and run your first test using `zio-bdd`, a Behav
 In your `build.sbt`, add the following dependencies:
 
 ```scala
-libraryDependencies += "io.github.etacassiopeia" %% "zio-bdd" % "0.1.0" % Test
-libraryDependencies += "dev.zio" %% "zio" % "2.1.17" % Test
-libraryDependencies += "dev.zio" %% "zio-test" % "2.1.17" % Test
+libraryDependencies += "io.github.etacassiopeia" %% "zio-bdd" % "0.1.0" % Test,
+libraryDependencies += "dev.zio" %% "zio" % "2.1.17" % Test,
+libraryDependencies += "dev.zio" %% "zio-test" % "2.1.17" % Test,
 ```
 
 Then, enable the `zio-bdd` test framework:
 
 ```scala
-Test / testFrameworks += new TestFramework("zio.bdd.core.ZIOBDDFramework")
+Test / testFrameworks += new TestFramework("zio.bdd.ZIOBDDFramework")
 ```
 
 ## Step 2: Create a Feature File
