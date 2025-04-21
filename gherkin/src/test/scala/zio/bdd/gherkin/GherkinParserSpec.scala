@@ -436,6 +436,7 @@ object GherkinParserSpec extends ZIOSpecDefault {
                       |  Scenario: Successful password reset with logging
                       |    When the user requests a password reset
                       |    And the reset email is logged
+                      |    But the user is not deactivated
                       |    Then an email should be sent to "default@example.com"
         """.stripMargin
       checkParse(content, testFile) { feature =>
@@ -451,11 +452,12 @@ object GherkinParserSpec extends ZIOSpecDefault {
             Step(StepType.GivenStep, """a user exists with name "Default"""", file = Some(testFile), line = Some(4)),
             Step(StepType.WhenStep, "the user requests a password reset", file = Some(testFile), line = Some(6)),
             Step(StepType.AndStep, "the reset email is logged", file = Some(testFile), line = Some(7)),
+            Step(StepType.ButStep, "the user is not deactivated", file = Some(testFile), line = Some(8)),
             Step(
               StepType.ThenStep,
               """an email should be sent to "default@example.com"""",
               file = Some(testFile),
-              line = Some(8)
+              line = Some(9)
             )
           )
         )

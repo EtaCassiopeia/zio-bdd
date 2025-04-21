@@ -48,7 +48,7 @@ case class Scenario(
 }
 
 enum StepType {
-  case GivenStep, WhenStep, ThenStep, AndStep
+  case GivenStep, WhenStep, ThenStep, ButStep, AndStep
 }
 
 case class DataTableRow(cells: List[String]) {
@@ -100,6 +100,7 @@ case class Step(
       case StepType.GivenStep => "Given"
       case StepType.WhenStep  => "When"
       case StepType.ThenStep  => "Then"
+      case StepType.ButStep   => "But"
       case StepType.AndStep   => "And"
     }
     val stepLine     = indent + stepTypeStr + " " + pattern + "\n"
@@ -124,7 +125,7 @@ object GherkinParser {
 
   // Keyword parser: handles Gherkin keywords with optional colon
   private def keyword(using P[?]): P[String] = P(
-    ("Feature" | "Background" | "Scenario Outline" | "Scenario" | "Given" | "When" | "Then" | "And" | "Examples") ~ (":".?)
+    ("Feature" | "Background" | "Scenario Outline" | "Scenario" | "Given" | "When" | "Then" | "But" | "And" | "Examples") ~ (":".?)
   ).!.map(_.stripSuffix(":"))
 
   // Text parser: captures text until newline, including typed placeholders like {name:String}
@@ -161,12 +162,13 @@ object GherkinParser {
 
   // Step parser: captures step type as StepType and pattern separately
   private def step(ctx: ParseContext)(using P[?]): P[Step] =
-    P(Index ~ ("Given" | "When" | "Then" | "And").! ~ ":".? ~/ text ~ dataTableParser.?).map {
+    P(Index ~ ("Given" | "When" | "Then" | "But" | "And").! ~ ":".? ~/ text ~ dataTableParser.?).map {
       case (idx, stepTypeStr, pattern, dataTableOpt) =>
         val stepType = stepTypeStr match {
           case "Given" => StepType.GivenStep
           case "When"  => StepType.WhenStep
           case "Then"  => StepType.ThenStep
+          case "But"   => StepType.ButStep
           case "And"   => StepType.AndStep
         }
         Step(stepType, pattern.trim, dataTableOpt, Some(ctx.file), Some(ctx.lineAt(idx)))
