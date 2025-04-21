@@ -43,6 +43,7 @@ object StepMethodGenerator {
       ("Given", "StepType.GivenStep"),
       ("When", "StepType.WhenStep"),
       ("Then", "StepType.ThenStep"),
+      ("But", "StepType.ButStep"),
       ("And", "StepType.AndStep")
     )
 

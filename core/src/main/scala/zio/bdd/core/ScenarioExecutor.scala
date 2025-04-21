@@ -60,10 +60,10 @@ object ScenarioExecutor {
     ZIO
       .foldLeft(steps)((List.empty[(Step, StepType)], Option.empty[StepType])) { case ((acc, prevType), step) =>
         val effectiveType = step.stepType match {
-          case StepType.AndStep =>
+          case StepType.AndStep | StepType.ButStep =>
             prevType match {
               case Some(t) => ZIO.succeed(t)
-              case None    => ZIO.fail(new Exception("And step without previous step"))
+              case None    => ZIO.fail(new Exception("And or But step without previous step"))
             }
           case other => ZIO.succeed(other)
         }

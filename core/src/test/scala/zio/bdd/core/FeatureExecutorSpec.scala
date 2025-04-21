@@ -66,6 +66,14 @@ object FeatureExecutorSpec extends ZIOSpecDefault {
     Then("an error occurs") {
       ZIO.fail(new RuntimeException("Simulated error")).unit
     }
+
+    Then("the user " / string / " should not have the role " / string) { (name: String, role: String) =>
+      for {
+        state <- ScenarioContext.get
+        user  <- ZIO.fromOption(state.users.get(name)).orElseFail(new RuntimeException(s"User $name does not exist"))
+        _     <- Assertions.assertTrue(user.role != role, s"User $name should not have role $role")
+      } yield ()
+    }
   }
 
   private val testFile = "test.feature"
@@ -199,6 +207,20 @@ object FeatureExecutorSpec extends ZIOSpecDefault {
                       |      | Alice | 30  | admin |
                       |    Then the user "Alice" should exist
       """.stripMargin
+      for {
+        feature <- GherkinParser.parseFeature(content, testFile)
+        results <- FeatureExecutor.executeFeatures[Any, SystemState](List(feature), steps.getSteps, steps)
+      } yield assertTrue(results.head.isPassed)
+    },
+    test("execute scenario with But step for role check") {
+      val content = """
+                      |Feature: User Role Check
+                      |  Scenario: Check user role
+                      |    Given a system is running
+                      |    Given a user named "Alice" with age 30 and role "admin"
+                      |    Then the user "Alice" should exist
+                      |    But the user "Alice" should not have the role "manager"
+  """.stripMargin
       for {
         feature <- GherkinParser.parseFeature(content, testFile)
         results <- FeatureExecutor.executeFeatures[Any, SystemState](List(feature), steps.getSteps, steps)
