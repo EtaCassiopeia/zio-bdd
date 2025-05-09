@@ -1,5 +1,7 @@
 # zio-bdd
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/EtaCassiopeia/zio-bdd)
+
 **zio-bdd** is a modern Behavior-Driven Development (BDD) testing framework for Scala 3, tailored for ZIO-based applications. It integrates Gherkin-style feature files with ZIO’s effect system, offering compile-time safety, fiber-based concurrency, and type-safe dependency injection via `ZLayer`. This framework enables developers to write expressive, business-aligned tests with robust error handling and modular service integration.
 
 ## Key Features
