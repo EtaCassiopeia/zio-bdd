@@ -89,7 +89,7 @@ object GreetingSpec extends ZIOSteps[GreetingService, Context] {
   }
 
   override def environment: ZLayer[Any, Any, GreetingService] =
-    ZLayer.succeed("Hello") >>> GreetingService.live
+    GreetingService.live
 }
 ```
 
