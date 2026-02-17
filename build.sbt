@@ -56,9 +56,7 @@ lazy val core = (project in file("core"))
 lazy val gherkin = (project in file("gherkin"))
   .settings(
     name := "zio-bdd-gherkin",
-    libraryDependencies ++= commonDependencies ++ Seq(
-      "com.lihaoyi" %% "fastparse" % "3.1.1"
-    )
+    libraryDependencies ++= commonDependencies
   )
 
 lazy val example = (project in file("example"))
