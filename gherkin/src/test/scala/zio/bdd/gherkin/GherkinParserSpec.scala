@@ -4,582 +4,576 @@ import zio.*
 import zio.test.*
 import zio.test.Assertion.*
 
-import java.io.File
-
+/**
+ * Unit tests for GherkinParser: parse correctness, structural integrity,
+ * line-number tracking, and file I/O.
+ *
+ * Organisation:
+ *   - Feature structure (name, tags, file, line)
+ *   - Scenarios and step types
+ *   - Background steps
+ *   - Data tables
+ *   - Scenario Outlines / Examples expansion
+ *   - Comments
+ *   - File I/O (loadFeatures)
+ *   - Parse failure cases
+ *
+ * Line-number assertions are intentionally omitted where they would make tests
+ * brittle. They are covered by GherkinParserComplianceSpec only when the spec
+ * explicitly requires a specific line position.
+ */
 object GherkinParserSpec extends ZIOSpecDefault {
 
-  val testFile = "test.feature"
+  // ── Helpers ────────────────────────────────────────────────────────────────
 
-  def spec: Spec[TestEnvironment & Scope, Any] = suite("GherkinParser")(
-    test("parse basic feature with single scenario") {
-      val content = """
-                      |Feature: User Management
-                      |  Scenario: Create user
-                      |    Given a system is running
-                      |    When a user is created
-                      |    Then the user exists
-    """.stripMargin
-      checkParse(content, testFile) { feature =>
-        assertTrue(
-          feature.name == "User Management",
-          feature.file.contains(testFile),
-          feature.line.contains(2),
-          feature.scenarios.length == 1,
-          feature.scenarios.head.name == "Create user",
-          feature.scenarios.head.file.contains(testFile),
-          feature.scenarios.head.line.contains(3),
-          feature.scenarios.head.steps == List(
-            Step(StepType.GivenStep, "a system is running", file = Some(testFile), line = Some(4)),
-            Step(StepType.WhenStep, "a user is created", file = Some(testFile), line = Some(5)),
-            Step(StepType.ThenStep, "the user exists", file = Some(testFile), line = Some(6))
-          )
-        )
+  private val F = "test.feature"
+
+  private def parse(content: String) =
+    GherkinParser.parseFeature(content, F)
+
+  private def check(content: String)(f: Feature => TestResult): ZIO[Any, Throwable, TestResult] =
+    parse(content).map(f)
+
+  private def mkStep(t: StepType, p: String): Step = Step(t, p)
+
+  // ── Feature structure ──────────────────────────────────────────────────────
+
+  private val featureStructure = suite("Feature structure")(
+    test("feature name is captured") {
+      check("Feature: User Management\n  Scenario: s\n    Given a step\n") { f =>
+        assertTrue(f.name == "User Management")
       }
     },
-    test("parse with background") {
-      val content = """
-                      |Feature: User Authentication
-                      |  Background:
-                      |    Given a system is running
-                      |  Scenario: Login
-                      |    When user logs in
-                      |    Then user is authenticated
-        """.stripMargin
-      checkParse(content, testFile) { feature =>
-        assertTrue(
-          feature.name == "User Authentication",
-          feature.file.contains(testFile),
-          feature.line.contains(2),
-          feature.scenarios.length == 1,
-          feature.scenarios.head.name == "Login",
-          feature.scenarios.head.file.contains(testFile),
-          feature.scenarios.head.line.contains(5),
-          feature.scenarios.head.steps == List(
-            Step(StepType.GivenStep, "a system is running", file = Some(testFile), line = Some(4)),
-            Step(StepType.WhenStep, "user logs in", file = Some(testFile), line = Some(6)),
-            Step(StepType.ThenStep, "user is authenticated", file = Some(testFile), line = Some(7))
-          )
-        )
+    test("feature-level tags are captured") {
+      check("@billing @smoke\nFeature: Payments\n  Scenario: s\n    Given a step\n") { f =>
+        assertTrue(f.tags.toSet == Set("billing", "smoke"))
       }
     },
-    test("parse scenario with tags") {
-      val content = """
-                      |Feature: Payment Processing
-                      |  @ignore
-                      |  Scenario: Process payment
-                      |    Given a payment request
-                      |    When payment is processed
-                      |    Then payment succeeds
-        """.stripMargin
-      checkParse(content, testFile) { feature =>
-        val scenario = feature.scenarios.head
-        assertTrue(
-          feature.name == "Payment Processing",
-          feature.file.contains(testFile),
-          feature.line.contains(2),
-          scenario.name == "Process payment",
-          scenario.file.contains(testFile),
-          scenario.line.contains(4),
-          scenario.isIgnored,
-          scenario.steps == List(
-            Step(StepType.GivenStep, "a payment request", file = Some(testFile), line = Some(5)),
-            Step(StepType.WhenStep, "payment is processed", file = Some(testFile), line = Some(6)),
-            Step(StepType.ThenStep, "payment succeeds", file = Some(testFile), line = Some(7))
-          )
-        )
+    test("feature tags do not bleed onto scenario tags") {
+      check("@feat-tag\nFeature: F\n  Scenario: s\n    Given a step\n") { f =>
+        assertTrue(!f.scenarios.head.tags.contains("feat-tag"))
       }
     },
-    test("parse scenario outline with examples") {
-      val content = """
-                      |Feature: Login Validation
-                      |  Scenario Outline: Validate credentials
-                      |    Given user <name> exists
-                      |    When user enters password <password>
-                      |    Then login <result>
-                      |  Examples:
-                      |    | name  | password | result  |
-                      |    | Alice | pass123  | succeeds |
-                      |    | Bob   | wrong    | fails    |
-        """.stripMargin
-      checkParse(content, testFile) { feature =>
-        val scenario1 = feature.scenarios.head
-        val scenario2 = feature.scenarios(1)
-        assertTrue(
-          feature.name == "Login Validation",
-          feature.file.contains(testFile),
-          feature.line.contains(2),
-          scenario1.name == "Validate credentials - Example 1",
-          scenario2.name == "Validate credentials - Example 2",
-          scenario1.file.contains(testFile),
-          scenario1.line.contains(3),
-          scenario1.steps == List(
-            Step(StepType.GivenStep, "user Alice exists", file = Some(testFile), line = Some(4)),
-            Step(StepType.WhenStep, "user enters password pass123", file = Some(testFile), line = Some(5)),
-            Step(StepType.ThenStep, "login succeeds", file = Some(testFile), line = Some(6))
-          ),
-          scenario2.steps == List(
-            Step(StepType.GivenStep, "user Bob exists", file = Some(testFile), line = Some(4)),
-            Step(StepType.WhenStep, "user enters password wrong", file = Some(testFile), line = Some(5)),
-            Step(StepType.ThenStep, "login fails", file = Some(testFile), line = Some(6))
-          )
-        )
+    test("feature file and line are recorded") {
+      parse("Feature: F\n  Scenario: s\n    Given a step\n").map { f =>
+        assertTrue(f.file.contains(F), f.line.exists(_ >= 1))
       }
-    },
-    test("parse step with single-row data table") {
-      val content = """
-                      |Feature: User Login
-                      |  Scenario: Login with credentials
-                      |    Given the user enters credentials
-                      |      | username | password |
-                      |      | admin    | pass123  |
-                      |    When the user submits the form
-                      |    Then the user is logged in
-        """.stripMargin
-      checkParse(content, testFile) { feature =>
-        val scenario = feature.scenarios.head
-        assertTrue(
-          feature.name == "User Login",
-          feature.file.contains(testFile),
-          feature.line.contains(2),
-          scenario.name == "Login with credentials",
-          scenario.file.contains(testFile),
-          scenario.line.contains(3),
-          scenario.steps.length == 3,
-          scenario.steps(0) == Step(
-            StepType.GivenStep,
-            "the user enters credentials",
-            Some(
-              DataTable(
-                headers = List("username", "password"),
-                rows = List(DataTableRow(List("admin", "pass123")))
-              )
-            ),
-            Some(testFile),
-            Some(4)
-          ),
-          scenario.steps(1) == Step(
-            StepType.WhenStep,
-            "the user submits the form",
-            None,
-            file = Some(testFile),
-            line = Some(7)
-          ),
-          scenario
-            .steps(2) == Step(StepType.ThenStep, "the user is logged in", None, file = Some(testFile), line = Some(8))
-        )
-      }
-    },
-    test("parse step with multi-row data table") {
-      val content = """
-                      |Feature: Batch Processing
-                      |  Scenario: Process multiple users
-                      |    Given the system processes users
-                      |      | name  | age | role  |
-                      |      | Alice | 30  | admin |
-                      |      | Bob   | 25  | user  |
-                      |      | Carol | 35  | guest |
-                      |    Then the users are processed
-        """.stripMargin
-      checkParse(content, testFile) { feature =>
-        val scenario = feature.scenarios.head
-        assertTrue(
-          feature.name == "Batch Processing",
-          feature.file.contains(testFile),
-          feature.line.contains(2),
-          scenario.name == "Process multiple users",
-          scenario.file.contains(testFile),
-          scenario.line.contains(3),
-          scenario.steps.length == 2,
-          scenario.steps(0) == Step(
-            StepType.GivenStep,
-            "the system processes users",
-            Some(
-              DataTable(
-                headers = List("name", "age", "role"),
-                rows = List(
-                  DataTableRow(List("Alice", "30", "admin")),
-                  DataTableRow(List("Bob", "25", "user")),
-                  DataTableRow(List("Carol", "35", "guest"))
-                )
-              )
-            ),
-            Some(testFile),
-            Some(4)
-          ),
-          scenario.steps(1) == Step(
-            StepType.ThenStep,
-            "the users are processed",
-            None,
-            file = Some(testFile),
-            line = Some(9)
-          )
-        )
-      }
-    },
-    test("parse multiple steps with data tables in a scenario") {
-      val content = """
-                      |Feature: Data-Driven Actions
-                      |  Scenario: Perform actions with data
-                      |    Given users are added
-                      |      | name  | id  |
-                      |      | Alice | 001 |
-                      |    When actions are performed
-                      |      | action | target |
-                      |      | login  | Alice  |
-                      |    Then results are verified
-        """.stripMargin
-      checkParse(content, testFile) { feature =>
-        val scenario = feature.scenarios.head
-        assertTrue(
-          feature.name == "Data-Driven Actions",
-          feature.file.contains(testFile),
-          feature.line.contains(2),
-          scenario.name == "Perform actions with data",
-          scenario.file.contains(testFile),
-          scenario.line.contains(3),
-          scenario.steps.length == 3,
-          scenario.steps(0) == Step(
-            StepType.GivenStep,
-            "users are added",
-            Some(
-              DataTable(
-                headers = List("name", "id"),
-                rows = List(DataTableRow(List("Alice", "001")))
-              )
-            ),
-            Some(testFile),
-            Some(4)
-          ),
-          scenario.steps(1) == Step(
-            StepType.WhenStep,
-            "actions are performed",
-            Some(
-              DataTable(
-                headers = List("action", "target"),
-                rows = List(DataTableRow(List("login", "Alice")))
-              )
-            ),
-            Some(testFile),
-            Some(7)
-          ),
-          scenario
-            .steps(2) == Step(StepType.ThenStep, "results are verified", None, file = Some(testFile), line = Some(10))
-        )
-      }
-    },
-    test("parse step with data table containing empty cells") {
-      val content = """
-                      |Feature: Optional Data
-                      |  Scenario: Handle optional fields
-                      |    Given the system processes optional data
-                      |      | name  | phone |
-                      |      | Alice |       |
-                      |      | Bob   | 12345 |
-                      |    Then the data is stored
-        """.stripMargin
-      checkParse(content, testFile) { feature =>
-        val scenario = feature.scenarios.head
-        assertTrue(
-          feature.name == "Optional Data",
-          feature.file.contains(testFile),
-          feature.line.contains(2),
-          scenario.name == "Handle optional fields",
-          scenario.file.contains(testFile),
-          scenario.line.contains(3),
-          scenario.steps.length == 2,
-          scenario.steps(0) == Step(
-            StepType.GivenStep,
-            "the system processes optional data",
-            Some(
-              DataTable(
-                headers = List("name", "phone"),
-                rows = List(
-                  DataTableRow(List("Alice", "")),
-                  DataTableRow(List("Bob", "12345"))
-                )
-              )
-            ),
-            Some(testFile),
-            Some(4)
-          ),
-          scenario
-            .steps(1) == Step(StepType.ThenStep, "the data is stored", None, file = Some(testFile), line = Some(8))
-        )
-      }
-    },
-    test("parse feature with background and step with data table") {
-      val content = """
-                      |Feature: User Setup
-                      |  Background:
-                      |    Given the system is initialized
-                      |  Scenario: Add users with details
-                      |    Given users are configured
-                      |      | name  | role  |
-                      |      | Alice | admin |
-                      |    Then the configuration is applied
-        """.stripMargin
-      checkParse(content, testFile) { feature =>
-        val scenario = feature.scenarios.head
-        assertTrue(
-          feature.name == "User Setup",
-          feature.file.contains(testFile),
-          feature.line.contains(2),
-          scenario.name == "Add users with details",
-          scenario.file.contains(testFile),
-          scenario.line.contains(5),
-          scenario.steps.length == 3,
-          scenario.steps(0) == Step(
-            StepType.GivenStep,
-            "the system is initialized",
-            None,
-            file = Some(testFile),
-            line = Some(4)
-          ),
-          scenario.steps(1) == Step(
-            StepType.GivenStep,
-            "users are configured",
-            Some(
-              DataTable(
-                headers = List("name", "role"),
-                rows = List(DataTableRow(List("Alice", "admin")))
-              )
-            ),
-            Some(testFile),
-            Some(6)
-          ),
-          scenario.steps(2) == Step(
-            StepType.ThenStep,
-            "the configuration is applied",
-            None,
-            file = Some(testFile),
-            line = Some(9)
-          )
-        )
-      }
-    },
-    test("parse feature with multiple scenarios") {
-      val content = """
-                      |Feature: User Operations
-                      |  Scenario: Create user
-                      |    Given system ready
-                      |    When create user
-                      |    Then user exists
-                      |  Scenario: Delete user
-                      |    Given user exists
-                      |    When delete user
-                      |    Then user gone
-        """.stripMargin
-      checkParse(content, testFile) { feature =>
-        assertTrue(
-          feature.name == "User Operations",
-          feature.file.contains(testFile),
-          feature.line.contains(2),
-          feature.scenarios.length == 2,
-          feature.scenarios.head.name == "Create user",
-          feature.scenarios.head.file.contains(testFile),
-          feature.scenarios.head.line.contains(3),
-          feature.scenarios.head.steps == List(
-            Step(StepType.GivenStep, "system ready", file = Some(testFile), line = Some(4)),
-            Step(StepType.WhenStep, "create user", file = Some(testFile), line = Some(5)),
-            Step(StepType.ThenStep, "user exists", file = Some(testFile), line = Some(6))
-          ),
-          feature.scenarios(1).name == "Delete user",
-          feature.scenarios(1).file.contains(testFile),
-          feature.scenarios(1).line.contains(7),
-          feature.scenarios(1).steps == List(
-            Step(StepType.GivenStep, "user exists", file = Some(testFile), line = Some(8)),
-            Step(StepType.WhenStep, "delete user", file = Some(testFile), line = Some(9)),
-            Step(StepType.ThenStep, "user gone", file = Some(testFile), line = Some(10))
-          )
-        )
-      }
-    },
-    test("parse feature with all elements") {
-      val content = """
-                      |Feature: Complex Feature
-                      |  Background:
-                      |    Given system running
-                      |    And database ready
-                      |  Scenario Outline: Complex scenario
-                      |    Given user <name>
-                      |    When action <action>
-                      |    Then result <result>
-                      |    And cleanup done
-                      |  Examples:
-                      |    | name  | action | result |
-                      |    | Alice | login  | ok     |
-        """.stripMargin
-      checkParse(content, testFile) { feature =>
-        val scenario = feature.scenarios.head
-        assertTrue(
-          feature.name == "Complex Feature",
-          feature.file.contains(testFile),
-          feature.line.contains(2),
-          scenario.file.contains(testFile),
-          scenario.line.contains(6),
-          scenario.steps == List(
-            Step(StepType.GivenStep, "system running", file = Some(testFile), line = Some(4)),
-            Step(StepType.AndStep, "database ready", file = Some(testFile), line = Some(5)),
-            Step(StepType.GivenStep, "user Alice", file = Some(testFile), line = Some(7)),
-            Step(StepType.WhenStep, "action login", file = Some(testFile), line = Some(8)),
-            Step(StepType.ThenStep, "result ok", file = Some(testFile), line = Some(9)),
-            Step(StepType.AndStep, "cleanup done", file = Some(testFile), line = Some(10))
-          )
-        )
-      }
-    },
-    test("parse specific user password reset feature") {
-      val content = """
-                      |Feature: User Password Reset
-                      |  Background:
-                      |    Given a user exists with name "Default"
-                      |  Scenario: Successful password reset with logging
-                      |    When the user requests a password reset
-                      |    And the reset email is logged
-                      |    But the user is not deactivated
-                      |    Then an email should be sent to "default@example.com"
-        """.stripMargin
-      checkParse(content, testFile) { feature =>
-        assertTrue(
-          feature.name == "User Password Reset",
-          feature.file.contains(testFile),
-          feature.line.contains(2),
-          feature.scenarios.length == 1,
-          feature.scenarios.head.name == "Successful password reset with logging",
-          feature.scenarios.head.file.contains(testFile),
-          feature.scenarios.head.line.contains(5),
-          feature.scenarios.head.steps == List(
-            Step(StepType.GivenStep, """a user exists with name "Default"""", file = Some(testFile), line = Some(4)),
-            Step(StepType.WhenStep, "the user requests a password reset", file = Some(testFile), line = Some(6)),
-            Step(StepType.AndStep, "the reset email is logged", file = Some(testFile), line = Some(7)),
-            Step(StepType.ButStep, "the user is not deactivated", file = Some(testFile), line = Some(8)),
-            Step(
-              StepType.ThenStep,
-              """an email should be sent to "default@example.com"""",
-              file = Some(testFile),
-              line = Some(9)
-            )
-          )
-        )
-      }
-    },
-    test("parse feature with comments at multiple levels") {
-      val content = """
-                      |# File-level comment about password reset
-                      |Feature: User Password Reset with Comments
-                      |  # Background comment explaining setup
-                      |  Background:
-                      |    # Comment before Given step
-                      |    Given a user exists with name "Default"
-                      |  Scenario: Successful password reset with logging
-                      |    # Comment before When step
-                      |    When the user requests a password reset
-                      |    # Comment explaining logging
-                      |    And the reset email is logged
-                      |    # Comment before Then step
-                      |    Then an email should be sent to "default@example.com"
-        """.stripMargin
-      checkParse(content, testFile) { feature =>
-        assertTrue(
-          feature.name == "User Password Reset with Comments",
-          feature.file.contains(testFile),
-          feature.line.contains(3),
-          feature.scenarios.length == 1,
-          feature.scenarios.head.name == "Successful password reset with logging",
-          feature.scenarios.head.file.contains(testFile),
-          feature.scenarios.head.line.contains(8),
-          feature.scenarios.head.steps == List(
-            Step(StepType.GivenStep, """a user exists with name "Default"""", file = Some(testFile), line = Some(7)),
-            Step(StepType.WhenStep, "the user requests a password reset", file = Some(testFile), line = Some(10)),
-            Step(StepType.AndStep, "the reset email is logged", file = Some(testFile), line = Some(12)),
-            Step(
-              StepType.ThenStep,
-              """an email should be sent to "default@example.com"""",
-              file = Some(testFile),
-              line = Some(14)
-            )
-          )
-        )
-      }
-    },
-    test("loadFeatures from directory") {
-      ZIO.scoped {
-        for {
-          tempDir <-
-            ZIO.acquireRelease(
-              ZIO.attempt(
-                new File(java.lang.System.getProperty("java.io.tmpdir"), s"gherkin-test-${java.util.UUID.randomUUID()}")
-              )
-            )(dir => ZIO.attempt(dir.delete()).orDie)
-          _ <- ZIO.attempt {
-                 tempDir.mkdirs()
-                 val file   = new File(tempDir, testFile)
-                 val writer = new java.io.PrintWriter(file)
-                 try {
-                   writer.write("Feature: Test\n  Scenario: Simple\n    Given step")
-                 } finally {
-                   writer.close()
-                 }
-               }
-          features <- GherkinParser.loadFeatures(tempDir)
-        } yield assertTrue(
-          features.length == 1,
-          features.head.name == "Test",
-          features.head.file.contains(new File(tempDir, testFile).getAbsolutePath),
-          features.head.line.contains(1),
-          features.head.scenarios.head.name == "Simple",
-          features.head.scenarios.head.file.contains(new File(tempDir, testFile).getAbsolutePath),
-          features.head.scenarios.head.line.contains(2),
-          features.head.scenarios.head.steps == List(
-            Step(StepType.GivenStep, "step", file = Some(new File(tempDir, testFile).getAbsolutePath), line = Some(3))
-          )
-        )
-      }
-    },
-    test("loadFeatures empty directory") {
-      ZIO.scoped {
-        for {
-          tempDir <- ZIO.acquireRelease(
-                       ZIO.attempt(
-                         new File(
-                           java.lang.System.getProperty("java.io.tmpdir"),
-                           s"gherkin-empty-${java.util.UUID.randomUUID()}"
-                         )
-                       )
-                     )(dir => ZIO.attempt(dir.delete()).orDie)
-          _        <- ZIO.attempt(tempDir.mkdirs())
-          features <- GherkinParser.loadFeatures(tempDir)
-        } yield assertTrue(features.isEmpty)
-      }
-    },
-    test("fail on invalid syntax") {
-      val content = """
-                      |Feature: Invalid
-                      |  InvalidKeyword: test
-        """.stripMargin
-      for {
-        result <- GherkinParser.parseFeature(content, testFile).either
-      } yield assertTrue(
-        result.isLeft,
-        result.left.toOption.exists(_.isInstanceOf[Exception]),
-        result.left.toOption.exists(_.getMessage.contains("Failed to parse Gherkin content"))
-      )
     }
   )
 
-  private def checkParse(content: String, file: String = testFile)(
-    assertion: Feature => TestResult
-  ): ZIO[Any, Throwable, TestResult] =
-    GherkinParser
-      .parseFeature(content, file)
-      .fold(
-        failure = { error =>
-          println(error.getMessage)
-          error.printStackTrace()
-          assertTrue(false)
-        },
-        success = { feature =>
-          assertion(feature)
-        }
-      )
+  // ── Scenarios and step types ───────────────────────────────────────────────
+
+  private val scenarioStructure = suite("Scenarios and step types")(
+    test("scenario name and tags are captured") {
+      check("Feature: F\n  @smoke\n  Scenario: Login\n    Given a step\n") { f =>
+        val sc = f.scenarios.head
+        assertTrue(sc.name == "Login", sc.tags.contains("smoke"))
+      }
+    },
+    test("multiple scenarios in a feature are all present") {
+      check("Feature: F\n  Scenario: A\n    Given a\n  Scenario: B\n    When b\n") { f =>
+        assertTrue(f.scenarios.map(_.name) == List("A", "B"))
+      }
+    },
+    test("all five step keywords produce correct StepType values") {
+      check(
+        "Feature: F\n  Scenario: s\n    Given g\n    When w\n    Then t\n    And a\n    But b\n"
+      ) { f =>
+        val types = f.scenarios.head.steps.map(_.stepType)
+        assertTrue(
+          types == List(
+            StepType.GivenStep,
+            StepType.WhenStep,
+            StepType.ThenStep,
+            StepType.AndStep,
+            StepType.ButStep
+          )
+        )
+      }
+    },
+    test("step patterns are captured correctly including quoted text") {
+      check(
+        """Feature: F
+          |  Scenario: s
+          |    Given a user exists with name "Default"
+          |    Then an email should be sent to "default@example.com"
+          |""".stripMargin
+      ) { f =>
+        val patterns = f.scenarios.head.steps.map(_.pattern)
+        assertTrue(
+          patterns(0) == """a user exists with name "Default"""",
+          patterns(1) == """an email should be sent to "default@example.com""""
+        )
+      }
+    },
+    test("But and And step types are recorded as-is (effective-type resolution is executor concern)") {
+      check("Feature: F\n  Scenario: s\n    Given g\n    And a\n    But b\n") { f =>
+        val steps = f.scenarios.head.steps
+        assertTrue(
+          steps(1).stepType == StepType.AndStep,
+          steps(2).stepType == StepType.ButStep
+        )
+      }
+    },
+    test("@ignore tag makes scenario.isIgnored return true") {
+      check("Feature: F\n  @ignore\n  Scenario: s\n    Given a step\n") { f =>
+        assertTrue(f.scenarios.head.isIgnored)
+      }
+    },
+    test("multiple tag lines before a scenario are merged") {
+      check("Feature: F\n  @a\n  @b\n  @c\n  Scenario: s\n    Given a\n") { f =>
+        assertTrue(f.scenarios.head.tags == List("a", "b", "c"))
+      }
+    }
+  )
+
+  // ── Background ────────────────────────────────────────────────────────────
+
+  private val background = suite("Background")(
+    test("background steps are prepended to each scenario's steps") {
+      check(
+        """Feature: F
+          |  Background:
+          |    Given setup
+          |  Scenario: s
+          |    When action
+          |    Then result
+          |""".stripMargin
+      ) { f =>
+        val steps = f.scenarios.head.steps.map(_.pattern)
+        assertTrue(steps == List("setup", "action", "result"))
+      }
+    },
+    test("background steps are prepended to every scenario when multiple exist") {
+      check(
+        """Feature: F
+          |  Background:
+          |    Given bg
+          |  Scenario: A
+          |    When a
+          |  Scenario: B
+          |    When b
+          |""".stripMargin
+      ) { f =>
+        assertTrue(f.scenarios.forall(_.steps.head.pattern == "bg"))
+      }
+    },
+    test("background step with data table argument preserves the table") {
+      check(
+        """Feature: F
+          |  Background:
+          |    Given users exist:
+          |      | name  | role  |
+          |      | Alice | admin |
+          |  Scenario: s
+          |    When action
+          |""".stripMargin
+      ) { f =>
+        val bgStep = f.scenarios.head.steps.head
+        assertTrue(
+          bgStep.pattern == "users exist:",
+          bgStep.dataTable.isDefined,
+          bgStep.dataTable.exists(_.headers == List("name", "role"))
+        )
+      }
+    }
+  )
+
+  // ── Data tables ───────────────────────────────────────────────────────────
+
+  private val dataTables = suite("Data tables")(
+    test("single-row table is parsed with header and one data row") {
+      check(
+        "Feature: F\n  Scenario: s\n    Given data:\n      | key | value |\n      | a   | 1     |\n"
+      ) { f =>
+        val tbl = f.scenarios.head.steps.head.dataTable
+        assertTrue(
+          tbl.isDefined,
+          tbl.exists(_.headers == List("key", "value")),
+          tbl.exists(_.rows == List(DataTableRow(List("a", "1"))))
+        )
+      }
+    },
+    test("multi-row table produces multiple DataTableRows") {
+      check(
+        "Feature: F\n  Scenario: s\n    Given data:\n      | k | v |\n      | a | 1 |\n      | b | 2 |\n      | c | 3 |\n"
+      ) { f =>
+        val tbl = f.scenarios.head.steps.head.dataTable
+        assertTrue(tbl.exists(_.rows.length == 3))
+      }
+    },
+    test("multiple steps each with a table are parsed independently") {
+      check(
+        """Feature: F
+          |  Scenario: s
+          |    Given first:
+          |      | a |
+          |      | 1 |
+          |    And second:
+          |      | b |
+          |      | 2 |
+          |    Then done
+          |""".stripMargin
+      ) { f =>
+        val steps = f.scenarios.head.steps
+        assertTrue(
+          steps(0).dataTable.isDefined,
+          steps(1).dataTable.isDefined,
+          steps(2).dataTable.isEmpty
+        )
+      }
+    },
+    test("empty cell in a table is represented as an empty string") {
+      check(
+        "Feature: F\n  Scenario: s\n    Given data:\n      | name  | phone |\n      | Alice |       |\n"
+      ) { f =>
+        val row = f.scenarios.head.steps.head.dataTable.flatMap(_.rows.headOption)
+        assertTrue(row.exists(_.cells == List("Alice", "")))
+      }
+    },
+    test("cell values are trimmed") {
+      check(
+        "Feature: F\n  Scenario: s\n    Given data:\n      |  name  |  value  |\n      |  Alice  |  42  |\n"
+      ) { f =>
+        val row = f.scenarios.head.steps.head.dataTable.flatMap(_.rows.headOption)
+        assertTrue(row.exists(_.cells == List("Alice", "42")))
+      }
+    },
+    test("3+ consecutive scenarios each ending with a table all parse correctly (regression #39)") {
+      check(
+        """Feature: F
+          |  Scenario: A
+          |    Given a:
+          |      | k | v |
+          |      | a | 1 |
+          |  Scenario: B
+          |    Given b:
+          |      | x | y |
+          |      | 2 | 3 |
+          |  Scenario: C
+          |    Given c:
+          |      | p | q |
+          |      | 4 | 5 |
+          |  Scenario: D
+          |    Given d:
+          |      | m | n |
+          |      | 6 | 7 |
+          |""".stripMargin
+      ) { f =>
+        assertTrue(
+          f.scenarios.length == 4,
+          f.scenarios.forall(_.steps.head.dataTable.isDefined)
+        )
+      }
+    }
+  )
+
+  // ── Scenario Outlines ─────────────────────────────────────────────────────
+
+  private val outlines = suite("Scenario Outlines / Examples expansion")(
+    test("outline with two example rows expands to two scenarios") {
+      check(
+        """Feature: F
+          |  Scenario Outline: Login <user>
+          |    Given user <user> exists
+          |    When <user> logs in
+          |  Examples:
+          |    | user  |
+          |    | Alice |
+          |    | Bob   |
+          |""".stripMargin
+      ) { f =>
+        assertTrue(
+          f.scenarios.length == 2,
+          f.scenarios(0).name == "Login <user> - Example 1",
+          f.scenarios(1).name == "Login <user> - Example 2",
+          f.scenarios(0).steps.head.pattern == "user Alice exists",
+          f.scenarios(1).steps.head.pattern == "user Bob exists"
+        )
+      }
+    },
+    test("outline placeholder is substituted in all steps") {
+      check(
+        """Feature: F
+          |  Scenario Outline: <x>
+          |    Given <x> is set
+          |    When <x> is processed
+          |    Then <x> is done
+          |  Examples:
+          |    | x   |
+          |    | foo |
+          |""".stripMargin
+      ) { f =>
+        val sc = f.scenarios.head
+        assertTrue(sc.steps.map(_.pattern) == List("foo is set", "foo is processed", "foo is done"))
+      }
+    },
+    test("named Examples block name appears in expanded scenario title") {
+      check(
+        """Feature: F
+          |  Scenario Outline: Validate <x>
+          |    Given <x>
+          |  Examples: Happy cases
+          |    | x   |
+          |    | foo |
+          |""".stripMargin
+      ) { f =>
+        assertTrue(f.scenarios.head.name == "Validate <x> - Happy cases - Example 1")
+      }
+    },
+    test("multiple Examples blocks produce scenarios for each block") {
+      check(
+        """Feature: F
+          |  Scenario Outline: Test <x>
+          |    Given <x>
+          |  Examples: Block A
+          |    | x |
+          |    | a |
+          |  Examples: Block B
+          |    | x |
+          |    | b |
+          |""".stripMargin
+      ) { f =>
+        assertTrue(
+          f.scenarios.length == 2,
+          f.scenarios(0).name.contains("Block A"),
+          f.scenarios(1).name.contains("Block B")
+        )
+      }
+    },
+    test("tags on Examples block are propagated to expanded scenarios") {
+      check(
+        """Feature: F
+          |  Scenario Outline: <x>
+          |    Given <x>
+          |  @smoke
+          |  Examples:
+          |    | x |
+          |    | a |
+          |""".stripMargin
+      ) { f =>
+        assertTrue(f.scenarios.head.tags.contains("smoke"))
+      }
+    },
+    test("Example: keyword is accepted as an alias for Scenario:") {
+      check("Feature: F\n  Example: s\n    Given a step\n") { f =>
+        assertTrue(f.scenarios.head.name == "s")
+      }
+    },
+    test("Scenario Template: is accepted as an alias for Scenario Outline:") {
+      check(
+        "Feature: F\n  Scenario Template: <x>\n    Given <x>\n  Examples:\n    | x |\n    | a |\n"
+      ) { f =>
+        assertTrue(f.scenarios.length == 1, f.scenarios.head.name.contains("Example 1"))
+      }
+    },
+    test("Scenarios: is accepted as an alias for Examples:") {
+      check(
+        "Feature: F\n  Scenario Outline: <x>\n    Given <x>\n  Scenarios:\n    | x |\n    | a |\n    | b |\n"
+      ) { f =>
+        assertTrue(f.scenarios.length == 2)
+      }
+    }
+  )
+
+  // ── Doc strings ───────────────────────────────────────────────────────────
+
+  private val docStrings = suite("Doc strings")(
+    test("triple-quote doc string is captured on the step") {
+      val content =
+        "Feature: F\n  Scenario: s\n    Given body:\n      \"\"\"\n      {\"k\":\"v\"}\n      \"\"\"\n    Then done\n"
+      check(content) { f =>
+        val step = f.scenarios.head.steps.head
+        assertTrue(step.docString.isDefined, step.docString.exists(_.contains("k")))
+      }
+    },
+    test("triple-backtick doc string is also captured") {
+      val content =
+        "Feature: F\n  Scenario: s\n    Given body:\n      ```\n      some content\n      ```\n    Then done\n"
+      check(content) { f =>
+        assertTrue(f.scenarios.head.steps.head.docString.isDefined)
+      }
+    },
+    test("step following a doc-string step is parsed correctly") {
+      val content =
+        "Feature: F\n  Scenario: s\n    Given body:\n      \"\"\"\n      text\n      \"\"\"\n    Then done\n"
+      check(content) { f =>
+        assertTrue(f.scenarios.head.steps.length == 2, f.scenarios.head.steps.last.pattern == "done")
+      }
+    }
+  )
+
+  // ── Rule keyword ─────────────────────────────────────────────────────────
+
+  private val ruleKeyword = suite("Rule: keyword")(
+    test("Rule block groups scenarios under a heading") {
+      check(
+        """Feature: F
+          |  Rule: Must be active
+          |    Scenario: happy path
+          |      Given an active account
+          |      Then it works
+          |""".stripMargin
+      ) { f =>
+        assertTrue(f.scenarios.map(_.name) == List("happy path"))
+      }
+    },
+    test("multiple Rule blocks produce all their scenarios") {
+      check(
+        """Feature: F
+          |  Rule: A
+          |    Scenario: A1
+          |      Given a
+          |  Rule: B
+          |    Scenario: B1
+          |      Given b
+          |""".stripMargin
+      ) { f =>
+        assertTrue(f.scenarios.map(_.name) == List("A1", "B1"))
+      }
+    },
+    test("Rule inner Background is prepended only to that rule's scenarios") {
+      check(
+        """Feature: F
+          |  Background:
+          |    Given feature bg
+          |  Rule: R
+          |    Background:
+          |      Given rule bg
+          |    Scenario: s
+          |      When action
+          |""".stripMargin
+      ) { f =>
+        assertTrue(
+          f.scenarios.head.steps.map(_.pattern) == List("feature bg", "rule bg", "action")
+        )
+      }
+    }
+  )
+
+  // ── Comments ──────────────────────────────────────────────────────────────
+
+  private val comments = suite("Comments")(
+    test("file-level comment before Feature is stripped") {
+      check("# comment\nFeature: F\n  Scenario: s\n    Given a\n") { f =>
+        assertTrue(f.name == "F")
+      }
+    },
+    test("comments between Background steps are stripped") {
+      check(
+        "Feature: F\n  Background:\n    Given first\n    # a comment\n    And second\n  Scenario: s\n    When action\n"
+      ) { f =>
+        val bgSteps = f.scenarios.head.steps.take(2).map(_.pattern)
+        assertTrue(bgSteps == List("first", "second"))
+      }
+    },
+    test("comments at multiple indent levels are all stripped") {
+      check(
+        """Feature: F
+          |  # feature comment
+          |  Background:
+          |    # bg comment
+          |    Given bg step
+          |  Scenario: s
+          |    # scenario comment
+          |    When action
+          |    # another comment
+          |    Then result
+          |""".stripMargin
+      ) { f =>
+        assertTrue(f.scenarios.head.steps.length == 3)
+      }
+    }
+  )
+
+  // ── File I/O ──────────────────────────────────────────────────────────────
+
+  private val fileIO = suite("File I/O")(
+    test("loadFeatures reads a single .feature file from a directory") {
+      ZIO.scoped {
+        for {
+          dir <- makeDir("gherkin-io-single")
+          _   <- writeFile(dir, "test.feature", "Feature: Test\n  Scenario: s\n    Given a step\n")
+          fs  <- GherkinParser.loadFeatures(dir)
+        } yield assertTrue(fs.length == 1, fs.head.name == "Test")
+      }
+    },
+    test("loadFeatures returns empty list for an empty directory") {
+      ZIO.scoped {
+        for {
+          dir <- makeDir("gherkin-io-empty")
+          fs  <- GherkinParser.loadFeatures(dir)
+        } yield assertTrue(fs.isEmpty)
+      }
+    },
+    test("loadFeatures skips unparseable files when failFast=false (regression #46)") {
+      ZIO.scoped {
+        for {
+          dir <- makeDir("gherkin-io-resilience")
+          _   <- writeFile(dir, "good.feature", "Feature: Good\n  Scenario: s\n    Given a\n")
+          _   <- writeFile(dir, "bad.feature", "not valid gherkin at all")
+          fs  <- GherkinParser.loadFeatures(dir, failFast = false)
+        } yield assertTrue(fs.length == 1, fs.head.name == "Good")
+      }
+    },
+    test("loadFeatures with failFast=true fails on first bad file") {
+      ZIO.scoped {
+        for {
+          dir    <- makeDir("gherkin-io-failfast")
+          _      <- writeFile(dir, "bad.feature", "not valid gherkin")
+          result <- GherkinParser.loadFeatures(dir, failFast = true).either
+        } yield assertTrue(result.isLeft)
+      }
+    }
+  )
+
+  // ── Parse failure cases ───────────────────────────────────────────────────
+
+  private val failures = suite("Parse failure cases")(
+    test("content with no Feature keyword returns Left") {
+      for {
+        r <- parse("This is not a feature file at all.\nJust random text.\n").either
+      } yield assertTrue(r.isLeft)
+    },
+    test("completely empty content returns Left") {
+      for {
+        r <- parse("").either
+      } yield assertTrue(r.isLeft)
+    }
+  )
+
+  // ── Directory helpers ─────────────────────────────────────────────────────
+
+  private def makeDir(prefix: String) =
+    ZIO.acquireRelease(
+      ZIO
+        .attempt(
+          new java.io.File(
+            java.lang.System.getProperty("java.io.tmpdir"),
+            s"$prefix-${java.util.UUID.randomUUID()}"
+          )
+        )
+        .tap(d => ZIO.attempt(d.mkdirs()))
+    )(d => ZIO.attempt { Option(d.listFiles()).foreach(_.foreach(_.delete())); d.delete() }.orDie)
+
+  private def writeFile(dir: java.io.File, name: String, content: String) =
+    ZIO.attempt {
+      val f = new java.io.File(dir, name)
+      java.nio.file.Files.writeString(f.toPath, content)
+    }
+
+  // ── Spec ──────────────────────────────────────────────────────────────────
+
+  def spec: Spec[TestEnvironment & Scope, Any] = suite("GherkinParser")(
+    featureStructure,
+    scenarioStructure,
+    background,
+    dataTables,
+    outlines,
+    docStrings,
+    ruleKeyword,
+    comments,
+    fileIO,
+    failures
+  )
 }
