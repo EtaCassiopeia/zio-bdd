@@ -7,6 +7,7 @@ import zio.bdd.core.{FeatureResult, InternalLogLevel, LogCollector, LogLevelConf
 import zio.bdd.gherkin.{Feature, GherkinParser}
 import zio.{Runtime, Unsafe, ZIO, ZLayer}
 
+import scala.jdk.CollectionConverters.*
 import java.io.File
 
 class ZIOBDDFingerprint extends AnnotatedFingerprint {
@@ -42,16 +43,67 @@ class ZIOBDDRunner(runnerArgs: Array[String], runnerRemoteArgs: Array[String], t
 case class BDDTestConfig(
   featureFiles: List[String] = Nil,
   reporters: List[Reporter] = List(PrettyReporter()),
-  parallelism: Int = 1,
+  /** Max concurrent features. 1 = sequential (default). */
+  featureParallelism: Int = 1,
+  /**
+   * Max concurrent scenarios per feature. 0 = auto (use available processors).
+   */
+  scenarioParallelism: Int = 0,
   includeTags: Set[String] = Set.empty, // Inclusive filter (e.g., run only these tags)
   excludeTags: Set[String] = Set.empty, // Exclusive filter (e.g., skip these tags)
-  logLevel: InternalLogLevel = InternalLogLevel.Info
+  logLevel: InternalLogLevel = InternalLogLevel.Info,
+  /** Optional glob/regex to filter scenarios by name (e.g. "Happy path*"). */
+  scenarioNameFilter: Option[String] = None,
+  /**
+   * When true: step bodies are not executed; only step matching is validated.
+   */
+  dryRun: Boolean = false,
+  /**
+   * Step execution timeout in seconds from @Suite annotation. None = unlimited.
+   */
+  stepTimeoutSeconds: Option[Int] = None
 )
 
 case class CompositeReporter(reporters: List[Reporter]) extends Reporter {
   override def report(results: List[FeatureResult]): ZIO[LogCollector, Throwable, Unit] =
     ZIO.foreachDiscard(reporters)(_.report(results))
 }
+
+/**
+ * Resolves a single path entry (from `featureDirs` or `featureDir`) to a list
+ * of `.feature` file paths. Supports both filesystem paths and classpath
+ * resources via the `classpath:` prefix:
+ *
+ *   - `"src/test/resources/features"` — directory on the filesystem
+ *   - `"classpath:features"` — directory on the classpath (e.g. from a shared
+ *     jar)
+ *   - `"classpath:features/my.feature"` — single file on the classpath
+ */
+case class FeatureFiles(path: String, testClassLoader: ClassLoader):
+  private val ClasspathPrefix = "classpath:"
+
+  def retrieve(): List[String] =
+    if (path.isEmpty) Nil
+    else if (path.startsWith(ClasspathPrefix)) resolveClasspath()
+    else resolveFilesystem(new File(path))
+
+  private def resolveClasspath(): List[String] =
+    testClassLoader
+      .getResources(path.stripPrefix(ClasspathPrefix))
+      .asScala
+      .toList
+      .flatMap(url => collectFeatures(new File(url.toURI())))
+
+  private def resolveFilesystem(file: File): List[String] =
+    if (file.exists()) collectFeatures(file) else Nil
+
+  private def collectFeatures(f: File): List[String] =
+    if (f.isDirectory)
+      Option(f.listFiles()).map(_.filter(_.getName.endsWith(".feature")).map(_.getAbsolutePath).toList).getOrElse(Nil)
+    else if (f.getName.endsWith(".feature"))
+      List(f.getAbsolutePath)
+    else
+      Nil
 
 class ZIOBDDTask(
   taskDefinition: TaskDef,
@@ -72,17 +124,22 @@ class ZIOBDDTask(
     def shouldIgnoreFeature(tags: List[String]): Boolean =
       tags.exists(excludeTags.contains)
 
-    // For scenarios, check both excludeTags and includeTags
-    def shouldIgnoreScenario(tags: List[String]): Boolean = {
+    // For scenarios, check excludeTags, includeTags, and the optional scenario-name filter
+    def shouldIgnoreScenario(tags: List[String], name: String): Boolean = {
       val hasExcludeTag     = tags.exists(excludeTags.contains)
       val missingIncludeTag = includeTags.nonEmpty && !tags.exists(includeTags.contains)
-      hasExcludeTag || missingIncludeTag
+      val nameFiltered = config.scenarioNameFilter.exists { pattern =>
+        val regex = ("(?i)" + java.util.regex.Pattern.quote(pattern).replace("\\*", ".*")).r
+        !regex.matches(name)
+      }
+      hasExcludeTag || missingIncludeTag || nameFiltered
     }
 
     features.map { feature =>
       val featureTags = if (shouldIgnoreFeature(feature.tags)) feature.tags :+ "ignore" else feature.tags
       val updatedScenarios = feature.scenarios.map { scenario =>
-        val scenarioTags = if (shouldIgnoreScenario(scenario.tags)) scenario.tags :+ "ignore" else scenario.tags
+        val scenarioTags =
+          if (shouldIgnoreScenario(scenario.tags, scenario.name)) scenario.tags :+ "ignore" else scenario.tags
         scenario.copy(tags = scenarioTags)
       }
       feature.copy(tags = featureTags, scenarios = updatedScenarios)
@@ -187,37 +244,56 @@ class ZIOBDDTask(
         PrettyReporter()
     }
 
-    val annoConfig = annotation
-      .map(a =>
-        BDDTestConfig(
-          featureFiles = if (a.featureDir().isEmpty) Nil else List(a.featureDir()),
-          reporters = a.reporters().map(instantiateReporter).toList,
-          parallelism = a.parallelism(),
-          includeTags = a.includeTags().toSet,
-          excludeTags = a.excludeTags().toSet,
-          logLevel = parseLogLevelFromAnnotation(a.logLevel())
+    val annoConfig = annotation.map { a =>
+      // featureDirs (new) takes precedence over the deprecated featureDir
+      val dirs =
+        if (
+          a.featureDirs().nonEmpty &&
+          !(a.featureDirs().length == 1 && a.featureDirs()(0) == "src/test/resources/features")
         )
+          a.featureDirs().toList
+        else if (a.featureDir().nonEmpty) List(a.featureDir())
+        else a.featureDirs().toList
+      BDDTestConfig(
+        featureFiles = dirs,
+        reporters = a.reporters().map(instantiateReporter).toList,
+        featureParallelism = a.parallelism(),
+        scenarioParallelism = a.scenarioParallelism(),
+        includeTags = a.includeTags().toSet,
+        excludeTags = a.excludeTags().toSet,
+        logLevel = parseLogLevelFromAnnotation(a.logLevel()),
+        stepTimeoutSeconds = if (a.stepTimeout() > 0) Some(a.stepTimeout()) else None
       )
+    }
       .getOrElse(BDDTestConfig())
 
     val cliConfig = BDDTestConfig(
       featureFiles = parseFeatureFiles(args),
       reporters = parseReporters(args, loggers),
-      parallelism = parseParallelism(args),
+      featureParallelism = parseParallelism(args),
+      scenarioParallelism = parseScenarioParallelism(args),
       includeTags = parseIncludeTags(args),
       excludeTags = parseExcludeTags(args),
-      logLevel = parseLogLevel(args, loggers)
+      logLevel = parseLogLevel(args, loggers),
+      scenarioNameFilter = parseScenarioName(args),
+      dryRun = args.contains("--dry-run")
     )
 
     BDDTestConfig(
       featureFiles = if (cliConfig.featureFiles.nonEmpty) cliConfig.featureFiles else annoConfig.featureFiles,
       reporters = if (cliConfig.reporters.nonEmpty) cliConfig.reporters else annoConfig.reporters,
-      parallelism = if (cliConfig.parallelism != 1) cliConfig.parallelism else annoConfig.parallelism,
+      featureParallelism =
+        if (cliConfig.featureParallelism != 1) cliConfig.featureParallelism else annoConfig.featureParallelism,
+      scenarioParallelism =
+        if (cliConfig.scenarioParallelism != 0) cliConfig.scenarioParallelism else annoConfig.scenarioParallelism,
       includeTags = if (cliConfig.includeTags.nonEmpty) cliConfig.includeTags else annoConfig.includeTags,
       excludeTags = if (cliConfig.excludeTags.nonEmpty) cliConfig.excludeTags else annoConfig.excludeTags,
       logLevel =
         if (cliConfig.logLevel != InternalLogLevel.Info) cliConfig.logLevel
-        else annoConfig.logLevel // CLI overrides annotation
+        else annoConfig.logLevel, // CLI overrides annotation
+      scenarioNameFilter = cliConfig.scenarioNameFilter.orElse(annoConfig.scenarioNameFilter),
+      dryRun = cliConfig.dryRun || annoConfig.dryRun,
+      stepTimeoutSeconds = annoConfig.stepTimeoutSeconds
     )
   }
 
@@ -310,31 +386,37 @@ class ZIOBDDTask(
       }
       .getOrElse(1)
 
-  private def resolveFeatureFiles(config: BDDTestConfig, className: String, loggers: Array[Logger]): List[String] =
-    if (config.featureFiles.nonEmpty) {
-      config.featureFiles.flatMap { path =>
-        val file = new File(path)
-        if (file.isDirectory) {
-          file.listFiles().filter(_.getName.endsWith(".feature")).map(_.getAbsolutePath).toList
-        } else if (file.exists() && file.getName.endsWith(".feature")) {
-          List(file.getAbsolutePath)
-        } else {
-          loggers.foreach(_.warn(s"Invalid feature file or directory: $path"))
-          Nil
-        }
+  private def parseScenarioParallelism(args: Array[String]): Int =
+    args
+      .sliding(2)
+      .collectFirst {
+        case Array("--scenario-parallelism", "auto") => 0
+        case Array("--scenario-parallelism", n)      => n.toIntOption.getOrElse(0)
       }
-    } else {
-      val clazz      = testClassLoader.loadClass(className + "$")
-      val annotation = Option(clazz.getAnnotation(classOf[zio.bdd.core.Suite]))
-      val featureDir = annotation.map(_.featureDir()).getOrElse("src/test/resources/features")
-      val dir        = new File(featureDir)
-      if (dir.exists() && dir.isDirectory) {
-        dir.listFiles().filter(_.getName.endsWith(".feature")).map(_.getAbsolutePath).toList
-      } else {
-        loggers.foreach(_.warn(s"Feature directory '$featureDir' not found or not a directory"))
-        List()
+      .getOrElse(0)
+
+  private def parseScenarioName(args: Array[String]): Option[String] =
+    args.sliding(2).collectFirst { case Array("--scenario-name", name) => name }
+
+  private def resolveFeatureFiles(config: BDDTestConfig, className: String, loggers: Array[Logger]): List[String] = {
+    val paths =
+      if (config.featureFiles.nonEmpty) config.featureFiles
+      else {
+        val clazz      = testClassLoader.loadClass(className + "$")
+        val annotation = Option(clazz.getAnnotation(classOf[zio.bdd.core.Suite]))
+        annotation.map { a =>
+          if (a.featureDirs().nonEmpty) a.featureDirs().toList
+          else if (a.featureDir().nonEmpty) List(a.featureDir())
+          else List("src/test/resources/features")
+        }.getOrElse(List("src/test/resources/features"))
       }
+
+    paths.flatMap { path =>
+      val files = FeatureFiles(path, testClassLoader).retrieve()
+      if (files.isEmpty) loggers.foreach(_.warn(s"No feature files found for path: $path"))
+      files
     }
+  }
 
   private def discoverFeatures(steps: ZIOSteps[Any, Any], featureFiles: List[String]): List[Feature] =
     if (featureFiles.nonEmpty) {
