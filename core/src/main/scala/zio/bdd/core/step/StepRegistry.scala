@@ -9,25 +9,34 @@ trait StepRegistry[R, S] {
 }
 
 case class StepRegistryLive[R, S](steps: List[StepDef[R, S]]) extends StepRegistry[R, S] {
-  def findStep(stepType: StepType, input: StepInput): Task[RIO[R with State[S], Unit]] = {
-    // First, try to find steps matching the exact step type
-    val typedCandidates = steps.filter { case StepDefImpl(registeredType, _, _) =>
-      registeredType == stepType
-    }
-    val matchingTyped = typedCandidates.iterator.map(_.tryExecute(input)).find(_.isDefined).flatten
+  // Cross-keyword resolution priority (Cucumber semantics): the keyword on a step
+  // definition is documentation only — any step can match any keyword at runtime.
+  private val keywordPriority: List[StepType] =
+    List(StepType.GivenStep, StepType.WhenStep, StepType.ThenStep, StepType.AndStep, StepType.ButStep)
 
-    matchingTyped match {
+  private def firstMatchFor(t: StepType, input: StepInput): Option[RIO[R with State[S], Unit]] =
+    steps.iterator.collect { case sd @ StepDefImpl(rt, _, _) if rt == t => sd }
+      .flatMap(_.tryExecute(input))
+      .nextOption()
+
+  def findStep(stepType: StepType, input: StepInput): Task[RIO[R with State[S], Unit]] = {
+    // 1. Exact step-type match.
+    // 2. Fall back to `And` definitions (universal glue).
+    // 3. Cross-keyword fallback: try every keyword in priority order, first match wins.
+    val resolved =
+      firstMatchFor(stepType, input)
+        .orElse(firstMatchFor(StepType.AndStep, input))
+        .orElse(keywordPriority.iterator.flatMap(firstMatchFor(_, input)).nextOption())
+
+    resolved match {
       case Some(effect) => ZIO.succeed(effect)
-      case None         =>
-        // If no match, try "And" steps as a fallback (for any effective type)
-        val andCandidates = steps.filter { case StepDefImpl(registeredType, _, _) =>
-          registeredType == StepType.AndStep
-        }
-        val matchingAnd = andCandidates.iterator.map(_.tryExecute(input)).find(_.isDefined).flatten
-        matchingAnd match {
-          case Some(effect) => ZIO.succeed(effect)
-          case None         => ZIO.fail(new Exception(s"No matching step found for type $stepType and input $input"))
-        }
+      case None =>
+        ZIO.fail(
+          new Exception(
+            s"No matching step found for type $stepType and input $input " +
+              s"(tried keywords: ${keywordPriority.mkString(", ")})"
+          )
+        )
     }
   }
 }
