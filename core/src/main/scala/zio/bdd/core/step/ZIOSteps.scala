@@ -17,12 +17,61 @@ trait ZIOSteps[R: Tag, S: Tag: Default]
   type Step[I, O] = I => ZIO[R, Throwable, O]
 
   private val steps: mutable.ListBuffer[StepDef[R, S]] = mutable.ListBuffer.empty
+  private var sealed_ : Boolean                        = false
 
-  private[core] def getSteps: List[StepDef[R, S]] = steps.toList
+  /**
+   * Return all registered steps. On first call the registry is sealed and
+   * validated: two definitions with identical `(keyword, pattern)` throw at
+   * suite startup, not mid-test.
+   */
+  private[core] def getSteps: List[StepDef[R, S]] = {
+    if (!sealed_) {
+      sealed_ = true
+      validateAmbiguity()
+    }
+    steps.toList
+  }
 
-  private[core] def register(step: StepDef[R, S]): Unit = steps += step
+  /** Protected alias for `getSteps` so subtraits can override `run`. */
+  protected final def registeredSteps: List[StepDef[R, S]] = getSteps
+
+  private[core] def register(step: StepDef[R, S]): Unit = {
+    if (sealed_)
+      throw new IllegalStateException(
+        "Cannot register step after suite has started. " +
+          "Step registration must complete during object initialisation."
+      )
+    steps += step
+  }
+
+  private def validateAmbiguity(): Unit = {
+    val byTypeAndPattern = steps.toList.groupBy { case s: StepDefImpl[?, ?, ?] =>
+      (s.stepType, s.stepExpr.toString)
+    }
+    val ambiguous = byTypeAndPattern.filter(_._2.length > 1)
+    if (ambiguous.nonEmpty) {
+      val details = ambiguous.map { case ((t, pat), defs) =>
+        s"  $t \"$pat\" — registered ${defs.length} times"
+      }.mkString("\n")
+      throw new IllegalStateException(
+        "Ambiguous step definitions detected at suite startup.\n" +
+          "The following step expressions are registered multiple times:\n" + details + "\n" +
+          "Rename or merge duplicate step definitions."
+      )
+    }
+  }
 
   def environment: ZLayer[Any, Any, R] = ZLayer.empty.asInstanceOf[ZLayer[Any, Any, R]]
+
+  /**
+   * Override to set a default timeout for every step in this suite. `None`
+   * means unlimited (default).
+   *
+   * {{{
+   * override def stepTimeout: Option[Duration] = Some(Duration.fromSeconds(30))
+   * }}}
+   */
+  def stepTimeout: Option[Duration] = None
 
   extension [Out <: Tuple](se: StepExpression[Out])
     def /(literal: String): StepExpression[Out] =
