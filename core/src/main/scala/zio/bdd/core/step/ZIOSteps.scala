@@ -1,7 +1,7 @@
 package zio.bdd.core.step
 
 import zio.*
-import zio.bdd.core.{Default, FeatureExecutor, FeatureResult, Hooks}
+import zio.bdd.core.{Default, FeatureExecutor, FeatureResult, Hooks, PendingException}
 import zio.bdd.gherkin.Feature
 import izumi.reflect.Tag
 
@@ -71,7 +71,26 @@ trait ZIOSteps[R: Tag, S: Tag: Default]
    * override def stepTimeout: Option[Duration] = Some(Duration.fromSeconds(30))
    * }}}
    */
-  def stepTimeout: Option[Duration] = None
+  def stepTimeout: Option[Duration] = _annotationStepTimeout
+
+  // Set by ZIOBDDFramework when @Suite(stepTimeout=N) is present; a subclass override of
+  // `stepTimeout` takes precedence because it ignores this field.
+  private[core] var _annotationStepTimeout: Option[Duration] = None
+
+  /** Called by the framework to inject the annotation-configured timeout. */
+  private[bdd] final def overrideStepTimeout(d: Duration): Unit =
+    _annotationStepTimeout = Some(d)
+
+  /**
+   * Mark a step as not-yet-implemented. Reported as `PENDING`, does not fail
+   * the build, and does not skip the remaining steps.
+   *
+   * {{{
+   * Given("a not-yet-built step") { pending("implement in sprint 3") }
+   * }}}
+   */
+  def pending(reason: String = "TODO"): RIO[R with State[S], Unit] =
+    ZIO.fail(new PendingException(reason))
 
   extension [Out <: Tuple](se: StepExpression[Out])
     def /(literal: String): StepExpression[Out] =

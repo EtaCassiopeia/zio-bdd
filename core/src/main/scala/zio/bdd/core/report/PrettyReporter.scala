@@ -22,6 +22,7 @@ case class PrettyReporter() extends Reporter {
   private val PaleYellow = "\u001b[38;2;245;245;220m" // Warning (pale beige/yellow)
   private val PaleRed    = "\u001b[38;2;255;182;193m" // Error, Fatal (pale red/pink)
 
+  private val Orange     = "[38;5;208m" // TimedOut / Pending (orange)
   private val Branch     = "├─ "
   private val LastBranch = "╰─ "
   private val Vertical   = "│  "
@@ -80,7 +81,13 @@ case class PrettyReporter() extends Reporter {
     isLast: Boolean,
     indent: String
   ): ZIO[Any, Nothing, Unit] = {
-    val stepColor = if (stepResult.isPassed) LightBlue else LightRed
+    val stepColor = stepResult.status match {
+      case StepStatus.Passed         => LightBlue
+      case StepStatus.Failed(_)      => LightRed
+      case StepStatus.TimedOut(_, _) => Orange
+      case StepStatus.Skipped        => LightGray
+      case StepStatus.Pending(_)     => Orange
+    }
     val stepLine  = stepResult.step.line.map(l => s":$l").getOrElse("")
     val prefix    = if (isLast) LastBranch else Branch
     val stepIdStr = stepResult.step.id.toString
@@ -93,15 +100,17 @@ case class PrettyReporter() extends Reporter {
             s"$indent$stepColor$prefix• Step: ${stepResult.step.stepType} - ${stepResult.step.pattern}$stepLine$Reset"
           )
         )
-      _ <- ZIO.unless(stepResult.isPassed) {
-             stepResult.outcome match {
-               case Left(cause) =>
-                 val causeLines = cause.prettyPrint.split("\n")
-                 ZIO.foreachDiscard(causeLines) { line =>
-                   ZIO.succeed(println(s"$subIndent$line"))
-                 }
-               case Right(_) => ZIO.unit // This case is unlikely since isPassed is false
-             }
+      _ <- stepResult.status match {
+             case StepStatus.Failed(cause) =>
+               val causeLines = cause.prettyPrint.split("\n")
+               ZIO.foreachDiscard(causeLines)(line => ZIO.succeed(println(s"$subIndent$line")))
+             case StepStatus.TimedOut(timeout, _) =>
+               ZIO.succeed(println(s"$subIndent${Orange}TIMEOUT after ${timeout.toSeconds}s$Reset"))
+             case StepStatus.Pending(reason) =>
+               ZIO.succeed(println(s"$subIndent$Orange[PENDING: $reason]$Reset"))
+             case StepStatus.Skipped =>
+               ZIO.succeed(println(s"$subIndent${LightGray}[SKIPPED]$Reset"))
+             case StepStatus.Passed => ZIO.unit
            }
       _ <- ZIO.foreachDiscard(logs.entries) { log =>
              val logColor = log.level match {
