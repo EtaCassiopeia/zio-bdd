@@ -7,7 +7,10 @@ import zio.bdd.core.{FeatureResult, InternalLogLevel, LogCollector, LogLevelConf
 import zio.bdd.gherkin.{Feature, GherkinParser}
 import zio.{Runtime, Unsafe, ZIO, ZLayer}
 
+import scala.jdk.CollectionConverters.*
+
 import java.io.File
+import java.net.URL
 
 class ZIOBDDFingerprint extends AnnotatedFingerprint {
   override def annotationName(): String = "zio.bdd.core.Suite"
@@ -51,6 +54,42 @@ case class BDDTestConfig(
 case class CompositeReporter(reporters: List[Reporter]) extends Reporter {
   override def report(results: List[FeatureResult]): ZIO[LogCollector, Throwable, Unit] =
     ZIO.foreachDiscard(reporters)(_.report(results))
+}
+
+case class FeatureFiles(path: String, testClassLoader: ClassLoader) {
+  private val CLASSPATH_PREFIX = "classpath:"
+
+  def retrieve(): List[String] =
+    if (path.nonEmpty) parsePath
+    else Nil
+
+  private def parsePath = {
+    if (path.startsWith(CLASSPATH_PREFIX)) parseClasspath
+    else parseFile(new File(path))
+  }
+
+  private def parseClasspath =
+    testClassLoader
+      .getResources(path.stripPrefix(CLASSPATH_PREFIX))
+      .asScala
+      .toList
+      .flatMap(url => getAllFeatures(new File(url.toURI())))
+
+  private def parseFile(parsedPath: File) =
+    if (parsedPath.exists()) {
+      getAllFeatures(parsedPath)
+    } else Nil
+
+  private def getAllFeatures(parsedPath: File) =
+    if (parsedPath.isDirectory()) {
+      parsedPath
+        .listFiles()
+        .filter(_.getName.endsWith(".feature"))
+        .map(_.getAbsolutePath)
+        .toList
+    } else if (parsedPath.getName().endsWith(".feature")) {
+      List(parsedPath.getAbsolutePath())
+    } else Nil
 }
 
 class ZIOBDDTask(
@@ -311,30 +350,23 @@ class ZIOBDDTask(
       .getOrElse(1)
 
   private def resolveFeatureFiles(config: BDDTestConfig, className: String, loggers: Array[Logger]): List[String] =
-    if (config.featureFiles.nonEmpty) {
-      config.featureFiles.flatMap { path =>
-        val file = new File(path)
-        if (file.isDirectory) {
-          file.listFiles().filter(_.getName.endsWith(".feature")).map(_.getAbsolutePath).toList
-        } else if (file.exists() && file.getName.endsWith(".feature")) {
-          List(file.getAbsolutePath)
-        } else {
-          loggers.foreach(_.warn(s"Invalid feature file or directory: $path"))
-          Nil
-        }
-      }
-    } else {
-      val clazz      = testClassLoader.loadClass(className + "$")
-      val annotation = Option(clazz.getAnnotation(classOf[zio.bdd.core.Suite]))
-      val featureDir = annotation.map(_.featureDir()).getOrElse("src/test/resources/features")
-      val dir        = new File(featureDir)
-      if (dir.exists() && dir.isDirectory) {
-        dir.listFiles().filter(_.getName.endsWith(".feature")).map(_.getAbsolutePath).toList
-      } else {
-        loggers.foreach(_.warn(s"Feature directory '$featureDir' not found or not a directory"))
-        List()
-      }
+    if (config.featureFiles.nonEmpty) config.featureFiles.flatMap(resolveFeaturesPath(_, loggers))
+    else resolveFeaturesPath(annotationFeatureDir(className), loggers)
+
+  private def resolveFeaturesPath(path: String, loggers: Array[Logger]) = {
+    val features = FeatureFiles(path, testClassLoader).retrieve()
+
+    if (features.isEmpty) {
+      loggers.foreach(_.warn(s"Feature directory '$path' not found or not a directory"))
     }
+
+    features
+  }
+
+  private def annotationFeatureDir(className: String): String =
+    Option(testClassLoader.loadClass(className + "$").getAnnotation(classOf[zio.bdd.core.Suite]))
+      .map(_.featureDir())
+      .getOrElse("src/test/resources/features")
 
   private def discoverFeatures(steps: ZIOSteps[Any, Any], featureFiles: List[String]): List[Feature] =
     if (featureFiles.nonEmpty) {
