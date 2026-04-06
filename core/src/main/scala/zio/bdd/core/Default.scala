@@ -2,20 +2,34 @@ package zio.bdd.core
 
 import zio.schema.Schema
 
-trait Default[T] {
+/**
+ * Typeclass for providing a default value of type T.
+ */
+trait Default[T]:
   def default: T
-}
 
-object Default {
+object Default:
 
-  /** Derives a Default[T] instance from a Schema[T]. */
-  implicit def schemaDefault[T](implicit schema: Schema[T]): Default[T] = new Default[T] {
-    def default: T = schema.defaultValue match {
-      case Right(value) => value
-      case Left(error)  => throw new Exception(s"Failed to derive default for ${schema}: $error")
-    }
-  }
+  /**
+   * Derive Default[T] from Schema[T]'s default value. Fails fast at suite
+   * startup if no default.
+   */
+  transparent inline given schemaDefault[T](using schema: Schema[T]): Default[T] =
+    new Default[T]:
+      val default: T = schema.defaultValue match
+        case Right(value) => value
+        case Left(error) =>
+          throw new IllegalStateException(
+            s"Cannot derive Default for ${schema.getClass.getSimpleName}: $error\n" +
+              s"Hint: add default values to all fields of your state case class, or provide an explicit Default[T] instance."
+          )
 
-  /** Summon an instance of Default[T] for a given type T. */
-  def apply[T](implicit instance: Default[T]): Default[T] = instance
-}
+  /** Create a Default[T] from an explicit value — no Schema required. */
+  def fromValue[T](value: => T): Default[T] = new Default[T]:
+    lazy val default: T = value
+
+  /** Alias for fromValue. Preferred spelling in companion-object style. */
+  def from[T](value: => T): Default[T] = fromValue(value)
+
+  /** Summon the Default[T] instance in scope. */
+  def apply[T](using d: Default[T]): Default[T] = d

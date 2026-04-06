@@ -21,6 +21,7 @@ object FeatureExecutor {
       ZIO
         .logAnnotate("featureId", feature.id.toString) {
           for {
+            _ <- FeatureContext.reset // per-feature staging is reset at the start of each feature
             _ <- suite.beforeFeatureHook
             featureResult <- ZIO
                                .foreach(feature.scenarios) { scenario =>

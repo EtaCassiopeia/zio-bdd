@@ -2,7 +2,7 @@ package zio.bdd.core
 
 import izumi.reflect.Tag
 import zio.*
-import zio.bdd.core.step.{State, StepInput, StepRegistry}
+import zio.bdd.core.step.{Stage, State, StepInput, StepRegistry}
 import zio.bdd.gherkin.{Scenario, Step, StepType}
 
 object ScenarioExecutor {
@@ -18,6 +18,7 @@ object ScenarioExecutor {
       ZIO.scoped {
         for {
           stateRef <- FiberRef.make(Default[S].default)
+          _        <- Stage.reset // clear any staged values leaked from a previous scenario
           scenarioResult <- (for {
                               _                    <- hooks.beforeScenarioHook
                               stepsWithTypesResult <- computeEffectiveStepTypes(scenario.steps).either
@@ -67,7 +68,7 @@ object ScenarioExecutor {
     ZIO.logAnnotate("stepId", step.id.toString) {
       val input    = StepInput(step.pattern, step.dataTable)
       val findStep = ZIO.serviceWithZIO[StepRegistry[R, S]](_.findStep(effectiveType, input))
-      findStep.foldCauseZIO(
+      Stage.currentStepLabel.set(step.pattern) *> findStep.foldCauseZIO(
         cause => ZIO.succeed(StepResult(step, Left(cause))),
         effect =>
           if (dryRun) ZIO.succeed(StepResult(step, Right(())))
