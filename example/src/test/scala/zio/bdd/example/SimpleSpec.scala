@@ -37,6 +37,6 @@ object SimpleSpec extends ZIOSteps[GreetingService, ScenarioContext] {
     ScenarioContext.get.map(_.greeting).map(actualGreeting => assertTrue(actualGreeting == expectedGreeting, s"Expected '$expectedGreeting', but got '$actualGreeting'"))
   }
 
-  override def environment: ZLayer[Any, Any, GreetingService] =
+  override def environment: ZLayer[Any, Throwable, GreetingService] =
     ZLayer.succeed(Config("Hello")) >>> GreetingService.live
 }
