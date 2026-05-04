@@ -7,14 +7,29 @@ import scala.reflect.ClassTag
 import zio.test.Assertion.*
 
 object Assertions {
-  // Helper to evaluate an Assertion and convert to ZIO effect
   private def evaluate[A](value: A, assertion: Assertion[A], message: String): ZIO[Any, Throwable, Unit] =
     ZIO.attempt {
-      if (!assertion.test(value)) {
-        throw new AssertionError(message)
-      }
+      if (!assertion.test(value)) throw new AssertionError(message)
     }
 
+  /**
+   * Assert a boolean condition inside a step body.
+   *
+   * IMPORTANT: Always use this with `<-` in a for-comprehension, NOT with
+   * `.map`:
+   *
+   * Correct:
+   * {{{
+   *   Then("the greeting should be " / string) { (expected: String) =>
+   *     ScenarioContext.get.flatMap(s => assertTrue(s.greeting == expected, s"Expected $expected, got ${s.greeting}"))
+   *   }
+   * }}}
+   *
+   * Wrong (assertion is silently discarded — the ZIO is never executed):
+   * {{{
+   *   ScenarioContext.get.map(s => assertTrue(s.greeting == expected))  // BUG
+   * }}}
+   */
   def assertTrue(condition: Boolean, message: String = "Assertion failed"): ZIO[Any, Throwable, Unit] =
     evaluate(condition, isTrue, message)
 
@@ -37,7 +52,6 @@ object Assertions {
   ): ZIO[Any, Throwable, Unit] =
     evaluate(actual, assertion, message)
 
-  // Option helpers
   def assertSome[A](actual: Option[A], message: String = "Expected Some, got None"): ZIO[Any, Throwable, Unit] =
     assertZIO(actual, isSome, message)
 
@@ -51,7 +65,6 @@ object Assertions {
   def assertNone[A](actual: Option[A], message: String = "Expected None, got Some"): ZIO[Any, Throwable, Unit] =
     assertZIO(actual, isNone, message)
 
-  // Either helpers
   def assertRight[A](actual: Either[?, A], message: String = "Expected Right, got Left"): ZIO[Any, Throwable, Unit] =
     assertZIO(actual, isRight, message)
 
@@ -72,22 +85,20 @@ object Assertions {
   ): ZIO[Any, Throwable, Unit] =
     assertZIO(actual, isLeft(equalTo(expected)), s"$message: expected Left($expected), got $actual")
 
-  // Collection helpers
   def assertContainsAll[A](
     actual: Iterable[A],
     expected: Iterable[A],
     message: String = "Collection mismatch"
   ): ZIO[Any, Throwable, Unit] =
-    assertZIO(actual.toList, hasSameElements(expected.toList), message) // Exact match
+    assertZIO(actual.toList, hasSameElements(expected.toList), message)
 
   def assertContainsSubset[A](
     actual: Iterable[A],
     expected: Iterable[A],
     message: String = "Collection subset mismatch"
   ): ZIO[Any, Throwable, Unit] =
-    assertZIO(actual, containsAllElements(expected), message) // Subset check
+    assertZIO(actual, containsAllElements(expected), message)
 
-  // Field helpers
   def assertHasField[A, B](
     actual: A,
     fieldName: String,
@@ -112,7 +123,6 @@ object Assertions {
       s"$message: expected $fieldName to be $expected, got ${getter(actual)}"
     )
 
-  // Lens-like assertion for nested structures
   def assertNested[A, B](
     actual: A,
     path: String,
@@ -137,9 +147,42 @@ object Assertions {
       s"$message: expected $path to be $expected, got ${getter(actual)}"
     )
 
-  // Custom assertion for subset check
+  /**
+   * Run all assertions and collect every failure into a single
+   * `MultipleAssertionError`.
+   *
+   * Unlike chaining with `*>`, this does NOT short-circuit on the first failure
+   * — every assertion is always evaluated. Use this when a step needs to verify
+   * several independent conditions and you want a single report showing all
+   * failures at once.
+   *
+   * {{{
+   *   Then("the response is well-formed") {
+   *     ScenarioContext.get.flatMap { s =>
+   *       Assertions.collectAll(
+   *         Assertions.assertEquals(s.http.statusCode, 200),
+   *         Assertions.assertTrue(s.http.body.nonEmpty),
+   *         Assertions.assertTrue(s.http.body.contains("ledgerSequenceNumber"))
+   *       )
+   *     }
+   *   }
+   * }}}
+   */
+  def collectAll(assertions: ZIO[Any, Throwable, Unit]*): ZIO[Any, Throwable, Unit] =
+    ZIO.foreach(assertions.toList)(_.either).flatMap { results =>
+      val failures = results.collect { case Left(t) => Option(t.getMessage).getOrElse(t.getClass.getName) }
+      if (failures.isEmpty) ZIO.unit
+      else ZIO.fail(new MultipleAssertionError(failures))
+    }
+
   private def containsAllElements[A](expected: Iterable[A]): Assertion[Iterable[A]] =
     Assertion.assertion("containsAllElements") { actual =>
       expected.forall(e => actual.exists(_ == e))
     }
 }
+
+/** Thrown by `Assertions.collectAll` when one or more sub-assertions fail. */
+final class MultipleAssertionError(val failures: List[String])
+    extends AssertionError(
+      s"${failures.length} assertion(s) failed:\n" + failures.mkString("  - ", "\n  - ", "")
+    )

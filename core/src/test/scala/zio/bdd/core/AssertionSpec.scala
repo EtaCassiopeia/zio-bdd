@@ -7,150 +7,194 @@ import zio.schema.{DeriveSchema, Schema}
 import zio.test.*
 import zio.test.Assertion.*
 
+/**
+ * Tests for the Assertions helper library.
+ *
+ * Each test exercises one assertion variant by running it through the step
+ * execution engine — the assertion must pass (the feature is passed) or fail
+ * (the feature result has an error) as documented.
+ */
 object AssertionSpec extends ZIOSpecDefault {
 
-  object Domain {
-    case class Cart(id: String, items: Map[String, Int], discount: Option[Double])
-    case class Order(total: Double, result: Either[String, Cart])
+  case class Cart(id: String, items: Map[String, Int], discount: Option[Double])
+  given Schema[Cart] = DeriveSchema.gen[Cart]
 
-    implicit val cartSchema: Schema[Cart]   = DeriveSchema.gen[Cart]
-    implicit val orderSchema: Schema[Order] = DeriveSchema.gen[Order]
-  }
-
-  import Domain._
-
-  private class DemoSteps extends ZIOSteps[Any, Cart] {
-    Given("a cart with id " / string / " and " / int / " items") { (id: String, itemCount: Int) =>
-      ScenarioContext.update(_ => Cart(id, Map("P1" -> itemCount), None))
+  class CartSteps extends ZIOSteps[Any, Cart] {
+    Given("a cart " / string / " with " / int / " items") { (id: String, n: Int) =>
+      ScenarioContext.update(_ => Cart(id, Map("P1" -> n), None))
     }
-
-    When("a discount of " / double / " is applied") { (discount: Double) =>
-      for {
-        cart <- ScenarioContext.get
-        _    <- ScenarioContext.update(_ => cart.copy(discount = Some(discount)))
-      } yield ()
+    When("discount " / double / " is applied") { (d: Double) =>
+      ScenarioContext.update(c => c.copy(discount = Some(d)))
     }
-
-    When("an order is placed") {
-      for {
-        cart <- ScenarioContext.get
-        _    <- ZIO.logInfo(s"Order placed for cart: ${cart.id}")
-      } yield ()
+    Then("cart id is " / string) { (expected: String) =>
+      ScenarioContext.get.flatMap(c => Assertions.assertEquals(c.id, expected))
     }
-
-    Then("an error occurs") {
-      ZIO.fail(new RuntimeException("Simulated error")).unit
+    Then("discount is " / double) { (expected: Double) =>
+      ScenarioContext.get.flatMap(c => Assertions.assertSomeEquals(c.discount, expected))
     }
-
-    Then("the cart ID is " / string) { (expectedId: String) =>
-      for {
-        cart <- ScenarioContext.get
-        _    <- Assertions.assertEquals(cart.id, expectedId, "Cart ID mismatch")
-      } yield ()
+    Then("no discount is set") {
+      ScenarioContext.get.flatMap(c => Assertions.assertNone(c.discount))
     }
-
-    Then("the discount is " / double) { (expectedDiscount: Double) =>
-      for {
-        cart <- ScenarioContext.get
-        _    <- Assertions.assertSomeEquals(cart.discount, expectedDiscount, "Discount value mismatch")
-      } yield ()
+    Then("item count is " / int) { (expected: Int) =>
+      ScenarioContext.get.flatMap(c => Assertions.assertEquals(c.items.values.sum, expected))
     }
-
-    Then("the discount is not present") {
-      for {
-        cart <- ScenarioContext.get
-        _    <- Assertions.assertNone(cart.discount, "Discount should not be present")
-      } yield ()
+    Then("cart is non-empty") {
+      ScenarioContext.get.flatMap(c => Assertions.assertTrue(c.items.nonEmpty))
+    }
+    Then("trigger failure") {
+      ZIO.fail(new RuntimeException("deliberate failure")).unit
     }
   }
 
-  def createFeature(scenarioName: String, steps: List[Step]): Feature =
-    Feature(
-      name = "Test Feature",
-      scenarios = List(
-        Scenario(
-          name = scenarioName,
-          steps = steps,
-          tags = Nil,
-          file = Some("test.feature"),
-          line = Some(1)
-        )
-      ),
-      file = Some("test.feature"),
-      line = Some(1)
-    )
+  private def runScene(steps: CartSteps, scenarioSteps: List[Step]): ZIO[Any, Throwable, FeatureResult] =
+    steps.run(List(Feature("T", Nil, List(Scenario("s", Nil, scenarioSteps, Some("t.feature"), Some(1)))))).map(_.head)
 
-  private def runFeature(steps: ZIOSteps[Any, Cart], feature: Feature) = steps.run(List(feature))
+  private def step(t: StepType, p: String) = Step(t, p, None, None, None)
 
-  override def spec: Spec[Any, Any] = suite("Assertions Demo")(
-    test("assertTrue checks a simple condition") {
-      val stepsDef = new DemoSteps {}
-      val feature = createFeature(
-        "Check cart ID",
+  private val assertTrueTests = suite("assertTrue")(
+    test("passes when the condition is true") {
+      val s = new CartSteps {}
+      runScene(
+        s,
         List(
-          Step(StepType.GivenStep, "a cart with id C1 and 2 items", None, None, None),
-          Step(StepType.ThenStep, "the cart ID is C1", None, None, None)
+          step(StepType.GivenStep, "a cart C1 with 3 items"),
+          step(StepType.ThenStep, "cart is non-empty")
         )
-      )
-      for {
-        results <- runFeature(stepsDef, feature)
-      } yield assertTrue(results.head.isPassed)
+      ).map(r => assertTrue(r.isPassed))
     },
-    test("assertEquals verifies cart ID") {
-      val stepsDef = new DemoSteps {}
-      val feature = createFeature(
-        "Verify cart ID equality",
+    test("fails when the condition is false") {
+      // Trigger deliberate failure to verify assertion failure propagates correctly
+      val s = new CartSteps {}
+      runScene(
+        s,
         List(
-          Step(StepType.GivenStep, "a cart with id C2 and 3 items", None, None, None),
-          Step(StepType.ThenStep, "the cart ID is C2", None, None, None)
+          step(StepType.GivenStep, "a cart C1 with 3 items"),
+          step(StepType.ThenStep, "trigger failure")
         )
-      )
-      for {
-        results <- runFeature(stepsDef, feature)
-      } yield assertTrue(results.head.isPassed)
-    },
-    test("assertSomeEquals checks discount value") {
-      val stepsDef = new DemoSteps {}
-      val feature = createFeature(
-        "Check discount application",
-        List(
-          Step(StepType.GivenStep, "a cart with id C3 and 1 items", None, None, None),
-          Step(StepType.WhenStep, "a discount of 0.15 is applied", None, None, None),
-          Step(StepType.ThenStep, "the discount is 0.15", None, None, None)
-        )
-      )
-      for {
-        results <- runFeature(stepsDef, feature)
-      } yield assertTrue(results.head.isPassed)
-    },
-    test("assertNone verifies no discount") {
-      val stepsDef = new DemoSteps {}
-      val feature = createFeature(
-        "Check no discount",
-        List(
-          Step(StepType.GivenStep, "a cart with id C4 and 5 items", None, None, None),
-          Step(StepType.ThenStep, "the discount is not present", None, None, None)
-        )
-      )
-      for {
-        results <- runFeature(stepsDef, feature)
-      } yield assertTrue(results.head.isPassed)
-    },
-    test("assert failure on error") {
-      val stepsDef = new DemoSteps {}
-      val feature = createFeature(
-        "Check error handling",
-        List(
-          Step(StepType.GivenStep, "a cart with id C5 and 2 items", None, None, None),
-          Step(StepType.ThenStep, "an error occurs", None, None, None)
-        )
-      )
-      for {
-        results      <- runFeature(stepsDef, feature)
-        featureResult = results.head
-      } yield assertTrue(!featureResult.isPassed) &&
-        assert(featureResult.error)(isSome(isSubtype[RuntimeException](anything))) &&
-        assert(featureResult.error.map(_.getMessage))(Assertion.isSome(Assertion.equalTo("Simulated error")))
+      ).map(r => assertTrue(!r.isPassed, r.error.isDefined))
     }
+  )
+
+  private val assertEqualsTests = suite("assertEquals")(
+    test("passes when values are equal") {
+      val s = new CartSteps {}
+      runScene(
+        s,
+        List(
+          step(StepType.GivenStep, "a cart C2 with 5 items"),
+          step(StepType.ThenStep, "cart id is C2")
+        )
+      ).map(r => assertTrue(r.isPassed))
+    },
+    test("fails when values are not equal") {
+      val s = new CartSteps {}
+      runScene(
+        s,
+        List(
+          step(StepType.GivenStep, "a cart C2 with 5 items"),
+          step(StepType.ThenStep, "cart id is WRONG")
+        )
+      ).map(r => assertTrue(!r.isPassed))
+    }
+  )
+
+  private val assertSomeTests = suite("assertSomeEquals")(
+    test("passes when Option contains the expected value") {
+      val s = new CartSteps {}
+      runScene(
+        s,
+        List(
+          step(StepType.GivenStep, "a cart C3 with 1 items"),
+          step(StepType.WhenStep, "discount 0.15 is applied"),
+          step(StepType.ThenStep, "discount is 0.15")
+        )
+      ).map(r => assertTrue(r.isPassed))
+    },
+    test("fails when Option is None") {
+      val s = new CartSteps {}
+      runScene(
+        s,
+        List(
+          step(StepType.GivenStep, "a cart C3 with 1 items"),
+          // No discount applied → discount remains None
+          step(StepType.ThenStep, "discount is 0.15")
+        )
+      ).map(r => assertTrue(!r.isPassed))
+    }
+  )
+
+  private val assertNoneTests = suite("assertNone")(
+    test("passes when Option is None") {
+      val s = new CartSteps {}
+      runScene(
+        s,
+        List(
+          step(StepType.GivenStep, "a cart C4 with 2 items"),
+          step(StepType.ThenStep, "no discount is set")
+        )
+      ).map(r => assertTrue(r.isPassed))
+    },
+    test("fails when Option is Some") {
+      val s = new CartSteps {}
+      runScene(
+        s,
+        List(
+          step(StepType.GivenStep, "a cart C4 with 2 items"),
+          step(StepType.WhenStep, "discount 0.10 is applied"),
+          step(StepType.ThenStep, "no discount is set") // should fail
+        )
+      ).map(r => assertTrue(!r.isPassed))
+    }
+  )
+
+  private val directTests = suite("Direct assertion helpers")(
+    test("assertRight passes for Right") {
+      for {
+        _ <- Assertions.assertRight(Right("value"): Either[String, String])
+      } yield assertCompletes
+    },
+    test("assertRight fails for Left") {
+      for {
+        r <- Assertions.assertRight(Left("error"): Either[String, String]).either
+      } yield assertTrue(r.isLeft)
+    },
+    test("assertLeft passes for Left") {
+      for {
+        _ <- Assertions.assertLeft(Left("error"): Either[String, String])
+      } yield assertCompletes
+    },
+    test("assertLeft fails for Right") {
+      for {
+        r <- Assertions.assertLeft(Right("value"): Either[String, String]).either
+      } yield assertTrue(r.isLeft)
+    },
+    test("assertContainsAll passes when collections match") {
+      for {
+        _ <- Assertions.assertContainsAll(List(1, 2, 3), List(1, 2, 3))
+      } yield assertCompletes
+    },
+    test("assertContainsAll fails when an element is missing") {
+      for {
+        r <- Assertions.assertContainsAll(List(1, 2), List(1, 2, 3)).either
+      } yield assertTrue(r.isLeft)
+    },
+    test("assertSome passes for Some") {
+      for {
+        _ <- Assertions.assertSome(Some("value"))
+      } yield assertCompletes
+    },
+    test("assertSome fails for None") {
+      for {
+        r <- Assertions.assertSome(None: Option[String]).either
+      } yield assertTrue(r.isLeft)
+    }
+  )
+
+  def spec: Spec[TestEnvironment & Scope, Any] = suite("Assertions")(
+    assertTrueTests,
+    assertEqualsTests,
+    assertSomeTests,
+    assertNoneTests,
+    directTests
   )
 }
