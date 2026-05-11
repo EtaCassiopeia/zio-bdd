@@ -4,6 +4,8 @@ import zio.{Runtime, ZLogger, *}
 import zio.logging.LogFormat
 
 import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
+import scala.jdk.CollectionConverters.*
 
 enum InternalLogLevel {
   case Debug, Info, Warning, Error, Fatal
@@ -32,8 +34,6 @@ case class LogLevelConfig(minLevel: InternalLogLevel = InternalLogLevel.Info)
 
 /**
  * Defines the interface for collecting and managing logs during step execution.
- * It separates logs into stdout and stderr streams, allowing reporters (e.g.,
- * JUnit XML) to process them distinctly.
  */
 trait LogCollector {
   def log(scenarioId: String, stepId: String, message: String, level: InternalLogLevel): ZIO[Any, Nothing, Unit]
@@ -41,55 +41,86 @@ trait LogCollector {
   def getScenarioLogs(scenarioId: String): ZIO[Any, Nothing, CollectedLogs]
 }
 
-/**
- * Provides a mechanism to collect logs during step execution, separating stdout
- * and stderr streams, and integrates with ZIO's logging system via a custom
- * logger added to the runtime.
- */
 object LogCollector {
 
-  private class LogCollectorImpl(config: LogLevelConfig, ref: Ref[Map[(String, String), CollectedLogs]])
-      extends LogCollector {
+  /**
+   * ConcurrentHashMap-backed implementation.
+   *
+   * Log entries are appended in the synchronous ZLogger callback without
+   * re-entering the ZIO runtime. A `ConcurrentHashMap` with list-append via
+   * `merge` gives us lock-free reads and fine-grained locking on writes keyed
+   * by (scenarioId, stepId) — safe under parallel scenario execution.
+   *
+   * The `log` method is also exposed as a `ZIO` effect for test compatibility,
+   * but the hot path (called from the ZLogger callback) is the direct
+   * `logDirect` method which never touches the ZIO runtime.
+   */
+  private final class LogCollectorImpl(config: LogLevelConfig) extends LogCollector {
+
+    // Key: "scenarioId::stepId", Value: accumulated CollectedLogs
+    private val store = new ConcurrentHashMap[String, CollectedLogs]()
+
+    private def key(scenarioId: String, stepId: String): String = s"$scenarioId::$stepId"
+
     private def logSourceForLevel(level: InternalLogLevel): LogSource =
       level match {
         case InternalLogLevel.Error | InternalLogLevel.Fatal => LogSource.Stderr
         case _                                               => LogSource.Stdout
       }
 
-    private def createLogEntry(
-      message: String,
-      level: InternalLogLevel,
-      stepId: String
-    ): ZIO[Any, Nothing, LogEntry] =
-      Clock.instant.map { now =>
-        LogEntry(message, now, logSourceForLevel(level), level, stepId)
-      }
-
-    def log(scenarioId: String, stepId: String, message: String, level: InternalLogLevel): ZIO[Any, Nothing, Unit] =
+    /**
+     * Called directly from the synchronous ZLogger callback — no ZIO runtime
+     * involved.
+     */
+    def logDirect(scenarioId: String, stepId: String, message: String, level: InternalLogLevel): Unit =
       if (level.ordinal >= config.minLevel.ordinal) {
-        for {
-          entry <- createLogEntry(message, level, stepId)
-          _ <- ref.update(_.updatedWith((scenarioId, stepId)) {
-                 case Some(logs) => Some(logs.add(entry))
-                 case None       => Some(CollectedLogs().add(entry))
-               })
-        } yield ()
-      } else {
-        ZIO.unit
+        val entry = LogEntry(
+          message = message,
+          timestamp = java.time.Clock.systemUTC().instant(),
+          source = logSourceForLevel(level),
+          level = level,
+          stepId = stepId
+        )
+        val k = key(scenarioId, stepId)
+        store.merge(
+          k,
+          CollectedLogs(List(entry)),
+          (existing, added) => existing.copy(entries = existing.entries ++ added.entries)
+        )
+        ()
       }
 
-    def getLogs(scenarioId: String, stepId: String): ZIO[Any, Nothing, CollectedLogs] =
-      ref.get.map(_.getOrElse((scenarioId, stepId), CollectedLogs()))
+    /**
+     * ZIO-effect wrapper for test compatibility and direct calls from step
+     * bodies.
+     */
+    def log(scenarioId: String, stepId: String, message: String, level: InternalLogLevel): UIO[Unit] =
+      ZIO.succeed(logDirect(scenarioId, stepId, message, level))
 
-    def getScenarioLogs(scenarioId: String): ZIO[Any, Nothing, CollectedLogs] =
-      ref.get.map { map =>
-        map.foldLeft(CollectedLogs()) { case (acc, ((sid, _), logs)) =>
-          if (sid == scenarioId) acc.copy(entries = logs.entries ++ acc.entries) else acc
-        }
-      }
+    def getLogs(scenarioId: String, stepId: String): UIO[CollectedLogs] =
+      ZIO.succeed(Option(store.get(key(scenarioId, stepId))).getOrElse(CollectedLogs()))
+
+    def getScenarioLogs(scenarioId: String): UIO[CollectedLogs] =
+      ZIO.succeed(
+        store
+          .entrySet()
+          .asScala
+          .filter(_.getKey.startsWith(s"$scenarioId::"))
+          .foldLeft(CollectedLogs())((acc, e) => acc.copy(entries = acc.entries ++ e.getValue.entries))
+      )
   }
 
-  private def customLogger(collector: LogCollector): ZLogger[String, Unit] = {
+  /**
+   * Creates a ZLogger that captures log output into the collector.
+   *
+   * Calls `logDirect` on the `LogCollectorImpl` — a direct ConcurrentHashMap
+   * write with no ZIO runtime re-entry. Eliminates the `Unsafe.unsafe` bridge
+   * and the associated interpreter overhead on every log call.
+   *
+   * The runtime default logger is AUGMENTED (not replaced) so that step-level
+   * ZIO.log* calls also appear on the console.
+   */
+  private def customLogger(collector: LogCollectorImpl): ZLogger[String, Unit] = {
     val formatLogger = LogFormat.default.toLogger
     (
       trace: Trace,
@@ -101,37 +132,28 @@ object LogCollector {
       spans: List[LogSpan],
       annotations: Map[String, String]
     ) => {
-      annotations.get("stepId") match {
-        case Some(stepId) =>
-          val formattedMessage = formatLogger(trace, fiberId, logLevel, message, cause, context, spans, annotations)
-          Unsafe.unsafe { implicit u =>
-            Runtime.default.unsafe.run {
-              val scenarioId = annotations.getOrElse("scenarioId", "default")
-              val level = logLevel match {
-                case LogLevel.Debug   => InternalLogLevel.Debug
-                case LogLevel.Info    => InternalLogLevel.Info
-                case LogLevel.Warning => InternalLogLevel.Warning
-                case LogLevel.Error   => InternalLogLevel.Error
-                case LogLevel.Fatal   => InternalLogLevel.Fatal
-              }
-              collector.log(scenarioId, stepId, formattedMessage, level)
-            }.getOrThrowFiberFailure()
-          }
-        case None =>
-          () // Do nothing
+      annotations.get("stepId").foreach { stepId =>
+        val formattedMessage = formatLogger(trace, fiberId, logLevel, message, cause, context, spans, annotations)
+        val scenarioId       = annotations.getOrElse("scenarioId", "default")
+        val level = logLevel match {
+          case LogLevel.Debug   => InternalLogLevel.Debug
+          case LogLevel.Info    => InternalLogLevel.Info
+          case LogLevel.Warning => InternalLogLevel.Warning
+          case LogLevel.Error   => InternalLogLevel.Error
+          case LogLevel.Fatal   => InternalLogLevel.Fatal
+          case _                => InternalLogLevel.Info
+        }
+        collector.logDirect(scenarioId, stepId, formattedMessage, level)
       }
     }
   }
 
   def live(config: LogLevelConfig = LogLevelConfig()): ZLayer[Any, Nothing, LogCollector] =
     ZLayer.scoped {
-      for {
-        ref      <- Ref.make(Map.empty[(String, String), CollectedLogs])
-        collector = new LogCollectorImpl(config, ref)
-        _        <- FiberRef.currentLoggers.locallyScoped(Set(customLogger(collector)))
-        // If the intent is to preserve default loggers, replace it with:
-        // _ <- FiberRef.currentLoggers.locallyScoped(Runtime.defaultLoggers + customLogger(collector))
-      } yield collector
+      val collector = new LogCollectorImpl(config)
+      FiberRef.currentLoggers
+        .locallyScoped(Runtime.defaultLoggers + customLogger(collector))
+        .as(collector)
     }
 
   def log(
