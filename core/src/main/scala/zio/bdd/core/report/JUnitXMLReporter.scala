@@ -1,62 +1,86 @@
 package zio.bdd.core.report
 
-import zio.{ZIO, ZLayer}
-import zio.bdd.core.{FeatureResult, LogCollector}
+import zio.*
+import zio.bdd.core.{CollectedLogs, FeatureResult, LogCollector}
+import zio.bdd.core.report.JUnitXMLFormatter.{Format, TestSuiteRecord}
 
-import java.time.Instant
 import java.nio.file.{Files, Paths}
 
 case class JUnitReporterConfig(
-  outputDir: String = "target/test-results",
-  format: JUnitXMLFormatter.Format = JUnitXMLFormatter.Format.JUnit5
+  outputDir: String = "target/test-reports",
+  suiteClass: String = "",
+  format: Format = Format.JUnit5
 )
 
-case class JUnitXMLReporter(config: JUnitReporterConfig) extends Reporter {
+/**
+ * Writes one XML file per feature to `outputDir`.
+ *
+ * File naming follows the Jenkins JUnit plugin convention (TEST-*.xml):
+ * TEST-ComponentSuite-Provision.xml
+ *
+ * Each file is a standard JUnit testsuite enriched with Gherkin metadata:
+ *   - testsuite: feature name, tags, source file, total/failures/skipped counts
+ *   - testcase: classname = suite simple name, tags, file, line
+ *   - steps: keyword, name, status, duration per Gherkin step
+ *   - failure: first failing step message + stack trace
+ *   - skipped: ignored and pending scenarios
+ *   - system-out / system-err: collected ZIO log entries
+ */
+case class JUnitXMLReporter(config: JUnitReporterConfig) extends Reporter:
 
-  private def sanitizeFileName(name: String): String =
-    name.replaceAll("[^a-zA-Z0-9-_.]", "_")
-
-  private def ensureDirectoryExists(dir: String): ZIO[Any, Throwable, Unit] =
-    ZIO.attempt {
-      val path = Paths.get(dir)
-      if (!Files.exists(path)) {
-        Files.createDirectories(path)
-      }
-    }
+  // "com.example.ComponentSuite$" → "ComponentSuite"
+  private val suiteSimpleName: String =
+    config.suiteClass.split('.').lastOption.getOrElse(config.suiteClass).stripSuffix("$")
 
   override def report(results: List[FeatureResult]): ZIO[LogCollector, Throwable, Unit] =
     for {
-      _            <- ensureDirectoryExists(config.outputDir)
+      _            <- ensureDir(config.outputDir)
       logCollector <- ZIO.service[LogCollector]
-      _ <- ZIO.foreachDiscard(results) { feature =>
-             val fileName = s"${sanitizeFileName(feature.feature.name)}.xml"
-             val filePath = s"${config.outputDir}/$fileName"
-
-             val testCases = feature.scenarioResults.map { scenarioResult =>
-               for {
-                 scenarioLogs <- logCollector.getScenarioLogs(scenarioResult.scenario.id.toString)
-               } yield JUnitXMLFormatter.TestCase(
-                 name = scenarioResult.scenario.name,
-                 succeeded = scenarioResult.isPassed,
-                 logs = scenarioLogs,
-                 timestamp = Instant.now(),
-                 duration = 0 // Duration could be enhanced if needed
-               )
-             }
-
-             ZIO.collectAll(testCases).flatMap { cases =>
-               val suite = JUnitXMLFormatter.TestSuite(
-                 name = feature.feature.name,
-                 cases = cases,
-                 timestamp = Instant.now()
-               )
-               JUnitXMLFormatter.writeToFile(suite, filePath, config.format)
-             }
-           }
+      _            <- ZIO.foreachDiscard(results)(reportFeature(_, logCollector))
     } yield ()
-}
 
-object JUnitXMLReporter {
+  private def reportFeature(
+    feature: FeatureResult,
+    logCollector: LogCollector
+  ): ZIO[Any, Throwable, Unit] =
+    for {
+      now  <- Clock.instant
+      logs <- collectLogs(feature, logCollector)
+      suite = JUnitXMLFormatter.buildSuite(
+                feature.feature,
+                feature.scenarioResults,
+                logs,
+                now,
+                suiteSimpleName
+              )
+      _ <- writeFeature(suite, feature.feature.name)
+    } yield ()
+
+  private def collectLogs(
+    feature: FeatureResult,
+    logCollector: LogCollector
+  ): ZIO[Any, Nothing, Map[String, CollectedLogs]] =
+    ZIO
+      .foreach(feature.scenarioResults) { sr =>
+        logCollector.getScenarioLogs(sr.scenario.id.toString).map(sr.scenario.id.toString -> _)
+      }
+      .map(_.toMap)
+
+  private def writeFeature(suite: TestSuiteRecord, featureName: String): ZIO[Any, Throwable, Unit] =
+    // TEST-ComponentSuite-Provision.xml  matches **/TEST-*.xml Jenkins glob
+    val prefix   = if (suiteSimpleName.nonEmpty) s"TEST-$suiteSimpleName-" else "TEST-"
+    val fileName = prefix + sanitize(featureName) + ".xml"
+    JUnitXMLFormatter.writeToFile(suite, s"${config.outputDir}/$fileName", config.format)
+
+  private def sanitize(name: String): String =
+    name.replaceAll("[^a-zA-Z0-9-_.]", "_")
+
+  private def ensureDir(dir: String): ZIO[Any, Throwable, Unit] =
+    ZIO.attempt {
+      val path = Paths.get(dir)
+      if (!Files.exists(path)) Files.createDirectories(path)
+    }
+
+object JUnitXMLReporter:
   def live(config: JUnitReporterConfig = JUnitReporterConfig()): ZLayer[Any, Nothing, Reporter] =
     ZLayer.succeed(JUnitXMLReporter(config))
-}

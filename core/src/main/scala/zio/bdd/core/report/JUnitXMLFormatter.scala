@@ -1,110 +1,276 @@
 package zio.bdd.core.report
 
 import zio.*
-import zio.bdd.core.{CollectedLogs, LogEntry, InternalLogLevel, LogSource}
+import zio.bdd.core.*
+import zio.bdd.gherkin.{Feature, Scenario, Step, StepType}
+
 import java.time.Instant
 import java.time.format.DateTimeFormatter
-import scala.xml.{Elem, NodeSeq, PrettyPrinter}
+import java.nio.file.{Files, Paths}
+import scala.xml.{Elem, NodeSeq, PrettyPrinter, Text}
 
+/**
+ * Produces JUnit XML enriched with Gherkin structure:
+ *
+ * <testsuite name="Provision" tests="23" failures="2" skipped="1" time="4.210"
+ * file="features/components/Provision.feature" tags="@provision"> <properties/>
+ * <testcase name="Successful Provision (Happy Path)" classname="Provision"
+ * time="0.831" file="features/components/Provision.feature" line="4"
+ * tags="@provision1"> <steps> <step keyword="Given" name="a valid provision
+ * body" status="passed" time="0.012"/> <step keyword="When" name="a provision
+ * request is sent" status="passed" time="0.801"/> <step keyword="Then"
+ * name="the ledger returns a 201 status code" status="failed" time="0.018"
+ * message="Expected 201, got 203"/> </steps> <failure message="Expected 201,
+ * got 203" type="AssertionError">…stack…</failure> </testcase> </testsuite>
+ *
+ * Follows the extended Cucumber-JVM / pytest-bdd JUnit XML convention so that
+ * CI tools (Jenkins, GitHub Actions) can display step-level detail alongside
+ * the standard pass/fail counts.
+ */
 object JUnitXMLFormatter {
 
-  case class TestCase(
+  // ── Model ─────────────────────────────────────────────────────────────────
+
+  /**
+   * Mirrors [[StepStatus]] but carries the rendered message for XML emission.
+   */
+  enum StepOutcome:
+    case Passed
+    case Failed(message: String, stackTrace: Option[String])
+    case TimedOut(message: String)
+    case Skipped
+    case Pending(reason: String)
+
+  object StepOutcome:
+    def from(result: StepResult): StepOutcome = result.status match
+      case StepStatus.Passed     => Passed
+      case StepStatus.Skipped    => Skipped
+      case StepStatus.Pending(r) => Pending(r)
+      case StepStatus.TimedOut(d, cause) =>
+        TimedOut(s"Step timed out after ${d.toSeconds}s")
+      case StepStatus.Failed(cause) =>
+        val msg =
+          cause.failureOption.map(_.getMessage).orElse(cause.dieOption.map(_.getMessage)).getOrElse("Test failed")
+        val trace = Option(cause.prettyPrint)
+        Failed(msg, trace)
+
+    def xmlStatus(o: StepOutcome): String = o match
+      case Passed       => "passed"
+      case Skipped      => "skipped"
+      case Pending(_)   => "pending"
+      case TimedOut(_)  => "timed_out"
+      case Failed(_, _) => "failed"
+
+  case class StepRecord(
+    keyword: String,
     name: String,
-    succeeded: Boolean,
+    outcome: StepOutcome,
+    durationSecs: Double
+  )
+
+  object StepRecord:
+    def keyword(t: StepType): String = t match
+      case StepType.GivenStep => "Given"
+      case StepType.WhenStep  => "When"
+      case StepType.ThenStep  => "Then"
+      case StepType.AndStep   => "And"
+      case StepType.ButStep   => "But"
+
+    def from(step: Step, result: StepResult): StepRecord =
+      StepRecord(keyword(step.stepType), step.pattern, StepOutcome.from(result), result.duration / 1000.0)
+
+  case class TestCaseRecord(
+    name: String,
+    classname: String,
+    tags: List[String],
+    file: Option[String],
+    line: Option[Int],
+    steps: List[StepRecord],
     logs: CollectedLogs,
     timestamp: Instant,
-    duration: Long,     // in milliseconds
-    assertions: Int = 0 // Number of assertions (for JUnit 4)
+    durationSecs: Double,
+    outcome: ScenarioOutcome
   )
 
-  case class TestSuite(
+  enum ScenarioOutcome:
+    case Passed
+    case Failed(message: String, stackTrace: Option[String])
+    case Skipped
+    case Pending(reason: String)
+
+  object ScenarioOutcome:
+    def from(r: ScenarioResult): ScenarioOutcome =
+      if (r.isIgnored) Skipped
+      else if (r.isPassed) Passed
+      else if (r.hasPending && !r.hasFailure)
+        Pending(
+          r.stepResults.collectFirst { case s if s.isPending => s.status.asInstanceOf[StepStatus.Pending].reason }
+            .getOrElse("TODO")
+        )
+      else
+        val msg = r.error.map(_.getMessage).getOrElse("Scenario failed")
+        val trace =
+          r.error.map(t => Option(t.getStackTrace).map(_.mkString("\n\tat ", "\n\tat ", "")).getOrElse("")).orElse(None)
+        Failed(msg, trace)
+
+  case class TestSuiteRecord(
     name: String,
-    cases: List[TestCase],
-    timestamp: Instant
-  )
+    tags: List[String],
+    file: Option[String],
+    cases: List[TestCaseRecord],
+    timestamp: Instant,
+    durationSecs: Double
+  ):
+    def total: Int    = cases.length
+    def failures: Int = cases.count(_.outcome.isInstanceOf[ScenarioOutcome.Failed])
+    def skipped: Int  = cases.count(_.outcome == ScenarioOutcome.Skipped)
+    def pending: Int  = cases.count(_.outcome.isInstanceOf[ScenarioOutcome.Pending])
+    def passed: Int   = cases.count(_.outcome == ScenarioOutcome.Passed)
 
   sealed trait Format
-  object Format {
+  object Format:
     case object JUnit4 extends Format
     case object JUnit5 extends Format
-  }
 
-  def generateXML(suite: TestSuite, format: Format = Format.JUnit5)(implicit trace: Trace): ZIO[Any, Nothing, String] =
-    ZIO.succeed {
-      format match {
-        case Format.JUnit4 => generateJUnit4XML(suite)
-        case Format.JUnit5 => generateJUnit5XML(suite)
+  // ── Assembly ──────────────────────────────────────────────────────────────
+
+  def buildSuite(
+    feature: Feature,
+    results: List[ScenarioResult],
+    logs: Map[String, CollectedLogs],
+    timestamp: Instant,
+    suiteClassname: String = ""
+  ): TestSuiteRecord =
+    // classname on testcase = suite simple name if provided, else feature name
+    // This matches the Jenkins convention where classname groups scenarios under one class
+    val classname = if (suiteClassname.nonEmpty) suiteClassname else feature.name
+    val cases = results.map { r =>
+      val stepRecords = r.scenario.steps.zip(r.stepResults).map((s, sr) => StepRecord.from(s, sr))
+      TestCaseRecord(
+        name = r.scenario.name,
+        classname = classname,
+        tags = r.scenario.tags,
+        file = r.scenario.file,
+        line = r.scenario.line,
+        steps = stepRecords,
+        logs = logs.getOrElse(r.scenario.id.toString, CollectedLogs()),
+        timestamp = timestamp,
+        durationSecs = r.duration / 1000.0,
+        outcome = ScenarioOutcome.from(r)
+      )
+    }
+    TestSuiteRecord(
+      name = feature.name,
+      tags = feature.tags,
+      file = feature.file,
+      cases = cases,
+      timestamp = timestamp,
+      durationSecs = results.map(_.duration).sum / 1000.0
+    )
+
+  // ── XML rendering ─────────────────────────────────────────────────────────
+
+  private val iso = DateTimeFormatter.ISO_INSTANT
+  private val pp  = new PrettyPrinter(120, 2)
+
+  def generateXML(suite: TestSuiteRecord, format: Format = Format.JUnit5): String =
+    pp.format(suiteElem(suite, format))
+
+  private def suiteElem(suite: TestSuiteRecord, format: Format): Elem =
+    val attrs = Seq(
+      "name"      -> suite.name,
+      "tests"     -> suite.total.toString,
+      "failures"  -> suite.failures.toString,
+      "skipped"   -> (suite.skipped + suite.pending).toString,
+      "time"      -> f"${suite.durationSecs}%.3f",
+      "timestamp" -> iso.format(suite.timestamp)
+    ) ++
+      suite.file.map("file" -> _).toSeq ++
+      (if (suite.tags.nonEmpty) Some("tags" -> suite.tags.map("@" + _).mkString(" ")) else None).toSeq ++
+      (if (format == Format.JUnit4) Seq("errors" -> "0") else Nil)
+
+    buildElem("testsuite", attrs, suite.cases.flatMap(caseElems(_, format)))
+
+  private def caseElems(tc: TestCaseRecord, format: Format): NodeSeq =
+    val baseAttrs = Seq(
+      "name"      -> tc.name,
+      "classname" -> tc.classname,
+      "time"      -> f"${tc.durationSecs}%.3f",
+      "timestamp" -> iso.format(tc.timestamp)
+    ) ++
+      tc.file.map("file" -> _).toSeq ++
+      tc.line.map("line" -> _.toString).toSeq ++
+      (if (tc.tags.nonEmpty) Some("tags" -> tc.tags.map("@" + _).mkString(" ")) else None).toSeq ++
+      (if (format == Format.JUnit4) Seq("assertions" -> tc.steps.count(_.outcome == StepOutcome.Passed).toString)
+       else Nil)
+
+    val children: NodeSeq =
+      stepsElem(tc.steps) ++
+        outcomeElem(tc.outcome) ++
+        logsElems(tc.logs)
+
+    buildElem("testcase", baseAttrs, children)
+
+  /**
+   * <steps> block — one <step> per Gherkin step with keyword, name, status,
+   * time.
+   */
+  private def stepsElem(steps: List[StepRecord]): NodeSeq =
+    if (steps.isEmpty) NodeSeq.Empty
+    else
+      val stepElems = steps.map { s =>
+        val attrs = Seq(
+          "keyword" -> s.keyword,
+          "name"    -> s.name,
+          "status"  -> StepOutcome.xmlStatus(s.outcome),
+          "time"    -> f"${s.durationSecs}%.3f"
+        )
+        val inner: NodeSeq = s.outcome match
+          case StepOutcome.Failed(msg, _) => <message>{msg}</message>
+          case StepOutcome.Pending(r)     => <message>{r}</message>
+          case StepOutcome.TimedOut(msg)  => <message>{msg}</message>
+          case _                          => NodeSeq.Empty
+        buildElem("step", attrs, inner)
       }
+      <steps>{stepElems}</steps>
+
+  /** <failure> / <skipped> / <pending> element from the scenario outcome. */
+  private def outcomeElem(o: ScenarioOutcome): NodeSeq = o match
+    case ScenarioOutcome.Passed  => NodeSeq.Empty
+    case ScenarioOutcome.Skipped => <skipped/>
+    case ScenarioOutcome.Pending(r) =>
+      <skipped message={s"Pending: $r"}/>
+    case ScenarioOutcome.Failed(msg, trace) =>
+      buildElem(
+        "failure",
+        Seq("message" -> msg, "type" -> "AssertionError"),
+        trace.fold(NodeSeq.Empty: NodeSeq)(t => Text(t))
+      )
+
+  private def logsElems(logs: CollectedLogs): NodeSeq =
+    val (out, err)       = logs.entries.partition(_.source == zio.bdd.core.LogSource.Stdout)
+    val outStr           = out.map(e => s"[${e.level}] ${e.message}").mkString("\n")
+    val errStr           = err.map(e => s"[${e.level}] ${e.message}").mkString("\n")
+    val outElem: NodeSeq = if (outStr.nonEmpty) <system-out>{outStr}</system-out> else NodeSeq.Empty
+    val errElem: NodeSeq = if (errStr.nonEmpty) <system-err>{errStr}</system-err> else NodeSeq.Empty
+    outElem ++ errElem
+
+  /**
+   * Build an Elem with dynamic attributes — scala.xml requires this pattern for
+   * attribute lists.
+   */
+  private def buildElem(label: String, attrs: Seq[(String, String)], children: NodeSeq): Elem =
+    attrs.foldLeft(<x>{children}</x>.copy(label = label)) { case (elem, (k, v)) =>
+      elem % scala.xml.Attribute(None, k, Text(v), scala.xml.Null)
     }
 
-  // JUnit 4 distinguishes failures (assertion failures) from errors (exceptions); assume no errors for now
-  private def generateJUnit4XML(suite: TestSuite): String = {
-    val xml = <testsuite
-    name={suite.name}
-    tests={suite.cases.length.toString}
-    failures={suite.cases.count(!_.succeeded).toString}
-    errors="0"
-    timestamp={DateTimeFormatter.ISO_INSTANT.format(suite.timestamp)}>
-      {suite.cases.map(toJUnit4TestCaseXML)}
-    </testsuite>
+  // ── File I/O ──────────────────────────────────────────────────────────────
 
-    new PrettyPrinter(120, 2).format(xml)
-  }
-
-  private def generateJUnit5XML(suite: TestSuite): String = {
-    val xml = <testsuite
-    name={suite.name}
-    tests={suite.cases.length.toString}
-    failures={suite.cases.count(!_.succeeded).toString}
-    timestamp={DateTimeFormatter.ISO_INSTANT.format(suite.timestamp)}>
-      {suite.cases.map(toJUnit5TestCaseXML)}
-    </testsuite>
-
-    new PrettyPrinter(120, 2).format(xml)
-  }
-
-  private def toJUnit4TestCaseXML(testCase: TestCase): NodeSeq = {
-    val (stdout, stderr) = partitionLogs(testCase.logs)
-    <testcase
-    name={testCase.name}
-    time={(testCase.duration / 1000.0).toString}
-    assertions={testCase.assertions.toString}
-    timestamp={DateTimeFormatter.ISO_INSTANT.format(testCase.timestamp)}>
-      {if (!testCase.succeeded) <failure message="Test failed"/> else NodeSeq.Empty}
-      {if (stdout.nonEmpty) <system-out>{stdout}</system-out> else NodeSeq.Empty}
-      {if (stderr.nonEmpty) <system-err>{stderr}</system-err> else NodeSeq.Empty}
-    </testcase>
-  }
-
-  private def toJUnit5TestCaseXML(testCase: TestCase): NodeSeq = {
-    val (stdout, stderr) = partitionLogs(testCase.logs)
-    <testcase
-    name={testCase.name}
-    time={(testCase.duration / 1000.0).toString}
-    timestamp={DateTimeFormatter.ISO_INSTANT.format(testCase.timestamp)}>
-      {if (!testCase.succeeded) <failure message="Test failed"/> else NodeSeq.Empty}
-      {if (stdout.nonEmpty) <system-out>{stdout}</system-out> else NodeSeq.Empty}
-      {if (stderr.nonEmpty) <system-err>{stderr}</system-err> else NodeSeq.Empty}
-    </testcase>
-  }
-
-  private def partitionLogs(logs: CollectedLogs): (String, String) = {
-    val stdout = logs.entries
-      .filter(_.source == LogSource.Stdout)
-      .map(entry => s"[${entry.level}] [${DateTimeFormatter.ISO_INSTANT.format(entry.timestamp)}] ${entry.message}")
-      .mkString("\n")
-    val stderr = logs.entries
-      .filter(_.source == LogSource.Stderr)
-      .map(entry => s"[${entry.level}] [${DateTimeFormatter.ISO_INSTANT.format(entry.timestamp)}] ${entry.message}")
-      .mkString("\n")
-    (stdout, stderr)
-  }
-
-  def writeToFile(suite: TestSuite, filePath: String, format: Format = Format.JUnit5)(implicit
+  def writeToFile(suite: TestSuiteRecord, filePath: String, format: Format = Format.JUnit5)(implicit
     trace: Trace
   ): ZIO[Any, Throwable, Unit] =
-    for {
-      xml <- generateXML(suite, format)
-      _   <- ZIO.attemptBlocking(scala.util.Using.resource(new java.io.PrintWriter(filePath))(_.print(xml)))
-    } yield ()
+    ZIO.attemptBlocking {
+      val xml = generateXML(suite, format)
+      scala.util.Using.resource(new java.io.PrintWriter(filePath))(_.print(xml))
+    }
 }
