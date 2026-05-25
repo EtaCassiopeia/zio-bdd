@@ -42,20 +42,22 @@ class ZIOBDDRunner(runnerArgs: Array[String], runnerRemoteArgs: Array[String], t
 
 case class BDDTestConfig(
   featureFiles: List[String] = Nil,
-  reporters: List[Reporter] = List(PrettyReporter()),
+  reporters: List[Reporter] = List(new PrettyReporter(AnsiRenderer())),
   /** Max concurrent features. 1 = sequential (default). */
   featureParallelism: Int = 1,
   /**
    * Max concurrent scenarios per feature. 0 = auto (use available processors).
    */
   scenarioParallelism: Int = 0,
-  includeTags: Set[String] = Set.empty, // Inclusive filter (e.g., run only these tags)
-  excludeTags: Set[String] = Set.empty, // Exclusive filter (e.g., skip these tags)
+  includeTags: Set[String] = Set.empty,
+  excludeTags: Set[String] = Set.empty,
   logLevel: InternalLogLevel = InternalLogLevel.Info,
   /** Optional glob/regex to filter scenarios by name (e.g. "Happy path*"). */
   scenarioNameFilter: Option[String] = None,
   /**
-   * When true: step bodies are not executed; only step matching is validated.
+   * When true: step bodies are NOT executed. Only step matching is validated.
+   * All steps appear as PASSED in the report. Used to validate that all Gherkin
+   * steps in `.feature` files have a corresponding step definition.
    */
   dryRun: Boolean = false,
   /**
@@ -112,7 +114,30 @@ class ZIOBDDTask(
   args: Array[String]
 ) extends Task {
 
-  private val defaultTestResultDir = "target/test-results"
+  private val defaultTestReportDirName = "target/test-reports"
+
+  /**
+   * Resolve the test-reports directory relative to the suite's module root.
+   *
+   * sbt executes all tests with CWD = root project, but each module writes its
+   * reports under <module>/target/test-reports/. We derive the module root by
+   * walking up from the suite class's classfile location until we find the
+   * "target" directory containing the class, giving us the same base that sbt's
+   * JUnit listener uses for TEST-*.xml files.
+   */
+  private def resolveTestReportDir(className: String): String = {
+    val resource = testClassLoader.getResource(className.replace('.', '/') + "$.class")
+    if (resource == null) return defaultTestReportDirName
+    try {
+      val classPath = java.net.URLDecoder.decode(resource.getPath, "UTF-8")
+      // classPath: …/tmm-tests-zio-bdd/target/scala-3.3.5/test-classes/…
+      val targetIdx = classPath.lastIndexOf("/target/")
+      if (targetIdx < 0) defaultTestReportDirName
+      else classPath.substring(0, targetIdx) + "/target/test-reports"
+    } catch {
+      case _: Exception => defaultTestReportDirName
+    }
+  }
 
   override def taskDef(): TaskDef = taskDefinition
 
@@ -120,14 +145,13 @@ class ZIOBDDTask(
     val includeTags = config.includeTags
     val excludeTags = config.excludeTags
 
-    // For features, only check excludeTags
     def shouldIgnoreFeature(tags: List[String]): Boolean =
       tags.exists(excludeTags.contains)
 
-    // For scenarios, check excludeTags, includeTags, and the optional scenario-name filter
     def shouldIgnoreScenario(tags: List[String], name: String): Boolean = {
       val hasExcludeTag     = tags.exists(excludeTags.contains)
       val missingIncludeTag = includeTags.nonEmpty && !tags.exists(includeTags.contains)
+      // Scenario-name filter: treat as glob where * = any sequence of chars
       val nameFiltered = config.scenarioNameFilter.exists { pattern =>
         val regex = ("(?i)" + java.util.regex.Pattern.quote(pattern).replace("\\*", ".*")).r
         !regex.matches(name)
@@ -139,7 +163,8 @@ class ZIOBDDTask(
       val featureTags = if (shouldIgnoreFeature(feature.tags)) feature.tags :+ "ignore" else feature.tags
       val updatedScenarios = feature.scenarios.map { scenario =>
         val scenarioTags =
-          if (shouldIgnoreScenario(scenario.tags, scenario.name)) scenario.tags :+ "ignore" else scenario.tags
+          if (shouldIgnoreScenario(scenario.tags, scenario.name)) scenario.tags :+ "ignore"
+          else scenario.tags
         scenario.copy(tags = scenarioTags)
       }
       feature.copy(tags = featureTags, scenarios = updatedScenarios)
@@ -152,6 +177,11 @@ class ZIOBDDTask(
     val suiteInstance = instantiateSuiteClass(className)
     val config        = parseConfig(args, className, loggers)
 
+    // Apply annotation-configured step timeout when present and the suite has not overridden stepTimeout itself
+    config.stepTimeoutSeconds.foreach { secs =>
+      suiteInstance.overrideStepTimeout(zio.Duration.fromSeconds(secs))
+    }
+
     val featureFiles = resolveFeatureFiles(config, className, loggers)
     loggers.foreach(_.info(s"Feature files: ${featureFiles.mkString(", ")}"))
 
@@ -159,7 +189,7 @@ class ZIOBDDTask(
     val env = ZLayer.succeed(suiteInstance) ++
       LogCollector.live(LogLevelConfig(config.logLevel)) ++
       ZLayer.succeed(reporter) ++
-      suiteInstance.environment
+      suiteInstance.globalLayer
 
     val features =
       try {
@@ -180,7 +210,14 @@ class ZIOBDDTask(
 
     val updateFeatures = filterFeatures(features, config)
 
-    val program = suiteInstance.run(updateFeatures).tap(reporter.report)
+    val program = suiteInstance
+      .run(
+        updateFeatures,
+        featureParallelism = config.featureParallelism,
+        scenarioParallelism = resolveParallelism(config.scenarioParallelism),
+        dryRun = config.dryRun
+      )
+      .tap(reporter.report)
 
     val results =
       try {
@@ -232,7 +269,13 @@ class ZIOBDDTask(
             .run(
               ZIO.scoped(
                 JUnitXMLReporter
-                  .live(JUnitReporterConfig(outputDir = defaultTestResultDir, format = JUnitXMLFormatter.Format.JUnit5))
+                  .live(
+                    JUnitReporterConfig(
+                      outputDir = resolveTestReportDir(className),
+                      suiteClass = className,
+                      format = JUnitXMLFormatter.Format.JUnit5
+                    )
+                  )
                   .build
                   .map(_.get[Reporter])
               )
@@ -241,19 +284,22 @@ class ZIOBDDTask(
         }
       case _ =>
         loggers.foreach(_.warn(s"Unknown reporter '$name', defaulting to ConsoleReporter"))
-        PrettyReporter()
+        new PrettyReporter(AnsiRenderer())
     }
 
     val annoConfig = annotation.map { a =>
-      // featureDirs (new) takes precedence over the deprecated featureDir
+      // featureDirs (new) takes precedence over deprecated featureDir
       val dirs =
         if (
-          a.featureDirs().nonEmpty &&
-          !(a.featureDirs().length == 1 && a.featureDirs()(0) == "src/test/resources/features")
+          a.featureDirs().nonEmpty && !(a.featureDirs().length == 1 && a.featureDirs()(
+            0
+          ) == "src/test/resources/features")
         )
           a.featureDirs().toList
-        else if (a.featureDir().nonEmpty) List(a.featureDir())
-        else a.featureDirs().toList
+        else if (a.featureDir().nonEmpty)
+          List(a.featureDir())
+        else
+          a.featureDirs().toList
       BDDTestConfig(
         featureFiles = dirs,
         reporters = a.reporters().map(instantiateReporter).toList,
@@ -288,9 +334,7 @@ class ZIOBDDTask(
         if (cliConfig.scenarioParallelism != 0) cliConfig.scenarioParallelism else annoConfig.scenarioParallelism,
       includeTags = if (cliConfig.includeTags.nonEmpty) cliConfig.includeTags else annoConfig.includeTags,
       excludeTags = if (cliConfig.excludeTags.nonEmpty) cliConfig.excludeTags else annoConfig.excludeTags,
-      logLevel =
-        if (cliConfig.logLevel != InternalLogLevel.Info) cliConfig.logLevel
-        else annoConfig.logLevel, // CLI overrides annotation
+      logLevel = if (cliConfig.logLevel != InternalLogLevel.Info) cliConfig.logLevel else annoConfig.logLevel,
       scenarioNameFilter = cliConfig.scenarioNameFilter.orElse(annoConfig.scenarioNameFilter),
       dryRun = cliConfig.dryRun || annoConfig.dryRun,
       stepTimeoutSeconds = annoConfig.stepTimeoutSeconds
@@ -335,6 +379,9 @@ class ZIOBDDTask(
   private def parseFeatureFiles(args: Array[String]): List[String] =
     args.sliding(2).collect { case Array("--feature-file", path) => path }.toList
 
+  private def parseScenarioName(args: Array[String]): Option[String] =
+    args.sliding(2).collectFirst { case Array("--scenario-name", name) => name }
+
   private def parseReporters(args: Array[String], loggers: Array[Logger]): List[Reporter] =
     args
       .sliding(2)
@@ -356,7 +403,10 @@ class ZIOBDDTask(
                 ZIO.scoped(
                   JUnitXMLReporter
                     .live(
-                      JUnitReporterConfig(outputDir = defaultTestResultDir, format = JUnitXMLFormatter.Format.JUnit5)
+                      JUnitReporterConfig(
+                        outputDir = defaultTestReportDirName,
+                        format = JUnitXMLFormatter.Format.JUnit5
+                      )
                     )
                     .build
                     .map(_.get[Reporter])
@@ -379,12 +429,7 @@ class ZIOBDDTask(
       .toList
 
   private def parseParallelism(args: Array[String]): Int =
-    args
-      .sliding(2)
-      .collectFirst { case Array("--parallelism", n) =>
-        n.toIntOption.getOrElse(1)
-      }
-      .getOrElse(1)
+    args.sliding(2).collectFirst { case Array("--parallelism", n) => n.toIntOption.getOrElse(1) }.getOrElse(1)
 
   private def parseScenarioParallelism(args: Array[String]): Int =
     args
@@ -395,8 +440,17 @@ class ZIOBDDTask(
       }
       .getOrElse(0)
 
-  private def parseScenarioName(args: Array[String]): Option[String] =
-    args.sliding(2).collectFirst { case Array("--scenario-name", name) => name }
+  /**
+   * Resolves the auto sentinel (0) to the actual number of available
+   * processors, falling back to 2 if the JVM reports an unreasonable value.
+   */
+  private def resolveParallelism(n: Int): Int =
+    if (n > 0) n
+    else
+      (java.lang.Runtime.getRuntime.availableProcessors() match {
+        case p if p > 0 => p
+        case _          => 2
+      })
 
   private def resolveFeatureFiles(config: BDDTestConfig, className: String, loggers: Array[Logger]): List[String] = {
     val paths =
@@ -420,10 +474,22 @@ class ZIOBDDTask(
 
   private def discoverFeatures(steps: ZIOSteps[Any, Any], featureFiles: List[String]): List[Feature] =
     if (featureFiles.nonEmpty) {
-      featureFiles.map { path =>
+      featureFiles.flatMap { path =>
         val featureContent = scala.io.Source.fromFile(path).mkString
         Unsafe.unsafe { implicit unsafe =>
-          runtime.unsafe.run(GherkinParser.parseFeature(featureContent, path)).getOrThrowFiberFailure()
+          // Per-file resilience (issue #46): skip unparseable files rather than aborting the run.
+          runtime.unsafe
+            .run(
+              GherkinParser
+                .parseFeature(featureContent, path)
+                .foldZIO(
+                  failure = { err =>
+                    ZIO.logError(s"Skipping $path: ${err.getMessage}").as(None)
+                  },
+                  success = f => ZIO.succeed(Some(f))
+                )
+            )
+            .getOrThrowFiberFailure()
         }
       }
     } else {
