@@ -1,0 +1,418 @@
+# Running Tests
+
+This document covers every mechanism for executing zio-bdd test suites: the `@Suite`
+annotation, sbt commands, CLI flags, dry-run mode, filtering, parallelism, and IDE
+integration.
+
+---
+
+## @Suite annotation
+
+The `@Suite` annotation is placed on the companion object of a `ZIOSteps` subclass. It
+tells the sbt test framework where to find feature files and how to execute them.
+
+```java
+// zio.bdd.core.Suite (Java annotation)
+public @interface Suite {
+    String[] featureDirs()  default {"src/test/resources/features"};
+    String[] reporters()    default {"pretty"};
+    int      parallelism()  default 1;
+    String[] includeTags()  default {};
+    String[] excludeTags()  default {};
+    String   logLevel()     default "info";
+    int      stepTimeout()  default 0;
+}
+```
+
+### Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `featureDirs` | `String[]` | `{"src/test/resources/features"}` | One or more paths to directories or individual `.feature` files. Filesystem paths are resolved relative to the project root. Prefix with `classpath:` to load from the classpath (e.g. from a shared test-jar): `"classpath:features"` or `"classpath:features/my.feature"`. |
+| `reporters` | `String[]` | `{"pretty"}` | Reporter names to use. Built-in values: `"pretty"` (coloured console output), `"junitxml"` (JUnit 5 XML in `target/test-results/`). |
+| `parallelism` | `int` | `1` | Maximum number of features executed concurrently. `1` means sequential. |
+| `includeTags` | `String[]` | `{}` | When non-empty, only scenarios that carry at least one of these tags are executed. |
+| `excludeTags` | `String[]` | `{}` | Scenarios carrying any of these tags are skipped. |
+| `logLevel` | `String` | `"info"` | Minimum log level captured during step execution: `"debug"`, `"info"`, `"error"`. |
+| `stepTimeout` | `int` | `0` | Maximum wall-clock time in **seconds** for a single step. `0` means no timeout. Applies to every step in the suite unless overridden in the suite class — see [Step timeout](#step-timeout) below. |
+
+**Deprecated field:** `featureDir` (singular, `String`) is still accepted for backward
+compatibility. When both `featureDirs` and `featureDir` are set, `featureDirs` takes
+precedence.
+
+### Examples
+
+```scala
+@Suite(featureDirs = Array("src/test/resources/features"))
+object MySuite extends ZIOSteps[AppEnv, AppState]:
+  override def environment = AppEnv.layer
+```
+
+```scala
+// Multiple feature directories
+@Suite(
+  featureDirs = Array(
+    "src/test/resources/features/provision",
+    "src/test/resources/features/post"
+  ),
+  reporters   = Array("pretty", "junitxml"),
+  parallelism = 4,
+  excludeTags = Array("slow", "manual"),
+  logLevel    = "debug"
+)
+object FullSuite extends ZIOSteps[AppEnv, AppState]:
+  override def environment = AppEnv.layer
+```
+
+```scala
+// Run only smoke tests in CI
+@Suite(
+  featureDirs  = Array("src/test/resources/features"),
+  includeTags  = Array("smoke"),
+  parallelism  = 2
+)
+object SmokeSuite extends ZIOSteps[AppEnv, AppState]:
+  override def environment = AppEnv.layer
+```
+
+```scala
+// Load feature files from the classpath — useful when .feature files are
+// packaged in a shared test-jar from another module
+@Suite(
+  featureDirs = Array("classpath:features/provision", "classpath:features/post")
+)
+object SharedFeatureSuite extends ZIOSteps[AppEnv, AppState]:
+  override def environment = AppEnv.layer
+```
+
+---
+
+## Running with sbt
+
+### Run all test suites
+
+```sh
+sbt test
+```
+
+Runs every class annotated with `@Suite` that is on the test classpath.
+
+### Run a specific suite
+
+```sh
+sbt "testOnly com.example.MySuite"
+```
+
+### Run with CLI flags
+
+CLI flags are passed after `--`. They override the corresponding `@Suite` annotation
+fields for the duration of that run.
+
+```sh
+sbt "testOnly com.example.MySuite -- --dry-run"
+sbt "testOnly com.example.MySuite -- --include-tags smoke,regression"
+sbt "testOnly com.example.MySuite -- --exclude-tags slow --parallelism 4"
+sbt "testOnly com.example.MySuite -- --scenario-name 'Provision*'"
+sbt "testOnly com.example.MySuite -- --log-level debug"
+```
+
+Multiple flags may be combined on one command:
+
+```sh
+sbt "testOnly com.example.MySuite -- \
+  --feature-file src/test/resources/features/provision.feature \
+  --include-tags smoke \
+  --parallelism 2 \
+  --log-level debug"
+```
+
+---
+
+## CLI flags reference
+
+| Flag | Argument | Description | Example |
+|------|----------|-------------|---------|
+| `--feature-file` | `<path>` | Path to a specific `.feature` file or directory. Overrides `featureDirs` from the annotation. May be repeated to specify multiple files. | `--feature-file src/test/resources/features/provision.feature` |
+| `--include-tags` | `<tag,...>` | Comma-separated list of tags. Only scenarios carrying at least one of these tags run. Merges with `includeTags` from the annotation when the annotation value is non-empty. | `--include-tags smoke,regression` |
+| `--exclude-tags` | `<tag,...>` | Comma-separated list of tags. Scenarios carrying any of these tags are skipped. Merges with `excludeTags` from the annotation. | `--exclude-tags slow,manual` |
+| `--scenario-name` | `<glob>` | Case-insensitive glob filter on scenario names. `*` matches any sequence of characters. Only scenarios whose name matches the pattern are executed; others are skipped (marked `@ignore`). | `--scenario-name 'Provision*'` |
+| `--parallelism` | `<n>` | Maximum number of features executed concurrently. Overrides `parallelism` from the annotation. | `--parallelism 4` |
+| `--scenario-parallelism` | `<n>` | Maximum number of scenarios executed concurrently within a single feature. Independent from feature-level parallelism. Default: `1`. | `--scenario-parallelism 2` |
+| `--dry-run` | _(none)_ | Enable dry-run mode (see below). | `--dry-run` |
+| `--log-level` | `debug\|info\|error` | Minimum log level captured during step execution. Overrides `logLevel` from the annotation. | `--log-level debug` |
+| `--reporter` | `pretty\|junitxml` | Reporter to use. May be repeated. Overrides `reporters` from the annotation when specified. | `--reporter junitxml` |
+
+**Precedence:** CLI flags take precedence over `@Suite` annotation fields. When a CLI
+flag is not supplied, the annotation field value applies. Additive fields (`--include-tags`,
+`--exclude-tags`) override the annotation value entirely rather than merging.
+
+---
+
+## Dry-run mode
+
+Dry-run executes the full test pipeline — feature file discovery, Gherkin parsing, step
+matching, tag filtering — but does **not** execute step bodies. Every matched step is
+reported as `PASSED`. Unmatched steps are reported as failures.
+
+**When to use it:**
+
+- After writing new feature files, before implementing step definitions: verify that all
+  steps have a corresponding registered definition.
+- Before a refactor: confirm that renaming a step pattern does not break any feature
+  files.
+- In CI pre-merge checks: catch missing step definitions without running the full suite.
+
+```sh
+sbt "testOnly com.example.MySuite -- --dry-run"
+```
+
+Dry-run can also be enabled via the `@Suite` annotation (useful for always-dry
+suites in a module that only validates Gherkin syntax):
+
+```scala
+@Suite(featureDirs = Array("src/test/resources/features"), /* dryRun not in annotation */ )
+```
+
+Note: `dryRun` is not an annotation field — it can only be set via the CLI flag.
+
+---
+
+## Tag filtering
+
+### Include tags
+
+Only scenarios that carry at least one of the listed tags are executed. All other
+scenarios are marked as ignored (`@ignore` tag is appended) and are excluded from
+results.
+
+```sh
+sbt "testOnly com.example.MySuite -- --include-tags smoke"
+sbt "testOnly com.example.MySuite -- --include-tags smoke,regression"
+```
+
+Feature-file annotation equivalent:
+
+```scala
+@Suite(includeTags = Array("smoke"))
+```
+
+### Exclude tags
+
+Scenarios carrying any of the listed tags are skipped regardless of include tags.
+Exclusion takes precedence over inclusion.
+
+```sh
+sbt "testOnly com.example.MySuite -- --exclude-tags slow,flaky"
+```
+
+### @ignore tag
+
+Any scenario tagged `@ignore` (case-insensitive) is always skipped, independent of
+include/exclude filters. This is the standard way to mark a known-failing or
+not-yet-implemented test.
+
+### Tag filtering on features
+
+When all scenarios in a feature are filtered out or ignored, the feature itself is also
+treated as ignored and produces no step results.
+
+---
+
+## Scenario name filter
+
+The `--scenario-name` flag accepts a glob pattern matched case-insensitively against
+scenario names. `*` matches zero or more characters.
+
+```sh
+# Run all scenarios whose name starts with "Provision"
+sbt "testOnly com.example.MySuite -- --scenario-name 'Provision*'"
+
+# Run a scenario with an exact name
+sbt "testOnly com.example.MySuite -- --scenario-name 'Happy path login'"
+
+# Run all scenarios containing "EOD"
+sbt "testOnly com.example.MySuite -- --scenario-name '*EOD*'"
+```
+
+Scenarios that do not match the pattern are marked as ignored; they appear in the report
+but are not executed.
+
+---
+
+## Parallelism
+
+zio-bdd has two independent parallelism controls.
+
+### Feature-level parallelism (`--parallelism` / `parallelism`)
+
+Controls how many feature files run concurrently. The default is `1` (sequential).
+Feature-level parallelism is safe when features are fully independent — different
+DynamoDB tables, different accounts, isolated service state.
+
+```sh
+sbt "testOnly com.example.MySuite -- --parallelism 4"
+```
+
+```scala
+@Suite(parallelism = 4)
+```
+
+### Scenario-level parallelism (`--scenario-parallelism`)
+
+Controls how many scenarios within a single feature run concurrently. The default is `1`
+(sequential). Scenario-level parallelism requires that scenarios within a feature are
+independent and do not share mutable state.
+
+```sh
+sbt "testOnly com.example.MySuite -- --scenario-parallelism 2"
+```
+
+There is no annotation field for `--scenario-parallelism`; it is CLI-only.
+
+### Combining both
+
+```sh
+sbt "testOnly com.example.MySuite -- --parallelism 4 --scenario-parallelism 2"
+```
+
+This runs up to 4 features concurrently, each with up to 2 scenarios concurrently,
+for a maximum of 8 concurrent scenario executions.
+
+---
+
+## Step timeout
+
+Integration tests that hit live services can hang indefinitely if a step's HTTP call
+stalls. The step timeout mechanism bounds every step body to a configurable wall-clock
+duration.
+
+### Suite-level default via annotation
+
+```scala
+@Suite(
+  featureDirs = Array("src/test/resources/features"),
+  stepTimeout = 30   // seconds; 0 = no timeout (default)
+)
+object MySuite extends ZIOSteps[AppEnv, AppState]:
+  override def environment = AppEnv.layer
+```
+
+When `stepTimeout > 0`, the timeout is applied to every step in the suite.
+
+### Per-suite override in the class body
+
+Override `def stepTimeout` to set the timeout programmatically, which is useful
+when the value comes from configuration rather than a literal:
+
+```scala
+object MySuite extends ZIOSteps[AppEnv, AppState]:
+  override def stepTimeout: Option[Duration] = Some(Duration.fromSeconds(30))
+  override def environment = AppEnv.layer
+```
+
+A non-`None` return from `def stepTimeout` takes precedence over the annotation value.
+
+### Per-step local override
+
+A single step can use a longer (or shorter) timeout by wrapping its effect directly:
+
+```scala
+When("a very slow operation completes") {
+  longRunningEffect
+    .timeout(5.minutes)
+    .someOrFail(new RuntimeException("operation timed out"))
+}
+```
+
+### What happens when a step times out
+
+- The step is interrupted.
+- The result is reported as `TIMEOUT after Ns` in the pretty reporter — distinct from
+  a normal failure.
+- The scenario is marked failed; subsequent steps are skipped.
+- The `StepStatus.TimedOut(timeout, cause)` variant is available for custom reporters.
+
+---
+
+
+## IDE integration: generateStepRegistry
+
+The `generateStepRegistry` sbt task produces a `step-registry.json` file that IDE plugins
+can use to navigate from `.feature` file steps to their Scala definitions.
+
+```sh
+sbt generateStepRegistry
+```
+
+Output: `target/zio-bdd/step-registry.json`
+
+The JSON contains one entry per registered step definition:
+
+```json
+{
+  "version": "1",
+  "generator": "zio-bdd-step-registry",
+  "steps": [
+    {
+      "keyword": "Given",
+      "text": "a valid provision body",
+      "pattern": "a valid provision body",
+      "file": "/path/to/ProvisionSteps.scala",
+      "line": 42
+    },
+    {
+      "keyword": "When",
+      "text": "a post request is sent",
+      "pattern": "a post request is sent",
+      "file": "/path/to/PostSteps.scala",
+      "line": 17
+    }
+  ]
+}
+```
+
+**How it works:** the task scans all `.scala` files under the test source directories for
+`Given("...")`, `When("...")`, `Then("...")`, `And("...")`, `But("...")` call patterns.
+Pattern extraction is best-effort — it reads source text, not compiled bytecode, so
+complex chained extractor expressions may not appear in the output.
+
+**IDE configuration:**
+- **VS Code Cucumber extension:** set `cucumber.stepDefinitions` in `.vscode/settings.json`
+  to `["target/zio-bdd/step-registry.json"]`.
+- **IntelliJ IDEA:** configure "Step definition patterns" to use the generated patterns.
+
+Regenerate after adding or renaming step definitions to keep the registry current.
+
+---
+
+## zioBddSnippets task
+
+The `zioBddSnippets` sbt task scans feature files for steps that do not appear to have a
+matching step definition and prints skeleton code to stdout.
+
+```sh
+sbt zioBddSnippets
+sbt "zioBddSnippets src/test/resources/features/my-module"
+```
+
+It is advisory — the task always exits successfully and does not fail the build. Use
+`--dry-run` at test time for build-breaking validation of missing step definitions.
+
+Example output:
+
+```scala
+// ── Generated step skeletons ──────────────────────────────────────────────
+// Paste into your step trait and implement each body.
+
+Given("a valid provision body") {
+  ZIO.unit // TODO implement
+}
+
+When("a post request is sent") {
+  ZIO.unit // TODO implement
+}
+
+Then("the response status is " / int) { (a: Int) =>
+  ZIO.unit // TODO implement
+}
+```

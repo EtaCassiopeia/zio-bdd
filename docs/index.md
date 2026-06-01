@@ -1,32 +1,68 @@
+# zio-bdd Documentation
+
+zio-bdd is a Scala 3 + ZIO 2 BDD testing framework.  Write plain Gherkin `.feature` files;
+implement type-safe step definitions; run them through sbt with full ZIO dependency injection.
+
 ---
-layout: default
-title: Home
+
+## Getting started
+
+New to zio-bdd?  Read in this order:
+
+1. **[Quick Start](quickstart.md)** — add the dependency, write a feature file and step
+   definitions, run the suite, and read the output.  Done in five minutes.
+2. **[Concepts](concepts.md)** — understand the mental model: how a `.feature` file becomes
+   ZIO effects, what `R` and `S` mean, how state is isolated per scenario.
+3. **[Step DSL](step-dsl.md)** — the full extractor reference (`string`, `int`, `table[T]`,
+   `docString`, `regex`, `oneOf`, etc.) plus the `StepEffect` / `StepIO` type aliases.
+
 ---
-# zio-bdd
 
-**zio-bdd** is a Behavior-Driven Development (BDD) testing framework built for Scala 3 and ZIO. This framework enables developers to write expressive, type-safe, and concurrent tests using Gherkin syntax, integrated seamlessly with ZIO's powerful effect system.
+## Core reference
 
-## Overview
+| Document | What it covers |
+|----------|----------------|
+| [State Management](state.md) | `ScenarioContext`, `Stage`, `FeatureContext`, `TypeMap`, `HasLens`, `ScenarioLens`, `withSnapshot`, `GivenS`/`WhenS`/`ThenS` |
+| [Environment & Layers](layers.md) | `R` type parameter, three-tier model (`globalLayer`, `featureLayer`, `scenarioLayer`), `flagLayer`, `HasService` |
+| [Hooks](hooks.md) | `beforeAll`, `afterAll`, `beforeFeature`, `afterFeature`, `beforeScenario`, `afterScenario`, `beforeScenarioTagged`, `beforeStep`, `afterStep` |
+| [Step DSL](step-dsl.md) | All extractors, `StepEffect`, `StepIO`, `InlineStepMethods`, `pending`, `withSnapshot`, soft assertions |
+| [Gherkin Syntax](gherkin.md) | Complete Gherkin reference — `Feature`, `Background`, `Scenario`, `Scenario Outline`, `Examples`, `Rule`, tags, data tables, doc strings |
+| [Running Tests](running.md) | `@Suite` annotation, sbt commands, CLI flags, dry-run, tag filtering, parallelism, step timeout, IDE integration |
+| [Feature Flag Testing](testing-flags.md) | `@flags(k=v)` matrix expansion, `flagLayer`, `ScenarioMetadata.flagValues`, OpenFeature / Optimizely patterns |
+| [Reporters](reporters.md) | `pretty` (console tree), `junitxml` (CI reports), `StreamingReporter`, `LiveProgressReporter`, custom reporters |
 
-`zio-bdd` bridges the gap between human-readable specifications and executable tests. It supports Gherkin feature files, type-safe step definitions, scenario-scoped state management with `ScenarioContext`, and integration with ZIO services seamlessly. Whether you're new to BDD or an experienced ZIO user, this documentation will guide you through every aspect of using `zio-bdd` effectively.
+---
 
-## Table of Contents
+## Guides
 
-- [Getting Started](getting-started.md) - Set up and write your first test.
-- [Gherkin Syntax Reference](gherkin-reference.md) - Understand Gherkin and its support in `zio-bdd`.
-- [Step Definitions](step-definitions.md) - Define steps with type extractors and manage state.
-- [Running Tests](running-tests.md) - Configure and execute tests from the command line.
-- [Advanced Features](advanced-features.md) - Leverage services, layers, and advanced configurations.
-- [Examples](examples.md) - Explore practical use cases.
-- [Contributing](contributing.md) - Learn how to contribute to `zio-bdd`.
+| Document | Use when |
+|----------|----------|
+| [Cookbook](cookbook.md) | You have a specific task: structuring a multi-module suite, passing data between steps, writing HTTP tests, date-relative parameters, soft assertions, selective tagging |
+| [Troubleshooting](troubleshooting.md) | Something is wrong: compiler errors, startup failures, state not updating, missing step definitions, timeouts |
+| [Migrating from Cucumber](migrating.md) | You are converting a Cucumber-JVM + cucumber-scala suite to zio-bdd |
 
-## Why zio-bdd?
+---
 
-- **Type Safety**: Leverage Scala 3’s type system for robust step definitions.
-- **Concurrency**: Run tests concurrently with ZIO fibers.
-- **Modularity**: Integrate with ZIO services and manage state effortlessly.
-- **Readability**: Write tests in Gherkin, understandable by technical and non-technical stakeholders alike.
+## Quick decisions
 
-Start your journey with the [Getting Started](getting-started.md) guide to see `zio-bdd` in action!
+**"Which state mechanism do I use?"**
+→ See [State Management §6](state.md#6-choosing-the-right-approach) for the decision table.
 
-For the latest updates and version information, check the [GitHub repository](https://github.com/EtaCassiopeia/zio-bdd).
+**"Stage or ScenarioContext?"**
+→ [Stage](state.md#7-stage-per-scenario-staging-without-schema) for ephemeral pipeline data
+(event payloads, intermediate results).  [ScenarioContext](state.md#2-reading-and-writing-state-in-step-bodies)
+for values that `Then` steps need to assert on.
+
+**"GivenS or Given?"**
+→ Use `GivenS`/`WhenS`/`ThenS` when the step reads state at the top.  Use `Given`/`When`/`Then`
+when the step does not read state at all.  See [cookbook.md §14](cookbook.md#14-using-givens--whens--thens-vs-given--when--then).
+
+**"globalLayer, featureLayer, or scenarioLayer?"**
+→ `globalLayer` — shared across the entire run (connection pools, embedded servers).
+`featureLayer` — fresh per feature file.
+`scenarioLayer(meta)` — fresh per scenario; use when tag-based conditional layers are needed.
+See [layers.md §2](layers.md#2-the-three-tier-environment-model).
+
+**"My step trait can't call Given — compile error?"**
+→ Add the self-type: `trait MySteps { self: ZIOSteps[R, S] => ... }`.
+See [troubleshooting.md](troubleshooting.md#value-given-is-not-a-member-of-mysteptrait).

@@ -1,153 +1,85 @@
 # zio-bdd
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/EtaCassiopeia/zio-bdd)
+A BDD testing framework for Scala 3 + ZIO 2 that connects Gherkin `.feature` files to type-safe ZIO step definitions.
 
-**zio-bdd** is a modern Behavior-Driven Development (BDD) testing framework for Scala 3, tailored for ZIO-based applications. It integrates Gherkin-style feature files with ZIO’s effect system, offering compile-time safety, fiber-based concurrency, and type-safe dependency injection via `ZLayer`. This framework enables developers to write expressive, business-aligned tests with robust error handling and modular service integration.
+## Minimal example
 
-## Key Features
-- **Type-Safe Step Definitions**: Define steps with typed parameters, ensuring compile-time safety and reducing runtime errors.
-- **Typed Parameter Extraction**: Supports extractors (`string`, `int`, `double`, `table[T]`) for safe parameter parsing, integrated with ZIO Schema for complex data.
-- **State Management**: Uses `ScenarioContext` to manage test state across steps, enabling seamless data sharing.
-- **Fiber-Based Concurrency**: Executes scenarios concurrently using ZIO fibers for high-performance testing.
-- **ZIO Service Integration**: Utilizes `ZLayer` for modular, type-safe dependency injection in test environments.
-- **Dynamic Feature Loading**: Automatically discovers `.feature` files from a specified directory, with tag-based filtering.
-- **Flexible Reporting**: Includes `PrettyReporter` for console output and JUnit XML support, with extensibility for custom formats.
-- **Rich Gherkin Support**: Handles `Background`, `Scenario Outline`, data tables, and tags (e.g., `@ignore`, `@positive`).
-
-## Setup
-
-**Add Dependency**:
-```scala
-libraryDependencies += "io.github.etacassiopeia" %% "zio-bdd" % "0.1.0" % Test,
-libraryDependencies += "dev.zio" %% "zio" % "2.1.17" % Test,
-libraryDependencies += "dev.zio" %% "zio-test" % "2.1.17" % Test,
+```gherkin
+# src/test/resources/features/account.feature
+Feature: Account balance
+  Scenario: Deposit increases balance
+    Given an account with balance 100
+    When a deposit of 50 is made
+    Then the balance should be 150
 ```
 
-**Enable zio-bdd in sbt**:
 ```scala
-Test / testFrameworks += new TestFramework("zio.bdd.ZIOBDDFramework")
-```
-
-## Usage Example
-
-The following example tests a greeting service, demonstrating how to define steps, manage state with `ScenarioContext`, and integrate ZIO services using a Gherkin feature file.
-
-### 1. Define Domain and Steps
-
-Create `example/src/test/scala/zio/bdd/example/GreetingSpec.scala`:
-
-```scala
-package zio.bdd.example
-
 import zio.*
 import zio.bdd.core.{Assertions, Suite}
 import zio.bdd.core.step.ZIOSteps
 import zio.schema.{DeriveSchema, Schema}
 
-// Domain and state
-case class Context(userName: String, greeting: String)
-object Context {
-  implicit val schema: Schema[Context] = DeriveSchema.gen[Context]
-}
+case class AccountState(balance: Int = 0)
+object AccountState:
+  given Schema[AccountState] = DeriveSchema.gen[AccountState]
 
-// Service
-trait GreetingService {
-  def greet(name: String): ZIO[Any, Nothing, String]
-}
-case class GreetingServiceImpl(prefix: String) extends GreetingService {
-  def greet(name: String): ZIO[Any, Nothing, String] = ZIO.succeed(s"$prefix, $name!")
-}
-object GreetingService {
-  val live: ZLayer[String, Nothing, GreetingService] =
-    ZLayer.fromFunction(GreetingServiceImpl(_))
-}
-
-// Test specification
-@Suite(
-  featureDir = "example/src/test/resources/features",
-  reporters = Array("pretty", "junitxml"),
-  parallelism = 1,
-  includeTags = Array("positive"),
-  logLevel = "debug"
-)
-object GreetingSpec extends ZIOSteps[GreetingService, Context] {
-  Given("a user named " / string) { (name: String) =>
-    ScenarioContext.update(_.copy(userName = name))
+@Suite(featureDirs = Array("src/test/resources/features"), reporters = Array("pretty"))
+object AccountSpec extends ZIOSteps[Any, AccountState]:
+  Given("an account with balance " / int) { (initial: Int) =>
+    ScenarioContext.update(_.copy(balance = initial))
   }
 
-  When("the user is greeted") {
-    for {
-      ctx <- ScenarioContext.get
-      service <- ZIO.service[GreetingService]
-      greeting <- service.greet(ctx.userName)
-      _ <- ScenarioContext.update(_.copy(greeting = greeting))
-    } yield ()
+  When("a deposit of " / int / " is made") { (amount: Int) =>
+    ScenarioContext.update(s => s.copy(balance = s.balance + amount))
   }
 
-  Then("the greeting should be " / string) { (expectedGreeting: String) =>
-    ScenarioContext.get.map(_.greeting).map { actualGreeting =>
-      Assertions.assertTrue(actualGreeting == expectedGreeting, s"Expected '$expectedGreeting', got '$actualGreeting'")
-    }
+  Then("the balance should be " / int) { (expected: Int) =>
+    ScenarioContext.get.flatMap(s => Assertions.assertEquals(s.balance, expected))
   }
-
-  override def environment: ZLayer[Any, Any, GreetingService] =
-    GreetingService.live
-}
 ```
 
-### 2. Create a Feature File
+## Features
 
-Create `example/src/test/resources/features/greeting.feature`:
+- **Type-safe step DSL** — `"text " / string / " more " / int` builds typed extractors; the step body receives `(String, Int)` parameters checked at compile time
+- **ZIO environment injection** — suites declare a `ZLayer`-based environment; services are available in every step body via `ZIO.service[T]`
+- **Scenario state** — each scenario starts with a fresh `S` instance; steps read/write it through `ScenarioContext.get` / `ScenarioContext.update`
+- **Three-tier environment** — `globalLayer` (once per JVM), `featureLayer` (once per feature), `scenarioLayer(meta)` (once per scenario) for fine-grained resource sharing
+- **Lifecycle hooks** — `beforeAll`, `afterAll`, `beforeFeature`, `afterFeature`, `beforeScenario`, `afterScenario`, `beforeStep`, `afterStep`
+- **Full Gherkin support** — Background, Scenario Outline (Examples tables), data tables, doc strings, tags
+- **Flag matrix** — `@flags(key=value)` tags expand a scenario into N runs with different environment values
+- **Tag filtering** — `includeTags` / `excludeTags` in `@Suite` or via `--include-tags` / `--exclude-tags` CLI
+- **Parallel execution** — feature-level via `@Suite(parallelism = N)`, scenario-level via `--scenario-parallelism N`
+- **Dry-run mode** — `--dry-run` validates step matching without executing step bodies
+- **Built-in reporters** — `pretty` (ANSI colour tree) and `junitxml` (JUnit 5 compatible XML)
+- **Modular state** — `TypeMap` for independent per-module state slices; `HasLens` for nested state without `.copy` chains
+- **Step reuse** — `HasService[A, R]` typeclass lets step traits express service requirements without coupling to a concrete `R`
+- **Typed table extraction** — `table[T]` reads Gherkin data tables into `List[T]` using ZIO Schema
+- **Scalar extractors** — `string`, `word`, `int`, `long`, `double`, `boolean`, `bigDecimal`, `uuid`, `docString`
 
-```gherkin
-@core @greeting
-Feature: User Greeting
-  Scenario: Greet a positive user
-    Given a user named "Alice"
-    When the user is greeted
-    Then the greeting should be "Hello, Alice!"
+## Installation
 
-  @positive
-  Scenario: Greet another positive user
-    Given a user named "Bob"
-    When the user is greeted
-    Then the greeting should be "Hello, Bob!"
+```scala
+// build.sbt
+libraryDependencies += "local.zio-bdd" %% "zio-bdd" % "0.1.0-pfc-SNAPSHOT" % Test
+
+Test / testFrameworks += new TestFramework("zio.bdd.ZIOBDDFramework")
 ```
 
-- **Explanation**:
-  - **Scenarios**: Test greeting different users, with one scenario tagged `@positive` to match the `@Suite` filter.
-  - **Steps**: Use typed extractors (`string`) to parse user names and expected greetings.
-  - **Tags**: `@core`, `@greeting`, and `@positive` enable filtering.
+Requires Scala 3.3.4 and ZIO 2.1.17. `zio-schema` and `zio-schema-derivation` are pulled in
+transitively and are needed to derive `Schema[S]` for your state type.
 
-### 3. Run Tests
+## Documentation
 
-**Run All Tests**:
-```bash
-sbt "example/test"
-```
-- Executes all scenarios, with `PrettyReporter` output.
-
-**Run with Tag Filter**:
-```bash
-sbt "testOnly zio.bdd.example.GreetingSpec -- --include-tags positive"
-```
-- Runs only the `@positive` scenario ("Greet another positive user").
-
-**Run Specific Feature**:
-```bash
-sbt "testOnly zio.bdd.example.GreetingSpec -- --feature-file example/src/test/resources/features/greeting.feature"
-```
-
-**Debug Mode**:
-```bash
-sbt "example/testOnly zio.bdd.example.GreetingSpec -- -DlogLevel=debug"
-```
-- Enables detailed logging for step execution.
-
-## Contributions
-
-`zio-bdd` is an open-source project aimed at advancing BDD testing in the ZIO ecosystem. We welcome contributions to enhance Gherkin support, reporting, or performance. Submit issues or pull requests on GitHub to join the community.
+| Document | Description |
+|---|---|
+| [docs/quickstart.md](docs/quickstart.md) | Zero to running test in 5 minutes |
+| [docs/concepts.md](docs/concepts.md) | Mental model: how the framework works |
+| [docs/step-definitions.md](docs/step-definitions.md) | Step DSL, extractors, and patterns |
+| [docs/gherkin-reference.md](docs/gherkin-reference.md) | Supported Gherkin syntax |
+| [docs/advanced-features.md](docs/advanced-features.md) | Flags, TypeMap, HasLens, HasService |
+| [docs/running-tests.md](docs/running-tests.md) | CLI flags, reporters, parallelism |
+| [docs/examples.md](docs/examples.md) | Annotated end-to-end examples |
 
 ## License
 
-Licensed under the Apache License 2.0. See the [LICENSE](LICENSE) file for details.
+Apache 2.0 — see [LICENSE](LICENSE).
