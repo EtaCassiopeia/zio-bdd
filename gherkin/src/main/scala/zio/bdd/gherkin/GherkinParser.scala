@@ -376,6 +376,7 @@ object GherkinParser {
     def isEOF: Boolean                    = pos >= tokens.length
     def advance(): Unit                   = pos += 1
     def position: Int                     = pos
+    def reset(p: Int): Unit               = pos = p
 
     /** Skip empty lines and comments. */
     def skipBlanks(): Unit =
@@ -567,13 +568,18 @@ object GherkinParser {
         var cont     = true
         while (cont) {
           cursor.skipBlanks()
-          // Tags may appear before an Examples block
+          // Tags may appear before an Examples block. Tentatively consume them, but if no Examples block follows
+          // they belong to the NEXT scenario — restore the cursor so they aren't silently swallowed (which would
+          // strip that scenario's tags). See parseScenario tag-stripping regression.
+          val mark   = cursor.position
           val exTags = cursor.consume { case TagsLine(ts, _) => ts }.getOrElse(Nil)
           cursor.skipBlanks()
           cursor.peek match {
             case Some(ExamplesLine(_, _, _)) =>
               examples += parseExamplesBlock(cursor, exTags, file)
-            case _ => cont = false
+            case _ =>
+              cursor.reset(mark)
+              cont = false
           }
         }
         RawScenario(name, tags, steps, examples.result(), isOutline, lineNo)
