@@ -7,6 +7,9 @@ import zio.bdd.gherkin.{Feature, FlagsTag, Scenario, ScenarioMetadata}
 
 object FeatureExecutor {
 
+  // Wall-clock duration measurement — independent of the ZIO Clock (and TestClock).
+  private val nowNanos: UIO[Long] = ZIO.succeed(java.lang.System.nanoTime())
+
   def executeFeature[R: Tag, S: Tag: Default](
     feature: Feature,
     steps: List[StepDef[R, S]],
@@ -20,21 +23,24 @@ object FeatureExecutor {
       }
       ZIO.succeed(FeatureResult(feature, ignoredScenarios))
     } else {
-      ZIO
-        .logAnnotate("featureId", feature.id.toString) {
+      ZIO.scoped {
+        ZIO.logAnnotate("featureId", feature.id.toString) {
           for {
-            startNanos <- Clock.nanoTime
-            _          <- FeatureContext.reset // clear any leaked feature-scoped values from previous feature
-            _          <- suite.beforeFeatureHook
-            // Expand @flags(...) tags before running scenarios
-            expanded = expandFlagScenarios(feature.scenarios)
-            featureResult <- runScenarios(expanded, steps, suite, scenarioParallelism, dryRun)
-                               .map(scenarioResults => FeatureResult(feature, scenarioResults))
-            _        <- suite.afterFeatureHook
-            endNanos <- Clock.nanoTime
+            startNanos <- nowNanos
+            // Per-feature staging scoped to the feature and auto-restored on scope close.
+            _ <- FeatureContext.ref.locallyScoped(Map.empty)
+            featureResult <- (for {
+                               _       <- suite.beforeFeatureHook
+                               expanded = expandFlagScenarios(feature.scenarios)
+                               results <- runScenarios(expanded, steps, suite, scenarioParallelism, dryRun)
+                             } yield FeatureResult(feature, results))
+                               // afterFeature teardown always runs, even on failure or interruption.
+                               .ensuring(suite.afterFeatureHook)
+            endNanos <- nowNanos
             duration  = (endNanos - startNanos) / 1_000_000L
           } yield featureResult.copy(duration = duration)
         }
+      }
         .provideSomeLayer[R](StepRegistry.layer[R, S](steps))
     }
 
@@ -79,9 +85,7 @@ object FeatureExecutor {
           else suite.flagLayer(meta, flags)
         ScenarioExecutor
           .executeScenario[R, S](scenario, suite, dryRun, flags, suite.stepTimeout)
-          .provideSomeLayer[R & StepRegistry[R, S]](
-            layer.orDie.asInstanceOf[ZLayer[Any, Nothing, R]]
-          )
+          .provideSomeLayer[R & StepRegistry[R, S]](layer.orDie)
       }
 
     if (scenarioParallelism <= 1)
