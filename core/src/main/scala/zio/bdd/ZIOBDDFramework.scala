@@ -253,35 +253,8 @@ class ZIOBDDTask(
     val annotation = Option(clazz.getAnnotation(classOf[zio.bdd.core.Suite]))
 
     def instantiateReporter(name: String): Reporter = name match {
-      case "pretty" =>
-        Unsafe.unsafe { implicit unsafe =>
-          runtime.unsafe
-            .run(
-              ZIO.scoped(
-                PrettyReporter.live.build.map(_.get[Reporter])
-              )
-            )
-            .getOrThrowFiberFailure()
-        }
-      case "junitxml" =>
-        Unsafe.unsafe { implicit unsafe =>
-          runtime.unsafe
-            .run(
-              ZIO.scoped(
-                JUnitXMLReporter
-                  .live(
-                    JUnitReporterConfig(
-                      outputDir = resolveTestReportDir(className),
-                      suiteClass = className,
-                      format = JUnitXMLFormatter.Format.JUnit5
-                    )
-                  )
-                  .build
-                  .map(_.get[Reporter])
-              )
-            )
-            .getOrThrowFiberFailure()
-        }
+      case "pretty"   => prettyReporter
+      case "junitxml" => junitReporter(resolveTestReportDir(className), Some(className))
       case _ =>
         loggers.foreach(_.warn(s"Unknown reporter '$name', defaulting to ConsoleReporter"))
         new PrettyReporter(AnsiRenderer())
@@ -382,49 +355,35 @@ class ZIOBDDTask(
   private def parseScenarioName(args: Array[String]): Option[String] =
     args.sliding(2).collectFirst { case Array("--scenario-name", name) => name }
 
+  // Build a Reporter from its layer on the runner's runtime. Centralises the Unsafe.run
+  // boilerplate so reporter construction is defined once.
+  private def buildReporter(layer: ZLayer[Any, Throwable, Reporter]): Reporter =
+    Unsafe.unsafe { implicit unsafe =>
+      runtime.unsafe.run(ZIO.scoped(layer.build.map(_.get[Reporter]))).getOrThrowFiberFailure()
+    }
+
+  private def prettyReporter: Reporter = buildReporter(PrettyReporter.live)
+
+  private def junitReporter(outputDir: String, suiteClass: Option[String]): Reporter =
+    buildReporter(
+      JUnitXMLReporter.live(
+        JUnitReporterConfig(
+          outputDir = outputDir,
+          suiteClass = suiteClass.getOrElse(""),
+          format = JUnitXMLFormatter.Format.JUnit5
+        )
+      )
+    )
+
   private def parseReporters(args: Array[String], loggers: Array[Logger]): List[Reporter] =
     args
       .sliding(2)
       .collect {
-        case Array("--reporter", "pretty") =>
-          Unsafe.unsafe { implicit unsafe =>
-            runtime.unsafe
-              .run(
-                ZIO.scoped(
-                  PrettyReporter.live.build.map(_.get[Reporter])
-                )
-              )
-              .getOrThrowFiberFailure()
-          }
-        case Array("--reporter", "junitxml") =>
-          Unsafe.unsafe { implicit unsafe =>
-            runtime.unsafe
-              .run(
-                ZIO.scoped(
-                  JUnitXMLReporter
-                    .live(
-                      JUnitReporterConfig(
-                        outputDir = defaultTestReportDirName,
-                        format = JUnitXMLFormatter.Format.JUnit5
-                      )
-                    )
-                    .build
-                    .map(_.get[Reporter])
-                )
-              )
-              .getOrThrowFiberFailure()
-          }
+        case Array("--reporter", "pretty")   => prettyReporter
+        case Array("--reporter", "junitxml") => junitReporter(defaultTestReportDirName, None)
         case Array("--reporter", unknown) =>
           loggers.foreach(_.warn(s"Unknown reporter '$unknown', defaulting to ConsoleReporter"))
-          Unsafe.unsafe { implicit unsafe =>
-            runtime.unsafe
-              .run(
-                ZIO.scoped(
-                  PrettyReporter.live.build.map(_.get[Reporter])
-                )
-              )
-              .getOrThrowFiberFailure()
-          }
+          prettyReporter
       }
       .toList
 

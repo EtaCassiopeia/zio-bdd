@@ -81,39 +81,8 @@ object StepMethodGenerator {
       }
     }
 
-    // State-injecting variants: GivenS/WhenS/ThenS/AndS/ButS
-    // f receives S as first curried parameter, then the Gherkin-extracted params.
-    val withState = stepTypes.flatMap { case (methodName, stepType) =>
-      val sName = methodName + "S"
-      (0 to maxArity).map { i =>
-        if (i == 0) {
-          s"""  def $sName(stepExpr: StepExpression[EmptyTuple])(f: S => $stepEffect): Unit = {
-             |    val adaptedF: EmptyTuple => $stepEffect = _ => State.get[S].flatMap(s => f(s))
-             |    self.register(StepDefImpl[R, S, EmptyTuple]($stepType, stepExpr, adaptedF))
-             |  }
-             |""".stripMargin
-        } else if (i == 1) {
-          s"""  def $sName[A](stepExpr: StepExpression[Tuple1[A]])(f: S => A => $stepEffect): Unit = {
-             |    val adaptedF: Tuple1[A] => $stepEffect = tuple => State.get[S].flatMap(s => f(s)(tuple._1))
-             |    self.register(StepDefImpl[R, S, Tuple1[A]]($stepType, stepExpr, adaptedF))
-             |  }
-             |""".stripMargin
-        } else {
-          val typeParams = typeParamLetters.take(i).mkString(", ")
-          val inputType  = s"((${typeParamLetters.take(i).mkString(", ")}))"
-          val fnParams   = s"(${typeParamLetters.take(i).mkString(", ")})"
-          val caseVars   = (1 to i).map(n => s"v$n").mkString(", ")
-          val caseArgs   = (1 to i).map(n => s"v$n").mkString(", ")
-
-          s"""  def $sName[$typeParams](stepExpr: StepExpression[$inputType])(f: S => $fnParams => $stepEffect): Unit = {
-             |    val adaptedF: $inputType => $stepEffect = { case ($caseVars) => State.get[S].flatMap(s => f(s)($caseArgs)) }
-             |    self.register(StepDefImpl[R, S, $inputType]($stepType, stepExpr, adaptedF))
-             |  }
-             |""".stripMargin
-        }
-      }
-    }
-
-    (standard).mkString("\n")
+    // Note: the state-injecting GivenS/WhenS/ThenS/AndS/ButS variants are defined directly
+    // on ZIOSteps (where @targetName disambiguates their overloads); they are not generated here.
+    standard.mkString("\n")
   }
 }
