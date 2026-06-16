@@ -335,7 +335,7 @@ object FeatureExecutorSpec extends ZIOSpecDefault {
   private val resultStatus = suite("Result status correctness")(
     test("SkippedStepResult.isSkipped is true and isPassed is false") {
       val step    = Step(StepType.ThenStep, "skipped")
-      val skipped = SkippedStepResult(step)
+      val skipped = StepResult.skipped(step)
       assertTrue(skipped.isSkipped, !skipped.isPassed, skipped.error.isEmpty)
     },
     test("StepStatus.Skipped is distinct from Failed") {

@@ -18,36 +18,46 @@ class PendingException(val reason: String = "TODO") extends RuntimeException(s"P
 class StepTimeoutException(val pattern: String, val timeout: Duration)
     extends RuntimeException(s"Step '$pattern' timed out after ${timeout.toSeconds}s")
 
-case class StepResult(step: Step, outcome: Either[Cause[Throwable], Unit], duration: Long = 0L):
-  def isPassed: Boolean = outcome.isRight
-
-  def status: StepStatus = outcome match
-    case Right(_) => StepStatus.Passed
-    case Left(cause) =>
-      cause.squash match
-        case p: PendingException     => StepStatus.Pending(p.reason)
-        case t: StepTimeoutException => StepStatus.TimedOut(t.timeout, cause)
-        case _                       => StepStatus.Failed(cause)
-
-  def isSkipped: Boolean       = false
-  def isPending: Boolean       = status.isInstanceOf[StepStatus.Pending]
-  def error: Option[Throwable] = outcome.left.toOption.map(_.squash)
-
-object StepResult:
-  val skipped: Step => StepResult = step => SkippedStepResult(step)
+/**
+ * Thrown when an `And`/`But` step has no preceding step to inherit its keyword
+ * from.
+ */
+class StepSequencingException(message: String) extends RuntimeException(message)
 
 /**
- * A step that was never attempted because a prior step failed. Not a case class
- * to avoid case-to-case inheritance.
+ * Outcome of a single step. `status` is the single source of truth, derived
+ * from `outcome` (the executed Either) plus the `skipped` flag (set for steps
+ * that were never attempted because a prior step failed).
  */
-final class SkippedStepResult(step: Step) extends StepResult(step, Right(()), 0L):
-  override def isPassed: Boolean        = false
-  override def isSkipped: Boolean       = true
-  override def status: StepStatus       = StepStatus.Skipped
-  override def error: Option[Throwable] = None
+case class StepResult(
+  step: Step,
+  outcome: Either[Cause[Throwable], Unit],
+  duration: Long = 0L,
+  skipped: Boolean = false
+):
+  def status: StepStatus =
+    if (skipped) StepStatus.Skipped
+    else
+      outcome match
+        case Right(_) => StepStatus.Passed
+        case Left(cause) =>
+          cause.squash match
+            case p: PendingException     => StepStatus.Pending(p.reason)
+            case t: StepTimeoutException => StepStatus.TimedOut(t.timeout, cause)
+            case _                       => StepStatus.Failed(cause)
 
-object SkippedStepResult:
-  def apply(step: Step): SkippedStepResult = new SkippedStepResult(step)
+  def isPassed: Boolean  = !skipped && outcome.isRight
+  def isSkipped: Boolean = skipped
+  def isPending: Boolean = status match
+    case StepStatus.Pending(_) => true
+    case _                     => false
+  def error: Option[Throwable] = if (skipped) None else outcome.left.toOption.map(_.squash)
+
+object StepResult:
+  /**
+   * A step that was never attempted because a prior step failed or timed out.
+   */
+  def skipped(step: Step): StepResult = StepResult(step, Right(()), 0L, skipped = true)
 
 case class ScenarioResult(
   scenario: Scenario,

@@ -27,7 +27,7 @@ object PrettyReporterSpec extends ZIOSpecDefault {
       case StepStatus.Passed         => StepResult(step, Right(()), durationMs)
       case StepStatus.Failed(c)      => StepResult(step, Left(c), durationMs)
       case StepStatus.TimedOut(d, c) => StepResult(step, Left(c), durationMs)
-      case StepStatus.Skipped        => SkippedStepResult(step)
+      case StepStatus.Skipped        => StepResult.skipped(step)
       case StepStatus.Pending(msg)   => StepResult(step, Left(Cause.fail(new PendingException(msg))), durationMs)
 
   private def mkScenario(name: String, tags: List[String] = Nil, lineNo: Int = 1) =
@@ -170,7 +170,7 @@ object PrettyReporterSpec extends ZIOSpecDefault {
     },
     test("stepLeaf for skipped step has style Gray") {
       val step    = mkStep(StepType.ThenStep, "skipped step")
-      val skipped = SkippedStepResult(step)
+      val skipped = StepResult.skipped(step)
       val leaf    = DocBuilder.stepLeaf(skipped)
       assertTrue(leaf.style.color == Color.Gray, leaf.text.contains("SKIPPED"))
     },
