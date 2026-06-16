@@ -141,35 +141,8 @@ class ZIOBDDTask(
 
   override def taskDef(): TaskDef = taskDefinition
 
-  private def filterFeatures(features: List[Feature], config: BDDTestConfig): List[Feature] = {
-    val includeTags = config.includeTags
-    val excludeTags = config.excludeTags
-
-    def shouldIgnoreFeature(tags: List[String]): Boolean =
-      tags.exists(excludeTags.contains)
-
-    def shouldIgnoreScenario(tags: List[String], name: String): Boolean = {
-      val hasExcludeTag     = tags.exists(excludeTags.contains)
-      val missingIncludeTag = includeTags.nonEmpty && !tags.exists(includeTags.contains)
-      // Scenario-name filter: treat as glob where * = any sequence of chars
-      val nameFiltered = config.scenarioNameFilter.exists { pattern =>
-        val regex = ("(?i)" + java.util.regex.Pattern.quote(pattern).replace("\\*", ".*")).r
-        !regex.matches(name)
-      }
-      hasExcludeTag || missingIncludeTag || nameFiltered
-    }
-
-    features.map { feature =>
-      val featureTags = if (shouldIgnoreFeature(feature.tags)) feature.tags :+ "ignore" else feature.tags
-      val updatedScenarios = feature.scenarios.map { scenario =>
-        val scenarioTags =
-          if (shouldIgnoreScenario(scenario.tags, scenario.name)) scenario.tags :+ "ignore"
-          else scenario.tags
-        scenario.copy(tags = scenarioTags)
-      }
-      feature.copy(tags = featureTags, scenarios = updatedScenarios)
-    }
-  }
+  private[bdd] def filterFeatures(features: List[Feature], config: BDDTestConfig): List[Feature] =
+    ZIOBDDTask.filterFeatures(features, config)
 
   override def execute(eventHandler: EventHandler, loggers: Array[Logger]): Array[Task] = {
     val className = taskDef.fullyQualifiedName()
@@ -490,6 +463,53 @@ class ZIOBDDTask(
         }
         eventHandler.handle(event)
       }
+    }
+  }
+}
+
+object ZIOBDDTask {
+
+  /**
+   * Apply include/exclude tag filters and the scenario-name filter to a list of
+   * features.
+   *
+   * Per the Gherkin spec, feature-level tags are inherited by all of a
+   * feature's scenarios for the purpose of filtering: a feature tagged `@smoke`
+   * makes every scenario match `--include-tags smoke`, even when the scenario
+   * carries no tags of its own. Scenarios that do not survive the filter are
+   * marked `@ignore`; a feature whose scenarios are all ignored is itself
+   * marked `@ignore`.
+   */
+  def filterFeatures(features: List[Feature], config: BDDTestConfig): List[Feature] = {
+    val includeTags = config.includeTags
+    val excludeTags = config.excludeTags
+
+    def shouldIgnoreScenario(featureTags: List[String], scenarioTags: List[String], name: String): Boolean = {
+      // Feature tags are inherited by the scenario for filtering.
+      val effectiveTags     = (featureTags ++ scenarioTags).distinct
+      val hasExcludeTag     = effectiveTags.exists(excludeTags.contains)
+      val missingIncludeTag = includeTags.nonEmpty && !effectiveTags.exists(includeTags.contains)
+      // Scenario-name filter: glob where '*' = any sequence of chars, rest matched
+      // literally and case-insensitively. Split on '*' and quote each literal segment so
+      // regex metacharacters in the name (and the pattern) are not interpreted.
+      val nameFiltered = config.scenarioNameFilter.exists { pattern =>
+        val regex = ("(?i)" + pattern.split("\\*", -1).map(java.util.regex.Pattern.quote).mkString(".*")).r
+        !regex.matches(name)
+      }
+      hasExcludeTag || missingIncludeTag || nameFiltered
+    }
+
+    features.map { feature =>
+      val updatedScenarios = feature.scenarios.map { scenario =>
+        val scenarioTags =
+          if (shouldIgnoreScenario(feature.tags, scenario.tags, scenario.name)) scenario.tags :+ "ignore"
+          else scenario.tags
+        scenario.copy(tags = scenarioTags)
+      }
+      // Mark the feature itself as ignored when all of its scenarios are ignored.
+      val allScenariosIgnored = updatedScenarios.nonEmpty && updatedScenarios.forall(_.isIgnored)
+      val featureTags         = if (allScenariosIgnored) feature.tags :+ "ignore" else feature.tags
+      feature.copy(tags = featureTags, scenarios = updatedScenarios)
     }
   }
 }
