@@ -360,8 +360,9 @@ trait ZIOSteps[R: Tag, S: Tag: Default]
   // ── Step registration ───────────────────────────────────────────────────
 
   private val steps: mutable.ListBuffer[StepDef[R, S]] = mutable.ListBuffer.empty
-  // Sealed once getSteps is called — prevents post-run registrations
-  @volatile private var sealed_ = false
+  // Sealed exactly once on the first getSteps call — prevents post-run registrations.
+  // AtomicBoolean.compareAndSet makes the seal+validate happen-once even under concurrent access.
+  private val sealed_ = new java.util.concurrent.atomic.AtomicBoolean(false)
 
   /**
    * Return all registered steps.
@@ -371,10 +372,7 @@ trait ZIOSteps[R: Tag, S: Tag: Default]
    * `AmbiguousStepDefinitionException` at suite startup — not mid-test.
    */
   private[core] def getSteps: List[StepDef[R, S]] = {
-    if (!sealed_) {
-      sealed_ = true
-      validateAmbiguity()
-    }
+    if (sealed_.compareAndSet(false, true)) validateAmbiguity()
     steps.toList
   }
 
@@ -385,7 +383,7 @@ trait ZIOSteps[R: Tag, S: Tag: Default]
   protected final def registeredSteps: List[StepDef[R, S]] = getSteps
 
   private[core] def register(step: StepDef[R, S]): Unit = {
-    if (sealed_)
+    if (sealed_.get())
       throw new IllegalStateException(
         s"Cannot register step '${step.asInstanceOf[StepDefImpl[?, ?, ?]].stepExpr}' after the suite has started running. " +
           "Step registration must happen during object initialization."

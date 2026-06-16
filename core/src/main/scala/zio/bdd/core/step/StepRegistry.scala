@@ -32,17 +32,26 @@ trait StepRegistry[R, S]:
   def findStep(stepType: StepType, input: StepInput): IO[StepLookupError, RIO[R & State[S] & Scope, Unit]]
 
 final case class StepRegistryLive[R, S](steps: List[StepDef[R, S]]) extends StepRegistry[R, S]:
+  // Index definitions by their declared keyword once at construction, so per-step lookup
+  // is a map access rather than a full scan. Registration order is preserved per bucket.
+  private val byKeyword: Map[StepType, List[StepDef[R, S]]] =
+    steps.groupBy { case StepDefImpl(rt, _, _) => rt }
+
+  private def matchesFor(
+    stepType: StepType,
+    input: StepInput
+  ): List[(StepDef[R, S], RIO[R & State[S] & Scope, Unit])] =
+    byKeyword.getOrElse(stepType, Nil).flatMap(s => s.tryExecute(input).map(effect => (s, effect)))
+
   def findStep(stepType: StepType, input: StepInput): IO[StepLookupError, RIO[R & State[S] & Scope, Unit]] = {
-    val typedMatches = steps.filter { case StepDefImpl(rt, _, _) => rt == stepType }
-      .flatMap(s => s.tryExecute(input).map(effect => (s, effect)))
+    val typedMatches = matchesFor(stepType, input)
 
     typedMatches match {
       case Nil =>
         // Fall back to And steps as universal glue, then to any step type.
         // This matches Cucumber's semantics: keyword on the step definition is just
         // documentation — any step can match any keyword at runtime.
-        val andMatches = steps.filter { case StepDefImpl(rt, _, _) => rt == StepType.AndStep }
-          .flatMap(s => s.tryExecute(input).map(effect => (s, effect)))
+        val andMatches = matchesFor(StepType.AndStep, input)
         andMatches match {
           case (_, effect) :: Nil => ZIO.succeed(effect)
           case Nil                =>
