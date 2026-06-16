@@ -28,7 +28,8 @@ import zio.*
  *   ScenarioLens.update[AppState, ProvisionState](_.copy(response = Some(resp)))
  * }}}
  *
- * For Monocle users, any `monocle.Lens[S, A]` can be adapted via `fromMonocleLike`:
+ * For Monocle users, any `monocle.Lens[S, A]` can be adapted via
+ * `fromMonocleLike`:
  * {{{
  *   import monocle.macros.GenLens
  *   val lens = GenLens[AppState](_.provision)
