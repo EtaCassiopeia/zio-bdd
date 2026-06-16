@@ -25,15 +25,15 @@ import zio.*
  *     HasLens(_.provision, (s, a) => s.copy(provision = a))
  *
  *   // Use in steps
- *   ScenarioLens.update[ProvisionState](_.copy(response = Some(resp)))
+ *   ScenarioLens.update[AppState, ProvisionState](_.copy(response = Some(resp)))
  * }}}
  *
- * For Monocle users, any `monocle.Lens[S, A]` can be adapted:
+ * For Monocle users, any `monocle.Lens[S, A]` can be adapted via `fromMonocleLike`:
  * {{{
  *   import monocle.macros.GenLens
- *   given HasLens[AppState, ProvisionState] = HasLens.fromMonocle(
- *     GenLens[AppState](_.provision)
- *   )
+ *   val lens = GenLens[AppState](_.provision)
+ *   given HasLens[AppState, ProvisionState] =
+ *     HasLens.fromMonocleLike(getter = lens.get, setter = a => s => lens.replace(a)(s))
  * }}}
  */
 final class HasLens[S, A](val get: S => A, val set: (S, A) => S):
