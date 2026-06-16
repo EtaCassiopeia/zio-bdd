@@ -623,7 +623,7 @@ ThenS("the response status is " / int) { s => (expected: Int) =>
 }
 
 // 2 Gherkin params
-WhenS("send " / int / " requests to " / string) { s => (count: Int) => (url: String) =>
+WhenS("send " / int / " requests to " / string) { s => (count: Int, url: String) =>
   ZIO.replicateZIODiscard(count)(sendRequest(s.session.userId, url))
 }
 ```

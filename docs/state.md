@@ -207,7 +207,11 @@ val provData: Option[ProvisionCtx.Data] = m.get[ProvisionCtx.Data]
 given Default[TypeMap] = Default.from(TypeMap.empty)
 ```
 
-Place this in the suite object or a shared companion.
+This given must be **in scope at the `extends ZIOSteps[R, TypeMap]` site** — the
+`Default[S]` context bound is resolved when the suite's superclass is constructed,
+*before* the suite body. Put it at the top level of the suite's file, in a shared
+object you `import`, or in a base trait — **not** inside the suite object's body,
+where it would not yet be visible to the `ZIOSteps[R, TypeMap]` constructor.
 
 ---
 
@@ -511,7 +515,7 @@ ThenS("the response status is " / int) { s => (expected: Int) =>
 }
 
 // 2 Gherkin params
-WhenS("send " / int / " requests to " / string) { s => (count: Int) => (url: String) =>
+WhenS("send " / int / " requests to " / string) { s => (count: Int, url: String) =>
   ZIO.replicateZIODiscard(count)(sendRequest(s.session.userId, url))
 }
 ```

@@ -181,7 +181,7 @@ mixin) provides `get` and `update`:
 case class AppState(userName: String = "", lastResponse: Option[Response] = None)
 
 object AppState:
-  given Default[AppState] = Default.succeed(AppState())
+  given Default[AppState] = Default.from(AppState())
 
 @Suite(featureDirs = Array("src/test/resources/features"))
 object MySuite extends ZIOSteps[AppEnv, AppState]:
@@ -212,12 +212,12 @@ a single monolithic case class:
 ```scala
 object CartCtx:
   case class Data(sessionId: String = "", itemCount: Int = 0)
-  given Default[Data] = Default.succeed(Data())
+  given Default[Data] = Default.from(Data())
 
 // S = TypeMap, each module reads/writes only its own slice
 trait CartSteps { self: ZIOSteps[R, TypeMap] =>
   Given("items are added to the cart") {
-    TypeMap.update[CartCtx.Data](_.copy(itemCount = 3))
+    TypeMapOps.update[CartCtx.Data](_.copy(itemCount = 3))
   }
 }
 ```
@@ -659,7 +659,7 @@ The feature file is unchanged.
 case class OrderState(productName: String = "", orderId: String = "")
 
 object OrderState:
-  given Default[OrderState] = Default.succeed(OrderState())
+  given Default[OrderState] = Default.from(OrderState())
 
 @Suite(featureDirs = Array("src/test/resources/features"))
 object OrderSpec extends ZIOSteps[HttpClient, OrderState]:

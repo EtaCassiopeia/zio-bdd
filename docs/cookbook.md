@@ -251,7 +251,7 @@ ThenS("the API returns a " / int / " status code") { s => (expected: Int) =>
 
 // Assert status and body substring
 ThenS("the API returns a " / int / " status code and " / string / " in the body") {
-  s => (expectedStatus: Int) => (bodyFragment: String) =>
+  s => (expectedStatus: Int, bodyFragment: String) =>
     Assertions.collectAll(
       Assertions.assertEquals(s.http.statusCode, expectedStatus,
         s"Expected status $expectedStatus, got ${s.http.statusCode}"),
@@ -548,8 +548,8 @@ ThenS("the account balance is " / bigDecimal) { s => (expected: BigDecimal) =>
   Assertions.assertEquals(s.account.balance, expected)
 }
 
-// 2 params: s => (p1) => (p2) => effect
-WhenS("transfer " / bigDecimal / " from " / string) { s => (amount: BigDecimal) => (target: String) =>
+// 2 params: s => (p1, p2) => effect
+WhenS("transfer " / bigDecimal / " from " / string) { s => (amount: BigDecimal, target: String) =>
   ZIO.service[AccountService].flatMap(_.transfer(s.core.accountRefId, target, amount))
 }
 ```
