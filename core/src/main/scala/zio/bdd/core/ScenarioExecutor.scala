@@ -2,7 +2,7 @@ package zio.bdd.core
 
 import izumi.reflect.Tag
 import zio.*
-import zio.bdd.core.step.{Stage, State, StepInput, StepLookupError, StepRegistry, ZIOSteps}
+import zio.bdd.core.step.{Stage, State, StepInput, StepRegistry, ZIOSteps}
 import zio.bdd.gherkin.{Scenario, ScenarioMetadata, Step, StepType}
 
 object ScenarioExecutor {

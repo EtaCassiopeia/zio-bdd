@@ -2,7 +2,7 @@ package zio.bdd.http
 
 import zio.*
 import zio.bdd.core.step.{HasLens, ZIOSteps}
-import zio.bdd.core.{FeatureExecutor, FeatureResult}
+import zio.bdd.core.FeatureResult
 import zio.bdd.gherkin.*
 import zio.schema.{DeriveSchema, Schema}
 import zio.test.*

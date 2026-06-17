@@ -2,11 +2,10 @@ package zio.bdd.core.report
 
 import zio.*
 import zio.bdd.core.*
-import zio.bdd.gherkin.{Feature, Scenario, Step, StepType}
+import zio.bdd.gherkin.{Feature, Step, StepType}
 
 import java.time.Instant
 import java.time.format.DateTimeFormatter
-import java.nio.file.{Files, Paths}
 import scala.xml.{Elem, NodeSeq, PrettyPrinter, Text}
 
 /**
@@ -171,10 +170,11 @@ object JUnitXMLFormatter {
   // ── XML rendering ─────────────────────────────────────────────────────────
 
   private val iso = DateTimeFormatter.ISO_INSTANT
-  private val pp  = new PrettyPrinter(120, 2)
 
   def generateXML(suite: TestSuiteRecord, format: Format = Format.JUnit5): String =
-    pp.format(suiteElem(suite, format))
+    // A PrettyPrinter holds a mutable StringBuilder and is not thread-safe, so use a
+    // fresh instance per call rather than a shared one.
+    new PrettyPrinter(120, 2).format(suiteElem(suite, format))
 
   private def suiteElem(suite: TestSuiteRecord, format: Format): Elem =
     val attrs = Seq(

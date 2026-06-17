@@ -1,7 +1,6 @@
 package zio.bdd.core
 
 import zio.*
-import zio.bdd.core.*
 import zio.bdd.core.step.*
 import zio.bdd.gherkin.{GherkinParser, ScenarioMetadata}
 import zio.schema.{DeriveSchema, Schema}

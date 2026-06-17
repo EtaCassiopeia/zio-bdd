@@ -1,7 +1,6 @@
 package zio.bdd
 
 import zio.test.*
-import zio.test.Assertion.*
 import zio.bdd.gherkin.{Feature, Scenario, Step, StepType}
 
 /**
