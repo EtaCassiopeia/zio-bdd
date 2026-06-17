@@ -93,30 +93,47 @@ object ScenarioExecutor {
       val input    = StepInput(step.pattern, step.dataTable, step.docString)
       val stepMeta = StepMetadata(step.pattern, effectiveType, step.file, step.line)
       val findStep = ZIO.serviceWithZIO[StepRegistry[R, S]](_.findStep(effectiveType, input))
+      // Hook failures/defects are folded into the step result rather than aborting the whole
+      // feature run: a failing before/afterStep hook fails the step (fail-loud), the run continues.
       for {
-        startNanos <- nowNanos
-        _          <- suite.beforeStepHook(stepMeta)
-        _          <- Stage.currentStepLabel.set(step.pattern)
-        result <- findStep.foldZIO(
-                    lookupErr => ZIO.succeed(StepResult(step, Left(Cause.fail(lookupErr.toException)))),
-                    effect =>
-                      if (dryRun) ZIO.succeed(StepResult(step, Right(())))
-                      else {
-                        val timedEffect = stepTimeout match {
-                          case Some(duration) =>
-                            effect
-                              .timeout(duration)
-                              .someOrFail(new StepTimeoutException(step.pattern, duration))
-                          case None =>
-                            effect
-                        }
-                        timedEffect.foldCauseZIO(
-                          cause => ZIO.succeed(StepResult(step, Left(cause))),
-                          _ => ZIO.succeed(StepResult(step, Right(())))
-                        )
+        startNanos  <- nowNanos
+        beforeCause <- suite.beforeStepHook(stepMeta).foldCause[Option[Cause[Throwable]]](c => Some(c), _ => None)
+        result <- beforeCause match {
+                    case Some(cause) =>
+                      // A failing beforeStep hook fails the step; the step body is not run.
+                      ZIO.succeed(StepResult(step, Left(cause)))
+                    case None =>
+                      for {
+                        _ <- Stage.currentStepLabel.set(step.pattern)
+                        stepRes <- findStep.foldZIO(
+                                     lookupErr =>
+                                       ZIO.succeed(StepResult(step, Left(Cause.fail(lookupErr.toException)))),
+                                     effect =>
+                                       if (dryRun) ZIO.succeed(StepResult(step, Right(())))
+                                       else {
+                                         val timedEffect = stepTimeout match {
+                                           case Some(duration) =>
+                                             effect
+                                               .timeout(duration)
+                                               .someOrFail(new StepTimeoutException(step.pattern, duration))
+                                           case None =>
+                                             effect
+                                         }
+                                         timedEffect.foldCauseZIO(
+                                           cause => ZIO.succeed(StepResult(step, Left(cause))),
+                                           _ => ZIO.succeed(StepResult(step, Right(())))
+                                         )
+                                       }
+                                   )
+                        afterCause <-
+                          suite.afterStepHook(stepMeta).foldCause[Option[Cause[Throwable]]](c => Some(c), _ => None)
+                      } yield afterCause match {
+                        // A failing afterStep hook fails an otherwise-passed step; a step that has
+                        // already failed keeps its original cause.
+                        case Some(cause) if stepRes.outcome.isRight => StepResult(step, Left(cause))
+                        case _                                      => stepRes
                       }
-                  )
-        _        <- suite.afterStepHook(stepMeta)
+                  }
         endNanos <- nowNanos
         duration  = (endNanos - startNanos) / 1_000_000L
       } yield result.copy(duration = duration)

@@ -14,7 +14,8 @@ import zio.schema.{DeriveSchema, Schema}
  *   - ZIO.fail → StepStatus.Failed with failureOption present
  *   - Interruption → non-Passed result
  *   - Cause.Both → both failure leaves visible
- *   - die inside afterStep does not corrupt the preceding passed step's status
+ *   - a failing afterStep hook fails the step (fail-loud) without aborting the
+ *     run
  */
 object CauseFidelitySpec extends ZIOSpecDefault {
 
@@ -116,10 +117,36 @@ object CauseFidelitySpec extends ZIOSpecDefault {
     }
   )
 
-  // NOTE: a test asserting that an ignored `afterStep` die leaves a passed step Passed was
-  // dropped here pending a framework decision: ScenarioExecutor runs `afterStepHook` after the
-  // step result is computed (ScenarioExecutor.scala:119) and does not isolate defects, so a dying
-  // afterStep hook corrupts the step. See the PR description for the open question.
+  private val afterStepHookSpec = suite("a failing afterStep hook fails the step without aborting the run")(
+    test("a dying afterStep hook fails the otherwise-passed step but the feature run completes") {
+      val steps = new ZIOSteps[Any, S] {
+        afterStep(_ => ZIO.die(new RuntimeException("afterStep boom")))
+        Given("a passing step")(ZIO.unit)
+      }
+      for {
+        results   <- runFeature("Feature: F\n  Scenario: s\n    Given a passing step\n", steps)
+        stepResult = results.head.scenarioResults.head.stepResults.head
+        cause = stepResult.status match
+                  case StepStatus.Failed(c) => Some(c)
+                  case _                    => None
+      } yield assertTrue(
+        // Run completed normally (not aborted) and the hook failure is surfaced on the step.
+        stepResult.status.isInstanceOf[StepStatus.Failed],
+        cause.exists(_.dieOption.exists(_.getMessage == "afterStep boom"))
+      )
+    },
+    test("an afterStep hook that handles its own defect leaves the step Passed") {
+      val steps = new ZIOSteps[Any, S] {
+        // catchAllCause (unlike .ignore) actually swallows defects, so the hook succeeds.
+        afterStep(_ => ZIO.die(new RuntimeException("handled")).catchAllCause(_ => ZIO.unit))
+        Given("a passing step")(ZIO.unit)
+      }
+      for {
+        results   <- runFeature("Feature: F\n  Scenario: s\n    Given a passing step\n", steps)
+        stepResult = results.head.scenarioResults.head.stepResults.head
+      } yield assertTrue(stepResult.isPassed)
+    }
+  )
 
   private val skippedAfterFailureSpec = suite("steps after failure are Skipped")(
     test("3 steps: first fails, 2nd and 3rd are Skipped (not Failed)") {
@@ -147,6 +174,7 @@ object CauseFidelitySpec extends ZIOSpecDefault {
     dieSpec,
     failSpec,
     causeTreeSpec,
+    afterStepHookSpec,
     skippedAfterFailureSpec
   )
 }
