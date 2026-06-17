@@ -369,7 +369,12 @@ object GherkinParser {
    * Cursor over the token stream. Provides look-ahead and consuming operations.
    */
   private final class TokenCursor(tokens: IndexedSeq[LineToken]) {
-    private var pos = 0
+    private var pos       = 0
+    private val warningsB = List.newBuilder[ParseWarning]
+
+    /** Record a non-fatal lint finding encountered during parsing. */
+    def warn(w: ParseWarning): Unit  = warningsB += w
+    def warnings: List[ParseWarning] = warningsB.result()
 
     def peek: Option[LineToken]           = if (pos < tokens.length) Some(tokens(pos)) else None
     def peekAt(n: Int): Option[LineToken] = tokens.lift(pos + n)
@@ -409,6 +414,16 @@ object GherkinParser {
       extends RuntimeException(
         s"Parse error at $file:$lineNo — $message"
       )
+
+  /**
+   * A non-fatal lint finding raised while parsing. Always logged; in strict
+   * mode it is promoted to a parse failure. Currently the only source is an
+   * unrecognized line appearing after a scenario's steps have begun — almost
+   * always a misspelled step keyword that would otherwise be silently dropped.
+   */
+  private case class ParseWarning(message: String, lineNo: Int, file: String) {
+    def render: String = s"$file:$lineNo — $message"
+  }
 
   // ── Internal AST (before expansion) ────────────────────────────────────────
 
@@ -518,6 +533,7 @@ object GherkinParser {
    */
   private def parseSteps(cursor: TokenCursor, file: String): List[RawStep] = {
     val steps    = List.newBuilder[RawStep]
+    var seenStep = false
     var continue = true
     while (continue) {
       cursor.skipBlanks()
@@ -526,9 +542,16 @@ object GherkinParser {
           cursor.advance()
           val (table, doc) = parseStepArgs(cursor, file)
           steps += RawStep(kw, text, lineNo, table, doc)
-        case Some(DescriptionLine(_, _)) =>
-          // Description/narrative lines inside a scenario block are silently skipped.
-          // This tolerates inline descriptions and "As a ... / I want ..." text within scenarios.
+          seenStep = true
+        case Some(DescriptionLine(text, lineNo)) =>
+          // A description/narrative line is valid Gherkin only as a block's leading text
+          // (before the first step) — e.g. "As a ... / I want ...". Once steps have begun,
+          // an unrecognized line is almost always a misspelled step keyword; surface it as a
+          // lint warning instead of silently dropping it. Leading descriptions stay silent.
+          if (seenStep)
+            cursor.warn(
+              ParseWarning(s"""unrecognized line ignored (misspelled step keyword?): "$text"""", lineNo, file)
+            )
           cursor.advance()
         case _ => continue = false
       }
@@ -743,23 +766,51 @@ object GherkinParser {
 
   // ── Public API ─────────────────────────────────────────────────────────────
 
-  def parseFeature(content: String, file: String = "unknown.feature"): ZIO[Any, Throwable, Feature] =
-    ZIO.fromEither {
-      val normalised = preprocessContent(content)
-      val tokens     = tokenise(normalised)
-      val cursor     = new TokenCursor(tokens)
-      parseFeatureFromTokens(cursor, file)
+  /**
+   * Parse a single feature.
+   *
+   * Lint warnings (e.g. a line that looks like a misspelled step keyword) are
+   * always logged via `ZIO.logWarning`. When `strict` is `true`, the presence
+   * of any warning fails the parse instead of merely logging it.
+   */
+  def parseFeature(
+    content: String,
+    file: String = "unknown.feature",
+    strict: Boolean = false
+  ): ZIO[Any, Throwable, Feature] = {
+    val normalised = preprocessContent(content)
+    val tokens     = tokenise(normalised)
+    val cursor     = new TokenCursor(tokens)
+    parseFeatureFromTokens(cursor, file) match {
+      case Left(err) => ZIO.fail(err)
+      case Right(feature) =>
+        val warnings = cursor.warnings
+        ZIO.foreachDiscard(warnings)(w => ZIO.logWarning(w.render)) *>
+          (if (strict && warnings.nonEmpty)
+             ZIO.fail(
+               ParseError(
+                 s"${warnings.size} lint warning(s); first: ${warnings.head.message}",
+                 warnings.head.lineNo,
+                 file
+               )
+             )
+           else ZIO.succeed(feature))
     }
+  }
 
-  def parseFeatureFile(file: File): ZIO[Any, Throwable, Feature] =
+  def parseFeatureFile(file: File, strict: Boolean = false): ZIO[Any, Throwable, Feature] =
     ZIO.scoped {
       ZIO.fromAutoCloseable(ZIO.attempt(Source.fromFile(file, "UTF-8"))).flatMap { source =>
         val content = source.mkString // preserve the trailing newline
-        parseFeature(content, file.getAbsolutePath)
+        parseFeature(content, file.getAbsolutePath, strict)
       }
     }
 
-  def loadFeatures(directory: File, failFast: Boolean = false): ZIO[Any, Throwable, List[Feature]] =
+  def loadFeatures(
+    directory: File,
+    failFast: Boolean = false,
+    strict: Boolean = false
+  ): ZIO[Any, Throwable, List[Feature]] =
     for {
       files <- ZIO.attempt {
                  Option(directory.listFiles())
@@ -771,7 +822,7 @@ object GherkinParser {
                   } else {
                     ZIO
                       .foreachPar(files) { file =>
-                        parseFeatureFile(file).foldZIO(
+                        parseFeatureFile(file, strict).foldZIO(
                           failure = err =>
                             if (failFast) ZIO.fail(err)
                             else ZIO.logError(s"Skipping ${file.getAbsolutePath}: ${err.getMessage}").as(None),
