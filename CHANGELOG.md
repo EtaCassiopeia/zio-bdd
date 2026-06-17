@@ -2,7 +2,7 @@
 
 All notable changes to zio-bdd are documented here.
 
-## [Unreleased / v1.0.0]
+## [1.0.0] — 2026-06-16
 
 ### Added
 
@@ -23,6 +23,10 @@ All notable changes to zio-bdd are documented here.
   validating the emitted XML by parsing it back.
 - **ZIOBDDFrameworkSpec** unit-testing the sbt fingerprint, filterFeatures tag inheritance,
   scenarioNameFilter glob, and CompositeReporter delegation.
+- **Binary-compatibility checking** via sbt-mima-plugin, with the baseline established at
+  1.0.0 (1.0.x / 1.1 are verified against 1.0.0; runs in CI).
+- **Strict/lint parser mode** (`parseFeature(..., strict = true)`): flags an unrecognized line
+  appearing after a scenario's steps begin as a likely misspelled step keyword.
 
 ### Fixed
 
@@ -37,12 +41,14 @@ All notable changes to zio-bdd are documented here.
 ### Changed
 
 - `featureDir` (singular) is deprecated; use `featureDirs` (array) in `@Suite`.
+- **before/afterStep hook failures now fail the step** (fail-loud) instead of aborting the
+  entire feature run. A hook that fails or dies marks that step (and scenario) failed with the
+  hook's cause, and the run continues; a hook that handles its own errors leaves the step Passed.
 
 ### Future Work
 
 - `@retry(n)` annotation: planned for post-v1 to avoid breaking changes.
 - Multi-language Gherkin keyword support.
-- Binary-compatibility baseline via sbt-mima-plugin (post-v1).
 
 ---
 

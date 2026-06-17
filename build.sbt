@@ -35,12 +35,26 @@ lazy val commonDependencies = Seq(
   "dev.zio" %% "zio-test-sbt"          % "2.1.17" % Test
 )
 
+// Binary-compatibility checking. The baseline is established at 1.0.0: until a 1.x is published,
+// `previousStableVersion` is a 0.x tag and is filtered out (MiMa is a no-op), so the 1.0.0 release
+// itself is not checked against 0.1.0. From 1.0.0 onward, 1.0.x / 1.1 are verified against the
+// latest stable 1.x release.
+lazy val mimaSettings = Seq(
+  mimaPreviousArtifacts := previousStableVersion.value
+    // Only check against a final 1.x release — skip 0.x and pre-releases (RC/M/SNAPSHOT, which
+    // contain a '-'), so the 1.0.0 release itself is not checked against 0.1.0 or 1.0.0-RCx.
+    .filter(v => v.startsWith("1.") && !v.contains("-"))
+    .map(organization.value %% moduleName.value % _)
+    .toSet
+)
+
 lazy val root = (project in file("."))
   .aggregate(core, gherkin)
   .settings(
-    name           := "zio-bdd-root",
-    description    := "A ZIO-based BDD testing framework for Scala 3",
-    publish / skip := true
+    name                  := "zio-bdd-root",
+    description           := "A ZIO-based BDD testing framework for Scala 3",
+    publish / skip        := true,
+    mimaPreviousArtifacts := Set.empty // not published — MiMa is a no-op here
   )
   .dependsOn(core, gherkin)
 
@@ -56,13 +70,15 @@ lazy val core = (project in file("core"))
       "dev.zio"                %% "izumi-reflect"  % "3.0.2"
     ),
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
-    stepMethodGeneratorSettings
+    stepMethodGeneratorSettings,
+    mimaSettings
   )
 
 lazy val gherkin = (project in file("gherkin"))
   .settings(
     name := "zio-bdd-gherkin",
-    libraryDependencies ++= commonDependencies
+    libraryDependencies ++= commonDependencies,
+    mimaSettings
   )
 
 lazy val example = (project in file("example"))
@@ -72,5 +88,6 @@ lazy val example = (project in file("example"))
     libraryDependencies ++= commonDependencies,
     Test / testFrameworks    := Seq(new TestFramework("zio.bdd.ZIOBDDFramework")),
     Test / resourceDirectory := baseDirectory.value / "src" / "test" / "resources" / "features",
-    publish / skip           := true
+    publish / skip           := true,
+    mimaPreviousArtifacts    := Set.empty // not published — MiMa is a no-op here
   )
