@@ -9,7 +9,7 @@ This README provides instructions to run the tests for the `zio-bdd` example loc
 - **Dependencies**: Add the following to your `build.sbt`:
   ```scala
   libraryDependencies += "io.github.etacassiopeia" %% "zio-bdd" % "0.1.0" % Test
-  libraryDependencies += "dev.zio" %% "zio" % "2.1.16"
+  libraryDependencies += "dev.zio" %% "zio" % "2.1.17"
   Test / testFrameworks += new TestFramework("zio.bdd.ZIOBDDFramework")
   ```
 

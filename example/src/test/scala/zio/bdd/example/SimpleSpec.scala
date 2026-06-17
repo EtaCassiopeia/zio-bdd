@@ -29,7 +29,7 @@ object SimpleSpec extends ZIOSteps[GreetingService, ScenarioContext] {
     for {
         ctx <- ScenarioContext.get
         _   <- ZIO.logInfo(s"Greeting user ${ctx.userName}")
-        - <- ScenarioContext.update(_.copy(greeting = s"Hello, ${ctx.userName}!"))
+        _ <- ScenarioContext.update(_.copy(greeting = s"Hello, ${ctx.userName}!"))
     } yield ()
   }
 

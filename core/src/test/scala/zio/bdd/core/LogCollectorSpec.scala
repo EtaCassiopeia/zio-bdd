@@ -2,7 +2,6 @@ package zio.bdd.core
 
 import zio.*
 import zio.test.*
-import zio.test.Assertion.*
 
 object LogCollectorSpec extends ZIOSpecDefault {
 

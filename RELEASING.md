@@ -1,0 +1,75 @@
+# Releasing zio-bdd
+
+This document describes how to publish a new release of zio-bdd to Maven Central via Sonatype.
+
+## Prerequisites
+
+- GPG key configured for signing (used by `sbt-ci-release`).
+- Sonatype credentials in `~/.sbt/1.0/sonatype.sbt` or as environment variables:
+  ```
+  SONATYPE_USERNAME=<user>
+  SONATYPE_PASSWORD=<token>
+  ```
+- The `sonatypeCentralHost` is set in `build.sbt` via `sonatypeCredentialHost`.
+
+## Pre-release checklist
+
+1. All tests pass: `sbt clean test`
+2. No scalafmt violations: `sbt scalafmtCheckAll`
+3. No compilation warnings: `sbt compile` (check output for `-Wunused:imports` warnings)
+4. `CHANGELOG.md` updated with the new version entry.
+5. `README.md` version badge reflects the new version.
+6. All new public APIs are documented.
+
+## Versioning
+
+zio-bdd follows [Semantic Versioning](https://semver.org/):
+- MAJOR: breaking API changes (binary-incompatible).
+- MINOR: new features, backward-compatible.
+- PATCH: bug fixes, backward-compatible.
+
+## Release steps
+
+1. **Update version** (sbt-ci-release derives the version from git tags):
+   ```bash
+   git tag -s v1.0.0 -m "v1.0.0"
+   ```
+
+2. **Push the tag** to trigger the release workflow:
+   ```bash
+   git push origin v1.0.0
+   ```
+   The GitHub Actions workflow (`.github/workflows/release.yml`) runs `sbt ci-release`,
+   which signs and publishes the artifacts to Sonatype Central.
+
+3. **Verify on Maven Central** (can take 10-30 minutes to propagate):
+   - `https://search.maven.org/artifact/io.github.etacassiopeia/zio-bdd_3`
+
+4. **Create a GitHub release** from the tag with the CHANGELOG entry as description.
+
+## Local test publish
+
+To test the publish flow without pushing to Central:
+```bash
+sbt publishLocal
+```
+
+To verify the artifact resolves from a sibling project, add to that project's `build.sbt`:
+```scala
+libraryDependencies += "io.github.etacassiopeia" %% "zio-bdd" % "1.0.0" % Test
+```
+Then run `sbt update` in the sibling project.
+
+## Snapshot releases
+
+SNAPSHOT versions are published automatically on every push to `master` if
+`sbt-ci-release` is configured for snapshots. The snapshot version is derived
+from the last tag + commit hash: `1.0.1-SNAPSHOT`.
+
+## Module structure
+
+| Artifact               | Contents                                      |
+|------------------------|-----------------------------------------------|
+| `zio-bdd-gherkin`      | Gherkin parser (no ZIO dependency beyond core) |
+| `zio-bdd`              | Core runner, step DSL, reporters, hooks        |
+

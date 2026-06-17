@@ -16,7 +16,13 @@ inThisBuild(
       )
     ),
     sonatypeCredentialHost := sonatypeCentralHost,
-    sonatypeRepository     := "https://s01.oss.sonatype.org/service/local"
+    sonatypeRepository     := "https://s01.oss.sonatype.org/service/local",
+    scalacOptions ++= Seq(
+      "-deprecation",
+      "-feature",
+      "-unchecked",
+      "-Wunused:imports"
+    )
   )
 )
 
