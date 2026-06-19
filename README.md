@@ -80,6 +80,10 @@ transitively and are needed to derive `Schema[S]` for your state type.
 | [docs/running-tests.md](docs/running-tests.md) | CLI flags, reporters, parallelism |
 | [docs/examples.md](docs/examples.md) | Annotated end-to-end examples |
 
+## Used by
+
+- [zio-openfeature](https://github.com/EtaCassiopeia/zio-openfeature) — ZIO bindings for the OpenFeature spec, using zio-bdd for conformance testing
+
 ## License
 
 Apache 2.0 — see [LICENSE](LICENSE).
