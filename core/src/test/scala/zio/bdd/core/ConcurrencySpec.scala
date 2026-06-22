@@ -171,6 +171,39 @@ object ConcurrencySpec extends ZIOSpecDefault {
     } @@ TestAspect.withLiveClock
   )
 
+  private val autoParallelismSuite = suite("scenarioParallelism=0 auto-resolution")(
+    test("scenarioParallelism=0 runs scenarios concurrently, not sequentially") {
+      val inFlight    = new AtomicInteger(0)
+      val maxInFlight = new AtomicInteger(0)
+
+      class ConcurrentSteps extends ZIOSteps[Any, CountState] {
+        Given("state is set to " / int) { (n: Int) =>
+          for {
+            current <- ZIO.succeed(inFlight.incrementAndGet())
+            _       <- ZIO.succeed(maxInFlight.updateAndGet(_.max(current)))
+            _       <- ZIO.sleep(20.millis)
+            _       <- ScenarioContext.update(_ => CountState(n))
+            _       <- ZIO.succeed(inFlight.decrementAndGet())
+          } yield ()
+        }
+        Then("state should be " / int) { (expected: Int) =>
+          ScenarioContext.get.flatMap(s => Assertions.assertEquals(s.value, expected))
+        }
+      }
+
+      val steps = new ConcurrentSteps {}
+      for {
+        feature <- GherkinParser.parseFeature(makeFeature("AutoParallel", 8), F)
+        results <- FeatureExecutor.executeFeatures[Any, CountState](
+                     List(feature),
+                     steps.getSteps,
+                     steps,
+                     scenarioParallelism = 0 // documented as "auto" — must not be silently sequential
+                   )
+      } yield assertTrue(results.head.isPassed, maxInFlight.get() > 1)
+    } @@ TestAspect.withLiveClock
+  )
+
   private val noStateBleedSuite = suite("no State bleed across feature runs")(
     test("FeatureContext is reset between features under parallel execution") {
       // Each feature sets a feature-context Int value, then reads it back.
@@ -219,6 +252,7 @@ object ConcurrencySpec extends ZIOSpecDefault {
     isolationSuite,
     scenarioLayerCountSuite,
     backgroundParallelSuite,
+    autoParallelismSuite,
     noStateBleedSuite
   )
 }
