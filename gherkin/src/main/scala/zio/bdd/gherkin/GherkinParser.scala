@@ -225,6 +225,22 @@ object GherkinParser {
   private case class ExamplesLine(name: String, tags: List[String], lineNo: Int) extends LineToken
   private case class DescriptionLine(text: String, lineNo: Int)                  extends LineToken
 
+  /** Best-effort line number for a token, for use in diagnostics. */
+  private def lineNoOf(token: LineToken): Int = token match {
+    case EmptyLine | CommentLine(_)       => 0
+    case TagsLine(_, lineNo)              => lineNo
+    case FeatureLine(_, lineNo)           => lineNo
+    case RuleLine(_, lineNo)              => lineNo
+    case BackgroundLine(lineNo)           => lineNo
+    case ScenarioLine(_, _, lineNo)       => lineNo
+    case StepLine(_, _, lineNo)           => lineNo
+    case TableRowLine(_, lineNo)          => lineNo
+    case DocStringDelimiter(_, _, lineNo) => lineNo
+    case DocStringContent(_, lineNo)      => lineNo
+    case ExamplesLine(_, _, lineNo)       => lineNo
+    case DescriptionLine(_, lineNo)       => lineNo
+  }
+
   private val stepKeywords = Map(
     "Given" -> StepType.GivenStep,
     "When"  -> StepType.WhenStep,
@@ -718,10 +734,16 @@ object GherkinParser {
       val (featureName, featureLineNo) = cursor.consume { case FeatureLine(n, l) => (n, l) }
         .getOrElse(throw ParseError("Expected 'Feature:' keyword", 0, file))
 
-      // Optional description paragraph (narrative text before first Background/Scenario/Rule/@)
-      cursor.skipBlanks()
-      while (cursor.peek.exists(_.isInstanceOf[DescriptionLine])) cursor.advance()
-      cursor.skipBlanks()
+      // Optional description (narrative text before first Background/Scenario/Rule/@).
+      // May span multiple paragraphs separated by blank lines — skip blanks *between*
+      // description lines too, not just before the first one, so a blank line inside
+      // the description doesn't get mistaken for the end of the description block.
+      var continueDescription = true
+      while (continueDescription) {
+        cursor.skipBlanks()
+        if (cursor.peek.exists(_.isInstanceOf[DescriptionLine])) cursor.advance()
+        else continueDescription = false
+      }
 
       // Optional feature-level Background
       val featureBackground = cursor.peek match {
@@ -753,8 +775,14 @@ object GherkinParser {
           case Some(ExamplesLine(_, _, lineNo)) =>
             // Examples outside a scenario — report but skip
             cursor.advance()
-          case None => cont = false
-          case _    => cont = false
+          case None        => cont = false
+          case Some(other) =>
+            // An unrecognized line here (e.g. a stray description/step/table line that
+            // doesn't follow a Scenario/Rule keyword) would otherwise be dropped silently,
+            // ending the feature with zero scenarios and no indication anything is wrong.
+            // Surface it as a lint warning so a malformed file is at least flagged.
+            cursor.warn(ParseWarning(s"unrecognized line ignored: $other", lineNoOf(other), file))
+            cont = false
         }
       }
 
