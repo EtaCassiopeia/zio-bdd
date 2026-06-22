@@ -257,17 +257,28 @@ sbt "testOnly com.example.MySuite -- --parallelism 4"
 @Suite(parallelism = 4)
 ```
 
-### Scenario-level parallelism (`--scenario-parallelism`)
+### Scenario-level parallelism (`--scenario-parallelism` / `scenarioParallelism`)
 
-Controls how many scenarios within a single feature run concurrently. The default is `1`
-(sequential). Scenario-level parallelism requires that scenarios within a feature are
-independent and do not share mutable state.
+Controls how many scenarios within a single feature run concurrently. Scenario-level
+parallelism requires that scenarios within a feature are independent and do not share
+mutable state.
 
 ```sh
 sbt "testOnly com.example.MySuite -- --scenario-parallelism 2"
 ```
 
-There is no annotation field for `--scenario-parallelism`; it is CLI-only.
+```scala
+@Suite(scenarioParallelism = 2)
+```
+
+The default is `0`, meaning **auto**: the number of available processors (falling back to
+`2` if that can't be determined), so parallel scenario execution is on by default. Pass `1`
+explicitly to force fully sequential execution, or `auto`/`0` to make the auto behavior
+explicit:
+
+```sh
+sbt "testOnly com.example.MySuite -- --scenario-parallelism auto"
+```
 
 ### Combining both
 

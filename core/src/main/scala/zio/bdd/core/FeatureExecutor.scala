@@ -10,6 +10,21 @@ object FeatureExecutor {
   // Wall-clock duration measurement — independent of the ZIO Clock (and TestClock).
   private val nowNanos: UIO[Long] = ZIO.succeed(java.lang.System.nanoTime())
 
+  /**
+   * Resolves the `scenarioParallelism` auto sentinel (0) to the actual number
+   * of available processors, falling back to 2 if the JVM reports an
+   * unreasonable value. `Suite.scenarioParallelism()` documents `0` as "auto",
+   * and this is the single place that contract is honored, regardless of entry
+   * point (sbt test framework, CLI, or direct API use).
+   */
+  private def resolveParallelism(n: Int): Int =
+    if (n > 0) n
+    else
+      java.lang.Runtime.getRuntime.availableProcessors() match {
+        case p if p > 0 => p
+        case _          => 2
+      }
+
   def executeFeature[R: Tag, S: Tag: Default](
     feature: Feature,
     steps: List[StepDef[R, S]],
@@ -88,10 +103,11 @@ object FeatureExecutor {
           .provideSomeLayer[R & StepRegistry[R, S]](layer.orDie)
       }
 
-    if (scenarioParallelism <= 1)
+    val resolved = resolveParallelism(scenarioParallelism)
+    if (resolved <= 1)
       ZIO.foreach(expanded) { case (sc, flags) => runOne(sc, flags) }
     else
-      ZIO.foreachExec(expanded)(ExecutionStrategy.ParallelN(scenarioParallelism.max(1))) { case (sc, flags) =>
+      ZIO.foreachExec(expanded)(ExecutionStrategy.ParallelN(resolved)) { case (sc, flags) =>
         runOne(sc, flags)
       }
   }

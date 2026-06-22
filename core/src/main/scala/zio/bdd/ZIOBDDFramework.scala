@@ -187,7 +187,7 @@ class ZIOBDDTask(
       .run(
         updateFeatures,
         featureParallelism = config.featureParallelism,
-        scenarioParallelism = resolveParallelism(config.scenarioParallelism),
+        scenarioParallelism = config.scenarioParallelism,
         dryRun = config.dryRun
       )
       .tap(reporter.report)
@@ -371,18 +371,6 @@ class ZIOBDDTask(
         case Array("--scenario-parallelism", n)      => n.toIntOption.getOrElse(0)
       }
       .getOrElse(0)
-
-  /**
-   * Resolves the auto sentinel (0) to the actual number of available
-   * processors, falling back to 2 if the JVM reports an unreasonable value.
-   */
-  private def resolveParallelism(n: Int): Int =
-    if (n > 0) n
-    else
-      (java.lang.Runtime.getRuntime.availableProcessors() match {
-        case p if p > 0 => p
-        case _          => 2
-      })
 
   private def resolveFeatureFiles(config: BDDTestConfig, className: String, loggers: Array[Logger]): List[String] = {
     val paths =
