@@ -141,6 +141,25 @@ object GherkinParserComplianceSpec extends ZIOSpecDefault {
       check("Feature: Setup\n  Background:\n    Given the database is seeded\n") { f =>
         assertTrue(f.name == "Setup", f.scenarios.isEmpty)
       }
+    },
+    test("blank line between two description paragraphs does not drop the feature") {
+      // Regression: a blank line inside the free-text description block (between
+      // Feature: and the first Scenario/tag) was previously mistaken for the end
+      // of the description, leaving the second paragraph's line unconsumed and
+      // silently zeroing out the whole feature (reported with 0 scenarios parsed).
+      check(
+        """Feature: Example
+          |
+          |  First paragraph of description text, no special characters.
+          |
+          |  Second paragraph, also no special characters - just a blank line above it.
+          |
+          |  Scenario: Anything
+          |    Then some step
+          |""".stripMargin
+      ) { f =>
+        assertTrue(f.name == "Example", f.scenarios.length == 1, f.scenarios.head.steps.length == 1)
+      }
     }
   )
 
