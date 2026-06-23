@@ -75,20 +75,15 @@ object FeatureExecutor {
    */
   private def expandFlagScenarios(scenarios: List[Scenario]): List[(Scenario, Map[String, String])] =
     scenarios.flatMap { scenario =>
-      // Property scenarios are dispatched to PropertyExecutor, which has no notion of flag
-      // values — never multiply them per @flags(...) combination, or they'd run the full
-      // sample batch once per combination with the (ignored) flag value never applied.
-      if (scenario.propertyConfig.isDefined) List((scenario, Map.empty))
+      val flagMaps = FlagsTag.extractAll(scenario.tags)
+      if (flagMaps.isEmpty)
+        List((scenario, Map.empty))
       else
-        val flagMaps = FlagsTag.extractAll(scenario.tags)
-        if (flagMaps.isEmpty)
-          List((scenario, Map.empty))
-        else
-          flagMaps.map { flags =>
-            val label   = flags.toList.sortBy(_._1).map { case (k, v) => s"$k=$v" }.mkString(", ")
-            val renamed = scenario.copy(name = s"${scenario.name} [$label]")
-            (renamed, flags)
-          }
+        flagMaps.map { flags =>
+          val label   = flags.toList.sortBy(_._1).map { case (k, v) => s"$k=$v" }.mkString(", ")
+          val renamed = scenario.copy(name = s"${scenario.name} [$label]")
+          (renamed, flags)
+        }
     }
 
   private def runScenarios[R: Tag, S: Tag: Default](
@@ -103,8 +98,11 @@ object FeatureExecutor {
       ZIO.logAnnotate("scenarioId", scenario.id.toString) {
         scenario.propertyConfig match
           case Some(_) =>
-            // Property scenario — dispatch to PropertyExecutor, bypass flag expansion
-            PropertyExecutor.run[R, S](scenario, suite, genLookup)
+            // Property scenario — dispatch to PropertyExecutor. `flags` (if any @flags(...)
+            // tag is present) is forwarded so each sample uses suite.flagLayer like the
+            // literal path does; expandFlagScenarios already multiplied one full sample
+            // batch per @flags(...) combination upstream.
+            PropertyExecutor.run[R, S](scenario, suite, genLookup, flags)
           case None =>
             val meta = ScenarioMetadata.from(scenario, flags)
             val layer =

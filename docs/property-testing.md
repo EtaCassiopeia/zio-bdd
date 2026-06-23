@@ -383,14 +383,35 @@ column names, no data rows).
 
 ## Combining with `@flags(...)`
 
-`@flags(...)` (the [feature-flag matrix](testing-flags.md)) and `@property(...)` cannot be
-meaningfully combined. A property scenario carrying one or more `@flags(k=v)` tags runs
-exactly **once** — the flags are not multiplied into separate runs, and no flag value is ever
-injected into the property execution (`PropertyExecutor` has no notion of `flagLayer`). This is
-intentional: multiplying would otherwise mean running the full sample batch once per flag
-combination with the same (ignored) behaviour every time — wasted sample budget for zero signal.
-If you need to vary a value across a property run, drive it through `HasGen`/`columnGenLookup`
-(or a literal `@regression`-style Examples block per flag value) instead of `@flags(...)`.
+`@flags(...)` (the [feature-flag matrix](testing-flags.md)) and `@property(...)` compose: a
+property scenario carrying one or more `@flags(k=v)` tags runs one **full, independent sample
+batch per flag combination** — e.g. verifying an invariant holds with a feature flag both on and
+off, across N generated samples each time.
+
+```gherkin
+@flags(useNewPricing=true) @flags(useNewPricing=false)
+@property(samples=200, seed=7)
+Scenario Outline: Total is never negative regardless of pricing engine
+  Given a cart with <itemCount> items at <unitPrice> each
+  Then the total is never negative
+
+  Examples:
+    | itemCount | unitPrice |
+```
+
+This produces two scenario results — `... [useNewPricing=true]` and
+`... [useNewPricing=false]` — each running its own 200-sample batch. Each sample is executed
+with `suite.flagLayer(meta, flags)` (the same override point used for literal `@flags(...)`
+scenarios), so the flag values reach the environment the same way they would in a literal
+scenario:
+
+```scala
+override def flagLayer(meta: ScenarioMetadata, flags: Map[String, String]) =
+  environment >>> PricingConfig.layer(flags)
+```
+
+If you don't override `flagLayer`, it defaults to `scenarioLayer(meta)` — flags are visible in
+`meta.flagValues` but not injected into the environment, same as for literal scenarios.
 
 ---
 
@@ -531,5 +552,4 @@ sbt "example/testOnly zio.bdd.example.SimpleSpec -- --include-tags negative"
 | Full ZIO Test shrink-tree walking | v1 records the failing seed; minimal counterexample via shrink traversal is planned for v2 |
 | `Assume` / filter step to discard samples | Planned for v2 (`maxDiscarded` arg is reserved) |
 | Parallel sample execution | All samples for one property scenario run sequentially; scenario-level parallelism still applies across multiple property scenarios |
-| `@flags(...)` combined with `@property(...)` | Not supported — see [Combining with `@flags(...)`](#combining-with-flags) above |
 | Automatic built-in-type resolution | Not supported — every column, including built-in-typed ones, must be routed explicitly via `columnGenLookup`; see [Built-in `HasGen` instances](#built-in-hasgen-instances) above |

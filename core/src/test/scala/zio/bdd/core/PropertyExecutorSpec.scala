@@ -364,11 +364,20 @@ object PropertyExecutorSpec extends ZIOSpecDefault {
   // ── @flags(...) combined with @property(...) ────────────────────────────────
 
   private val flagsSuite = suite("@flags(...) on a property scenario")(
-    test("flags are ignored, not multiplied: scenario runs exactly once regardless of @flags(...) count") {
-      val invocations = new java.util.concurrent.atomic.AtomicInteger(0)
+    test("each @flags(...) combination runs its own full sample batch, with the flag map applied via flagLayer") {
+      val invocations   = new java.util.concurrent.atomic.AtomicInteger(0)
+      val capturedFlags = new java.util.concurrent.atomic.AtomicReference[List[Map[String, String]]](Nil)
+
       val steps = new ZIOSteps[Any, S]:
         Given("value " / int)((n: Int) => ZIO.unit)
         Then("ok")(ZIO.succeed(invocations.incrementAndGet()).unit)
+
+        override def flagLayer(
+          meta: zio.bdd.gherkin.ScenarioMetadata,
+          flags: Map[String, String]
+        ): ZLayer[Any, Throwable, Any] =
+          capturedFlags.updateAndGet(flags :: _)
+          scenarioLayer(meta)
 
       val lookup = new ColumnGenLookup:
         def byColumn(col: String): Option[HasGen[?]] = col match
@@ -393,12 +402,16 @@ object PropertyExecutorSpec extends ZIOSpecDefault {
         }
         .map { results =>
           val scenarioResults = results.head.scenarioResults
+          val flagsSeen       = capturedFlags.get()
           assertTrue(
-            // One scenario result, not two (one per @flags(...) combination).
-            scenarioResults.length == 1,
-            scenarioResults.head.isPassed,
-            // Exactly one batch of 7 samples ran — not 14 (one batch per flag combo).
-            invocations.get() == 7
+            // One scenario result per @flags(...) combination.
+            scenarioResults.length == 2,
+            scenarioResults.forall(_.isPassed),
+            // Two full batches of 7 samples each — flagLayer (and thus a real sample run)
+            // was invoked once per sample per flag combination, not skipped.
+            invocations.get() == 14,
+            flagsSeen.contains(Map("a" -> "true")),
+            flagsSeen.contains(Map("a" -> "false"))
           )
         }
     }

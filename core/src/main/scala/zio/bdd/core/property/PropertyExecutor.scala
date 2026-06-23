@@ -31,7 +31,8 @@ object PropertyExecutor:
   def run[R: Tag, S: Tag: Default](
     scenario: Scenario,
     suite: ZIOSteps[R, S],
-    genLookup: ColumnGenLookup
+    genLookup: ColumnGenLookup,
+    flags: Map[String, String] = Map.empty
   ): ZIO[R & StepRegistry[R, S], Nothing, ScenarioResult] =
     scenario.propertyConfig match
       case None =>
@@ -49,13 +50,14 @@ object PropertyExecutor:
           )
         )
       case Some(config) =>
-        runProperty(scenario, config, suite, genLookup)
+        runProperty(scenario, config, suite, genLookup, flags)
 
   private def runProperty[R: Tag, S: Tag: Default](
     scenario: Scenario,
     config: PropertyTag.PropertyConfig,
     suite: ZIOSteps[R, S],
-    lookup: ColumnGenLookup
+    lookup: ColumnGenLookup,
+    flags: Map[String, String]
   ): ZIO[R & StepRegistry[R, S], Nothing, ScenarioResult] =
     resolveColumnGens(scenario, lookup).flatMap {
       case Left(err) =>
@@ -65,8 +67,8 @@ object PropertyExecutor:
           seed      <- config.seed.map(ZIO.succeed).getOrElse(Random.nextLong)
           replayRec <- if (config.replay) PropertyFailureStore.read(scenario) else ZIO.none
           result <- replayRec match
-                      case Some(rec) => handleReplay(scenario, config, suite, colGens, rec, seed)
-                      case None      => runFreshSamples(scenario, config, suite, colGens, seed)
+                      case Some(rec) => handleReplay(scenario, config, suite, colGens, rec, seed, flags)
+                      case None      => runFreshSamples(scenario, config, suite, colGens, seed, flags)
         } yield result
     }
 
@@ -76,15 +78,16 @@ object PropertyExecutor:
     suite: ZIOSteps[R, S],
     colGens: List[ColumnGen],
     rec: PropertyFailureStore.FailureRecord,
-    freshSeed: Long
+    freshSeed: Long,
+    flags: Map[String, String]
   ): ZIO[R & StepRegistry[R, S], Nothing, ScenarioResult] =
     val replayValues = colGens.map(cg => cg.name -> rec.shrunkValues.getOrElse(cg.name, ""))
-    runOneSample(scenario, suite, replayValues).flatMap {
+    runOneSample(scenario, suite, replayValues, flags).flatMap {
       case None =>
         // The previously-falsifying sample now passes — the bug is fixed. Clear the stale
         // failure record and proceed with a full fresh batch of samples instead of just
         // reporting the one-sample replay as the whole scenario result.
-        PropertyFailureStore.clear(scenario) *> runFreshSamples(scenario, config, suite, colGens, freshSeed)
+        PropertyFailureStore.clear(scenario) *> runFreshSamples(scenario, config, suite, colGens, freshSeed, flags)
       case Some(failResult) =>
         // Still failing
         ZIO.succeed(
@@ -105,7 +108,8 @@ object PropertyExecutor:
     config: PropertyTag.PropertyConfig,
     suite: ZIOSteps[R, S],
     colGens: List[ColumnGen],
-    seed: Long
+    seed: Long,
+    flags: Map[String, String]
   ): ZIO[R & StepRegistry[R, S], Nothing, ScenarioResult] =
     ZIO.logAnnotate("propertyScenario", scenario.name) {
       // Run up to `config.samples` iterations. Short-circuit on first failure.
@@ -114,7 +118,7 @@ object PropertyExecutor:
         .iterate((0, Option.empty[ScenarioResult]))(s => s._2.isEmpty && s._1 < config.samples) { s =>
           val idx = s._1
           sampleColumnValues(colGens, seed, idx).flatMap { colValues =>
-            runOneSample(scenario, suite, colValues).flatMap {
+            runOneSample(scenario, suite, colValues, flags).flatMap {
               case None =>
                 ZIO.succeed((idx + 1, None))
               case Some(failResult) =>
@@ -234,13 +238,15 @@ object PropertyExecutor:
   private def runOneSample[R: Tag, S: Tag: Default](
     scenario: Scenario,
     suite: ZIOSteps[R, S],
-    colValues: List[(String, String)]
+    colValues: List[(String, String)],
+    flags: Map[String, String]
   ): ZIO[R & StepRegistry[R, S], Nothing, Option[ScenarioResult]] =
     val substituted = substituteSteps(scenario, colValues.toMap)
-    val meta        = zio.bdd.gherkin.ScenarioMetadata.from(substituted)
+    val meta        = zio.bdd.gherkin.ScenarioMetadata.from(substituted, flags)
+    val layer       = if (flags.isEmpty) suite.scenarioLayer(meta) else suite.flagLayer(meta, flags)
     ScenarioExecutor
-      .executeScenario[R, S](substituted, suite)
-      .provideSomeLayer[R & StepRegistry[R, S]](suite.scenarioLayer(meta).orDie)
+      .executeScenario[R, S](substituted, suite, flagValues = flags)
+      .provideSomeLayer[R & StepRegistry[R, S]](layer.orDie)
       .map(result => if (result.isPassed) None else Some(result))
 
   /** Substitute `<placeholder>` in step patterns with sampled string values. */
