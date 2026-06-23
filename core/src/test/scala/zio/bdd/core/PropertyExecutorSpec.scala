@@ -45,7 +45,9 @@ object PropertyExecutorSpec extends ZIOSpecDefault {
     failSuite,
     generatorSuite,
     mixedSuite,
-    stateSuite
+    stateSuite,
+    flagsSuite,
+    replaySuite
   )
 
   // ── Passing property scenarios ─────────────────────────────────────────────
@@ -356,6 +358,194 @@ object PropertyExecutorSpec extends ZIOSpecDefault {
             invocations.get() == 10
           )
         }
+    }
+  )
+
+  // ── @flags(...) combined with @property(...) ────────────────────────────────
+
+  private val flagsSuite = suite("@flags(...) on a property scenario")(
+    test("flags are ignored, not multiplied: scenario runs exactly once regardless of @flags(...) count") {
+      val invocations = new java.util.concurrent.atomic.AtomicInteger(0)
+      val steps = new ZIOSteps[Any, S]:
+        Given("value " / int)((n: Int) => ZIO.unit)
+        Then("ok")(ZIO.succeed(invocations.incrementAndGet()).unit)
+
+      val lookup = new ColumnGenLookup:
+        def byColumn(col: String): Option[HasGen[?]] = col match
+          case "n" => Some(HasGen[Int])
+          case _   => None
+
+      GherkinParser
+        .parseFeature(
+          """Feature: Flags plus property
+            |  @flags(a=true) @flags(a=false)
+            |  Scenario Outline: flagged property
+            |    Given value <n>
+            |    Then ok
+            |    @property(samples=7, replay=false)
+            |    Examples:
+            |      | n |
+            |""".stripMargin,
+          "flags-plus-property.feature"
+        )
+        .flatMap { f =>
+          FeatureExecutor.executeFeatures[Any, S](List(f), steps.getSteps, steps, genLookup = lookup)
+        }
+        .map { results =>
+          val scenarioResults = results.head.scenarioResults
+          assertTrue(
+            // One scenario result, not two (one per @flags(...) combination).
+            scenarioResults.length == 1,
+            scenarioResults.head.isPassed,
+            // Exactly one batch of 7 samples ran — not 14 (one batch per flag combo).
+            invocations.get() == 7
+          )
+        }
+    }
+  )
+
+  // ── Failure replay across runs (writes/reads real .zio-bdd/failures files) ─
+
+  private val replaySuite = suite("Failure replay store")(
+    test("failing run writes a failure file; next run replays it; fixing the bug clears it and runs fresh samples") {
+      val shouldFail = new java.util.concurrent.atomic.AtomicBoolean(true)
+      val freshRuns  = new java.util.concurrent.atomic.AtomicInteger(0)
+
+      def stepsFor() = new ZIOSteps[Any, S]:
+        Given("value " / int)((n: Int) => ZIO.unit)
+        Then("maybe fails") {
+          ZIO.succeed(freshRuns.incrementAndGet()) *>
+            ZIO.fail(new RuntimeException("deliberate failure")).when(shouldFail.get()).unit
+        }
+
+      val lookup = new ColumnGenLookup:
+        def byColumn(col: String): Option[HasGen[?]] = col match
+          case "n" => Some(HasGen[Int])
+          case _   => None
+
+      val feature =
+        """Feature: Replay across runs
+          |  Scenario Outline: maybe fails
+          |    Given value <n>
+          |    Then maybe fails
+          |    @property(samples=5, seed=4242)
+          |    Examples:
+          |      | n |
+          |""".stripMargin
+
+      def run() =
+        GherkinParser.parseFeature(feature, "replay-across-runs.feature").flatMap { f =>
+          FeatureExecutor.executeFeatures[Any, S](List(f), stepsFor().getSteps, stepsFor(), genLookup = lookup)
+        }
+
+      val failuresDir = java.nio.file.Paths.get(".zio-bdd", "failures").toFile
+      def failureFiles(): List[java.io.File] =
+        Option(failuresDir.listFiles()).fold(List.empty[java.io.File])(_.filter(_.getName.endsWith(".json")).toList)
+
+      for {
+        _ <- ZIO.attempt(failureFiles().foreach(_.delete())).ignore
+
+        // Run 1: always fails → failure file should be written.
+        firstResults   <- run()
+        firstScenario   = firstResults.head.scenarioResults.head
+        existsAfterRun1 = failureFiles().nonEmpty
+
+        // Run 2: still fails, but replay should consult the stored seed first
+        // rather than burning a fresh batch of `samples` runs.
+        freshRunsBeforeRun2 = freshRuns.get()
+        secondResults      <- run()
+        secondScenario      = secondResults.head.scenarioResults.head
+        freshRunsDuringRun2 = freshRuns.get() - freshRunsBeforeRun2
+
+        // Fix the bug, run again: replay should now pass.
+        _                  <- ZIO.succeed(shouldFail.set(false))
+        freshRunsBeforeRun3 = freshRuns.get()
+        thirdResults       <- run()
+        thirdScenario       = thirdResults.head.scenarioResults.head
+        freshRunsDuringRun3 = freshRuns.get() - freshRunsBeforeRun3
+        existsAfterRun3     = failureFiles().nonEmpty
+
+        _ <- ZIO.attempt(failureFiles().foreach(_.delete())).ignore
+      } yield assertTrue(
+        !firstScenario.isPassed,
+        existsAfterRun1,
+        !secondScenario.isPassed,
+        secondScenario.error.exists(_.getMessage.contains("replayed from failure store")),
+        // Replaying one stored sample should cost far fewer step invocations than a fresh 5-sample batch.
+        freshRunsDuringRun2 < 5,
+        thirdScenario.isPassed,
+        !existsAfterRun3,
+        // Once the replay passes, a full fresh batch of samples should still run.
+        freshRunsDuringRun3 >= 5
+      )
+    },
+    test("stale failure record (scenario body changed) is discarded, not replayed") {
+      val freshRuns = new java.util.concurrent.atomic.AtomicInteger(0)
+
+      def failingFeature =
+        """Feature: Stale replay
+          |  Scenario Outline: maybe fails
+          |    Given value <n>
+          |    Then it always fails
+          |    @property(samples=4, seed=123)
+          |    Examples:
+          |      | n |
+          |""".stripMargin
+
+      // Same scenario name, edited step text → different bodyHash, and this version always
+      // passes. If the stale record were wrongly replayed as a single sample, only one
+      // invocation would happen; running the full fresh batch means all 4 samples execute.
+      def editedPassingFeature =
+        """Feature: Stale replay
+          |  Scenario Outline: maybe fails
+          |    Given value <n>
+          |    Then it now always passes
+          |    @property(samples=4, seed=123)
+          |    Examples:
+          |      | n |
+          |""".stripMargin
+
+      val failingSteps = new ZIOSteps[Any, S]:
+        Given("value " / int)((n: Int) => ZIO.unit)
+        Then("it always fails")(ZIO.fail(new RuntimeException("deliberate failure")).unit)
+
+      def passingSteps() = new ZIOSteps[Any, S]:
+        Given("value " / int)((n: Int) => ZIO.unit)
+        Then("it now always passes")(ZIO.succeed(freshRuns.incrementAndGet()).unit)
+
+      val lookup = new ColumnGenLookup:
+        def byColumn(col: String): Option[HasGen[?]] = col match
+          case "n" => Some(HasGen[Int])
+          case _   => None
+
+      val failuresDir = java.nio.file.Paths.get(".zio-bdd", "failures").toFile
+      def failureFiles(): List[java.io.File] =
+        Option(failuresDir.listFiles()).fold(List.empty[java.io.File])(_.filter(_.getName.endsWith(".json")).toList)
+
+      for {
+        _ <- ZIO.attempt(failureFiles().foreach(_.delete())).ignore
+
+        // Run 1: fails, writes a failure record keyed to this exact step body.
+        f1               <- GherkinParser.parseFeature(failingFeature, "stale-replay.feature")
+        _                <- FeatureExecutor.executeFeatures[Any, S](List(f1), failingSteps.getSteps, failingSteps, genLookup = lookup)
+        recordedAfterRun1 = failureFiles().nonEmpty
+
+        // Run 2: edited step body → bodyHash no longer matches. The stale record must be
+        // discarded (full fresh batch runs), not replayed as a single stored sample.
+        f2 <- GherkinParser.parseFeature(editedPassingFeature, "stale-replay.feature")
+        _ <- FeatureExecutor.executeFeatures[Any, S](
+               List(f2),
+               passingSteps().getSteps,
+               passingSteps(),
+               genLookup = lookup
+             )
+
+        _ <- ZIO.attempt(failureFiles().foreach(_.delete())).ignore
+      } yield assertTrue(
+        recordedAfterRun1,
+        // All 4 fresh samples ran — not a single-sample replay of the stale record.
+        freshRuns.get() == 4
+      )
     }
   )
 }

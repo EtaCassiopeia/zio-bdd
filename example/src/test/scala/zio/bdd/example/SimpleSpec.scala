@@ -9,10 +9,16 @@ import zio.bdd.example.{Config => AppConfig}
 import zio.schema.{DeriveSchema, Schema}
 import zio.test.Gen
 
-case class ScenarioContext(userName: String, greeting: String)
+case class ScenarioContext(userName: String, greeting: String, title: String = "")
 
 object ScenarioContext:
   implicit val schema: Schema[ScenarioContext] = DeriveSchema.gen[ScenarioContext]
+
+// A small domain type — demonstrates wiring `given HasGen[T]` for a type that isn't one of
+// HasGen's primitive built-ins (Int/Long/Double/Boolean/String/UUID), as opposed to the
+// `HasGen.named(...)` override used for the `name` column below.
+enum Title:
+  case Mr, Ms, Dr
 
 @Suite(
   featureDirs = Array("example/src/test/resources/features"),
@@ -33,6 +39,12 @@ object SimpleSpec extends ZIOSteps[GreetingService, ScenarioContext]:
       rest  <- Gen.stringBounded(1, 9)(Gen.char('a', 'z'))
     } yield first.toString + rest
   )
+
+  // Domain-type generator via Scala 3 `given` — the other way to supply a `HasGen[T]`,
+  // for a type that's specific to this suite rather than a reusable named override.
+  given HasGen[Title] with
+    def gen            = Gen.elements(Title.Mr, Title.Ms, Title.Dr)
+    override def label = "HasGen[Title]"
 
   // ── Functional BDD steps (simple.feature) ────────────────────────────────
 
@@ -101,13 +113,29 @@ object SimpleSpec extends ZIOSteps[GreetingService, ScenarioContext]:
     }
   }
 
+  Given("a title " / string) { (title: String) =>
+    ScenarioContext.update(_.copy(title = title))
+  }
+
+  Then("the title is a known honorific") {
+    ScenarioContext.get.flatMap { ctx =>
+      val known = Title.values.map(_.toString).toSet
+      assertTrue(known.contains(ctx.title), s"Expected one of $known, got '${ctx.title}'")
+    }
+  }
+
   // ── Column generator lookup ────────────────────────────────────────────
-  // Routes the `name` column in @property Examples blocks to the named
-  // "name" generator registered above.
+  // Routes @property Examples columns to their HasGen instance. Three distinct styles:
+  //   - "name"  → a *named* override registered above via HasGen.named("name")(...)
+  //   - "title" → a *domain-type* generator resolved via the `given HasGen[Title]` above
+  //   - any built-in-typed column (Int/Long/Double/Boolean/String/UUID) would still need
+  //     an entry here too — HasGen's built-ins are summonable, but column→type routing is
+  //     always explicit; there's no automatic name-to-type inference.
   override def columnGenLookup: ColumnGenLookup = new ColumnGenLookup:
     def byColumn(col: String): Option[HasGen[?]] = col match
-      case "name" => HasGen.resolve("name")
-      case _      => None
+      case "name"  => HasGen.resolve("name")
+      case "title" => Some(HasGen[Title])
+      case _       => None
 
   // ── ZLayer ────────────────────────────────────────────────────────────────
 

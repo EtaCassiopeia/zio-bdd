@@ -133,11 +133,21 @@ object PropertyFailureStore:
       if (!f.exists()) None
       else {
         val json = scala.io.Source.fromFile(f).mkString
-        decodeJson(json).flatMap { rec =>
-          if (rec.bodyHash == bodyHash(scenario)) Some(rec) else None
-        }
+        decodeJson(json)
       }
-    }.orElse(ZIO.none)
+    }
+      .orElse(ZIO.none)
+      .flatMap {
+        case Some(rec) if rec.bodyHash == bodyHash(scenario) => ZIO.some(rec)
+        case Some(_)                                         =>
+          // The scenario's step list changed since this failure was recorded — the stored
+          // counterexample no longer corresponds to the current scenario body. Discard it
+          // rather than replaying a test that no longer exists in this form.
+          ZIO.logWarning(
+            s"Discarding stale property-failure record for '${scenario.name}' — scenario body changed since it was recorded."
+          ) *> clear(scenario).as(None)
+        case None => ZIO.none
+      }
 
   def write(
     scenario: Scenario,

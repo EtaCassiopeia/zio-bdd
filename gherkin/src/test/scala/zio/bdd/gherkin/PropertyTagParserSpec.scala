@@ -124,6 +124,54 @@ object PropertyTagParserSpec extends ZIOSpecDefault {
         )
       }
     },
+    test("@property on the Scenario Outline line (not the Examples block) is also detected") {
+      parse(
+        """Feature: Tag placement
+          |  @property(samples=30, seed=7)
+          |  Scenario Outline: tagged on outline line
+          |    Given account balance <amount>
+          |    Then it works
+          |
+          |    Examples:
+          |      | amount |
+          |""".stripMargin
+      ).map { feature =>
+        val sc = feature.scenarios.head
+        assertTrue(
+          feature.scenarios.length == 1,
+          sc.propertyConfig.isDefined,
+          sc.propertyConfig.get.samples == 30,
+          sc.propertyConfig.get.seed.contains(7L)
+        )
+      }
+    },
+    test("@property on the Scenario Outline line and on the Examples block both detect identically") {
+      def cfgFor(content: String) = parse(content).map(_.scenarios.head.propertyConfig)
+      val onOutline =
+        """Feature: F
+          |  @property(samples=15)
+          |  Scenario Outline: x
+          |    Given v <n>
+          |    Then ok
+          |
+          |    Examples:
+          |      | n |
+          |""".stripMargin
+      val onBlock =
+        """Feature: F
+          |  Scenario Outline: x
+          |    Given v <n>
+          |    Then ok
+          |
+          |    @property(samples=15)
+          |    Examples:
+          |      | n |
+          |""".stripMargin
+      for {
+        c1 <- cfgFor(onOutline)
+        c2 <- cfgFor(onBlock)
+      } yield assertTrue(c1.isDefined, c2.isDefined, c1.get.samples == c2.get.samples)
+    },
     test("literal Examples block is NOT affected by @property on a sibling block") {
       parse(
         """Feature: Mixed

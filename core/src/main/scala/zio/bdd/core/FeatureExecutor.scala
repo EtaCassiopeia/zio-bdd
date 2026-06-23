@@ -75,15 +75,20 @@ object FeatureExecutor {
    */
   private def expandFlagScenarios(scenarios: List[Scenario]): List[(Scenario, Map[String, String])] =
     scenarios.flatMap { scenario =>
-      val flagMaps = FlagsTag.extractAll(scenario.tags)
-      if (flagMaps.isEmpty)
-        List((scenario, Map.empty))
+      // Property scenarios are dispatched to PropertyExecutor, which has no notion of flag
+      // values — never multiply them per @flags(...) combination, or they'd run the full
+      // sample batch once per combination with the (ignored) flag value never applied.
+      if (scenario.propertyConfig.isDefined) List((scenario, Map.empty))
       else
-        flagMaps.map { flags =>
-          val label   = flags.toList.sortBy(_._1).map { case (k, v) => s"$k=$v" }.mkString(", ")
-          val renamed = scenario.copy(name = s"${scenario.name} [$label]")
-          (renamed, flags)
-        }
+        val flagMaps = FlagsTag.extractAll(scenario.tags)
+        if (flagMaps.isEmpty)
+          List((scenario, Map.empty))
+        else
+          flagMaps.map { flags =>
+            val label   = flags.toList.sortBy(_._1).map { case (k, v) => s"$k=$v" }.mkString(", ")
+            val renamed = scenario.copy(name = s"${scenario.name} [$label]")
+            (renamed, flags)
+          }
     }
 
   private def runScenarios[R: Tag, S: Tag: Default](

@@ -35,3 +35,19 @@ Feature: Greeting invariants
 
     Examples:
       | name |
+
+  # Two HasGen columns in the same property scenario, each resolved a different way:
+  #   - name  → named override (HasGen.named("name"))
+  #   - title → domain-type generator (given HasGen[Title])
+  # Also demonstrates the @property tag placed on the Scenario Outline line itself,
+  # rather than on the Examples: block — both placements are equivalent.
+  @positive @property(samples=300, seed=17)
+  Scenario Outline: Greeting always contains the name regardless of title
+    Given a user named <name>
+    And a title <title>
+    When the user is greeted
+    Then the title is a known honorific
+    And the greeting contains the name
+
+    Examples:
+      | name | title |

@@ -65,10 +65,8 @@ object PropertyExecutor:
           seed      <- config.seed.map(ZIO.succeed).getOrElse(Random.nextLong)
           replayRec <- if (config.replay) PropertyFailureStore.read(scenario) else ZIO.none
           result <- replayRec match
-                      case Some(rec) if rec.bodyHash == PropertyFailureStore.bodyHash(scenario) =>
-                        handleReplay(scenario, config, suite, colGens, rec, seed)
-                      case _ =>
-                        runFreshSamples(scenario, config, suite, colGens, seed)
+                      case Some(rec) => handleReplay(scenario, config, suite, colGens, rec, seed)
+                      case None      => runFreshSamples(scenario, config, suite, colGens, seed)
         } yield result
     }
 
@@ -81,19 +79,24 @@ object PropertyExecutor:
     freshSeed: Long
   ): ZIO[R & StepRegistry[R, S], Nothing, ScenarioResult] =
     val replayValues = colGens.map(cg => cg.name -> rec.shrunkValues.getOrElse(cg.name, ""))
-    runOneSample(scenario, suite, replayValues).map {
+    runOneSample(scenario, suite, replayValues).flatMap {
       case None =>
-        buildPassResult(scenario, rec.seed, sampleCount = 0, colGens, replayPassed = true)
+        // The previously-falsifying sample now passes — the bug is fixed. Clear the stale
+        // failure record and proceed with a full fresh batch of samples instead of just
+        // reporting the one-sample replay as the whole scenario result.
+        PropertyFailureStore.clear(scenario) *> runFreshSamples(scenario, config, suite, colGens, freshSeed)
       case Some(failResult) =>
         // Still failing
-        buildFailureResult(
-          scenario = scenario,
-          seed = rec.seed,
-          sampleIndex = rec.sampleIndex,
-          shrunkValues = rec.shrunkValues,
-          generatorLabels = colGens.map(cg => cg.name -> cg.label).toMap,
-          originalResult = failResult,
-          isReplay = true
+        ZIO.succeed(
+          buildFailureResult(
+            scenario = scenario,
+            seed = rec.seed,
+            sampleIndex = rec.sampleIndex,
+            shrunkValues = rec.shrunkValues,
+            generatorLabels = colGens.map(cg => cg.name -> cg.label).toMap,
+            originalResult = failResult,
+            isReplay = true
+          )
         )
     }
 
@@ -157,13 +160,10 @@ object PropertyExecutor:
     scenario: Scenario,
     seed: Long,
     sampleCount: Int,
-    colGens: List[ColumnGen],
-    replayPassed: Boolean = false
+    colGens: List[ColumnGen]
   ): ScenarioResult =
     val genSummary = colGens.map(cg => s"${cg.name} (${cg.label})").mkString(", ")
-    val label =
-      if (replayPassed) s"replay passed (seed=$seed)"
-      else s"$sampleCount samples passed, seed=$seed"
+    val label      = s"$sampleCount samples passed, seed=$seed"
     val summaryStep = Step(
       stepType = StepType.GivenStep,
       pattern = s"[property] $label — generators: $genSummary"
