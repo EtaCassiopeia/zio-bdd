@@ -27,9 +27,47 @@ class AmbiguousStepDefinitionException(stepType: StepType, input: StepInput, pat
         "\nRename one of the step definitions to remove the ambiguity."
     )
 
+/**
+ * Represents all ways resolving a `@property` step template (one that still has
+ * `<col>` placeholders, e.g. "an account with balance <balance>") against the
+ * registry can fail.
+ */
+sealed trait TemplateLookupError extends Product with Serializable:
+  def toException: Throwable
+
+/** No registered step definition structurally matches the given template. */
+final case class NoMatchingTemplate(stepType: StepType, template: String) extends TemplateLookupError:
+  def toException: Throwable =
+    new RuntimeException(s"No step definition structurally matches $stepType template: '$template'")
+
+/** Two or more step definitions structurally match the same template. */
+final case class AmbiguousTemplate(stepType: StepType, template: String, patterns: List[String])
+    extends TemplateLookupError:
+  def toException: Throwable = new AmbiguousTemplateException(stepType, template, patterns)
+
+/**
+ * Thrown when two or more step definitions structurally match the same
+ * template.
+ */
+class AmbiguousTemplateException(stepType: StepType, template: String, patterns: List[String])
+    extends RuntimeException(
+      s"Ambiguous step definitions for $stepType template '$template'.\n" +
+        s"Matched ${patterns.length} definitions structurally:\n" +
+        patterns.zipWithIndex.map { case (p, i) => s"  ${i + 1}. $p" }.mkString("\n") +
+        "\nRename one of the step definitions to remove the ambiguity."
+    )
+
 trait StepRegistry[R, S]:
   /** Look up the effect to run for a given step. */
   def findStep(stepType: StepType, input: StepInput): IO[StepLookupError, RIO[R & State[S] & Scope, Unit]]
+
+  /**
+   * Resolve which extractor governs each `<col>` placeholder in a `@property`
+   * step template, by structurally matching it against the registered StepDefs
+   * for `stepType` (see `StepExpression.structuralMatch`). Returns the ordered
+   * `(columnName, Tag[_])` pairs from whichever StepDef matches.
+   */
+  def resolveTemplateColumns(stepType: StepType, template: String): IO[TemplateLookupError, List[(String, Tag[?])]]
 
 final case class StepRegistryLive[R, S](steps: List[StepDef[R, S]]) extends StepRegistry[R, S]:
   // Index definitions by their declared keyword once at construction, so per-step lookup
@@ -78,6 +116,13 @@ final case class StepRegistryLive[R, S](steps: List[StepDef[R, S]]) extends Step
     }
   }
 
+  // The definition with the fewest extractor placeholders is the most specific (most
+  // literal) one. Shared by literal-text disambiguation (`disambiguate`) and template
+  // disambiguation (`disambiguateTemplate`) — both prefer the same specificity ordering.
+  private def extractorCount(sd: StepDef[R, S]): Int = sd match {
+    case StepDefImpl(_, expr, _) => expr.parts.count { case _: Extractor[?] => true; case _ => false }
+  }
+
   // When several definitions match the same text, prefer the most specific one —
   // the definition with the fewest extractor placeholders. This lets a literal step
   // like `the response body is not empty` win over a wildcard `the response body is {string}`.
@@ -87,15 +132,64 @@ final case class StepRegistryLive[R, S](steps: List[StepDef[R, S]]) extends Step
     stepType: StepType,
     input: StepInput
   ): IO[StepLookupError, RIO[R & State[S] & Scope, Unit]] = {
-    def extractorCount(sd: StepDef[R, S]): Int = sd match {
-      case StepDefImpl(_, expr, _) => expr.parts.count { case _: Extractor[?] => true; case _ => false }
-    }
     val fewest  = matches.map { case (sd, _) => extractorCount(sd) }.min
     val winners = matches.filter { case (sd, _) => extractorCount(sd) == fewest }
     winners match {
       case (_, effect) :: Nil => ZIO.succeed(effect)
       case _ =>
         ZIO.fail(AmbiguousStep(stepType, input, winners.map { case (StepDefImpl(_, expr, _), _) => expr.toString }))
+    }
+  }
+
+  def resolveTemplateColumns(
+    stepType: StepType,
+    template: String
+  ): IO[TemplateLookupError, List[(String, Tag[?])]] = {
+    def structuralMatchesFor(st: StepType): List[(StepDef[R, S], List[(String, Tag[?])])] =
+      byKeyword
+        .getOrElse(st, Nil)
+        .collect { case sd @ StepDefImpl(_, expr, _) =>
+          expr.structuralMatch(template).map(cols => (sd, cols))
+        }
+        .flatten
+
+    val typedMatches = structuralMatchesFor(stepType)
+    typedMatches match {
+      case Nil =>
+        // Same fallback chain as findStep: And steps as universal glue, then any step type.
+        val andMatches = structuralMatchesFor(StepType.AndStep)
+        andMatches match {
+          case (_, cols) :: Nil => ZIO.succeed(cols)
+          case Nil =>
+            val allMatches = steps.collect { case sd @ StepDefImpl(_, expr, _) =>
+              expr.structuralMatch(template).map(cols => (sd, cols))
+            }.flatten
+            allMatches match {
+              case Nil              => ZIO.fail(NoMatchingTemplate(stepType, template))
+              case (_, cols) :: Nil => ZIO.succeed(cols)
+              case multiple         => disambiguateTemplate(multiple, stepType, template)
+            }
+          case multiple => disambiguateTemplate(multiple, stepType, template)
+        }
+      case (_, cols) :: Nil => ZIO.succeed(cols)
+      case multiple         => disambiguateTemplate(multiple, stepType, template)
+    }
+  }
+
+  // Same fewest-extractors specificity heuristic as `disambiguate`, applied to templates.
+  private def disambiguateTemplate(
+    matches: List[(StepDef[R, S], List[(String, Tag[?])])],
+    stepType: StepType,
+    template: String
+  ): IO[TemplateLookupError, List[(String, Tag[?])]] = {
+    val fewest  = matches.map { case (sd, _) => extractorCount(sd) }.min
+    val winners = matches.filter { case (sd, _) => extractorCount(sd) == fewest }
+    winners match {
+      case (_, cols) :: Nil => ZIO.succeed(cols)
+      case _ =>
+        ZIO.fail(
+          AmbiguousTemplate(stepType, template, winners.map { case (StepDefImpl(_, expr, _), _) => expr.toString })
+        )
     }
   }
 
@@ -138,3 +232,9 @@ object StepRegistry:
     input: StepInput
   ): ZIO[StepRegistry[R, S], StepLookupError, RIO[R & State[S] & Scope, Unit]] =
     ZIO.serviceWithZIO[StepRegistry[R, S]](_.findStep(stepType, input))
+
+  def resolveTemplateColumns[R: Tag, S: Tag](
+    stepType: StepType,
+    template: String
+  ): ZIO[StepRegistry[R, S], TemplateLookupError, List[(String, Tag[?])]] =
+    ZIO.serviceWithZIO[StepRegistry[R, S]](_.resolveTemplateColumns(stepType, template))
