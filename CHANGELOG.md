@@ -2,6 +2,18 @@
 
 All notable changes to zio-bdd are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **`scenarioParallelism = 0` ("auto") silently ran sequentially outside `ZIOBDDFramework`** —
+  callers that constructed the executor directly (rather than going through the sbt test
+  framework entry point) did not get the intended auto-detected parallelism and fell back to
+  running scenarios one at a time.
+- **A blank line in a `Feature:` description silently dropped the feature** — the Gherkin parser
+  treated a blank line inside the description block as the end of the feature, discarding any
+  content (including scenarios) that followed.
+
 ## [1.0.0] — 2026-06-16
 
 ### Added

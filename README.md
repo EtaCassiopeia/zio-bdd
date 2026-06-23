@@ -60,7 +60,7 @@ object AccountSpec extends ZIOSteps[Any, AccountState]:
 
 ```scala
 // build.sbt
-libraryDependencies += "io.github.etacassiopeia" %% "zio-bdd" % "0.1.0" % Test
+libraryDependencies += "io.github.etacassiopeia" %% "zio-bdd" % "1.0.0" % Test
 
 Test / testFrameworks += new TestFramework("zio.bdd.ZIOBDDFramework")
 ```
@@ -74,11 +74,8 @@ transitively and are needed to derive `Schema[S]` for your state type.
 |---|---|
 | [docs/quickstart.md](docs/quickstart.md) | Zero to running test in 5 minutes |
 | [docs/concepts.md](docs/concepts.md) | Mental model: how the framework works |
-| [docs/step-definitions.md](docs/step-definitions.md) | Step DSL, extractors, and patterns |
-| [docs/gherkin-reference.md](docs/gherkin-reference.md) | Supported Gherkin syntax |
-| [docs/advanced-features.md](docs/advanced-features.md) | Flags, TypeMap, HasLens, HasService |
-| [docs/running-tests.md](docs/running-tests.md) | CLI flags, reporters, parallelism |
-| [docs/examples.md](docs/examples.md) | Annotated end-to-end examples |
+| [docs/step-dsl.md](docs/step-dsl.md) | Step DSL, extractors, and patterns |
+| [docs/index.md](docs/index.md) | Full documentation index — Gherkin syntax, state, layers, hooks, reporters, feature flags, cookbook, migrating from Cucumber, troubleshooting |
 
 ## Used by
 

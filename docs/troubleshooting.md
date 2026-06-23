@@ -353,7 +353,7 @@ For suite-wide shared state (e.g. a shared HTTP client), put it in `R` via `glob
 ### Q: Can I use zio-test assertions inside step bodies?
 
 zio-bdd provides its own assertion helpers in `zio.bdd.core.Assertions`:
-`assertTrue`, `assertEquals`, `assertSome`, `assertNone`, `assertFails`, `collectAll`.
+`assertTrue`, `assertEquals`, `assertSome`, `assertNone`, `assertThrows`, `collectAll`.
 
 These are plain ZIO effects that throw `AssertionError` on failure — compatible with the
 zio-bdd step execution model.  Do not use `zio-test`'s `assertTrue` / `assert` macros
