@@ -24,7 +24,8 @@ object PropertyTagParserSpec extends ZIOSpecDefault {
   def spec: Spec[TestEnvironment & Scope, Any] = suite("PropertyTagParserSpec")(
     propertyTagSuite,
     parserIntegrationSuite,
-    regressionSuite
+    regressionSuite,
+    stableIdSuite
   )
 
   // ── PropertyTag.parse ──────────────────────────────────────────────────────
@@ -59,6 +60,11 @@ object PropertyTagParserSpec extends ZIOSpecDefault {
     test("@property ignores unknown keys gracefully") {
       val cfg = PropertyTag.parse("property(samples=10, unknownKey=foo)")
       assertTrue(cfg.isDefined, cfg.get.samples == 10)
+    },
+    test("@property(samples=0) and negative samples fall back to the default rather than running zero samples") {
+      val zero     = PropertyTag.parse("property(samples=0)")
+      val negative = PropertyTag.parse("property(samples=-5)")
+      assertTrue(zero.isDefined, zero.get.samples == 100, negative.isDefined, negative.get.samples == 100)
     },
     test("non-property tags return None") {
       assertTrue(
@@ -356,6 +362,24 @@ object PropertyTagParserSpec extends ZIOSpecDefault {
           sc.propertyConfig.get.seed.contains(1L)
         )
       }
+    }
+  )
+
+  // ── Scenario.id / stableId ───────────────────────────────────────────────────
+
+  private val stableIdSuite = suite("Scenario.id / stableId")(
+    test("id is derived from name/file/line when stableId is unset") {
+      val sc = Scenario(name = "a", steps = Nil, file = Some("f.feature"), line = Some(3))
+      assertTrue(sc.id == s"scenario:a:f.feature:3".hashCode)
+    },
+    test("renaming a scenario changes its id, unless stableId pins the original") {
+      val original          = Scenario(name = "a", steps = Nil, file = Some("f.feature"), line = Some(3))
+      val renamedWithoutPin = original.copy(name = "a [5 samples passed]")
+      val renamedWithPin    = original.copy(name = "a [5 samples passed]", stableId = Some(original.id))
+      assertTrue(
+        renamedWithoutPin.id != original.id, // the bug PropertyExecutor's stableId works around
+        renamedWithPin.id == original.id
+      )
     }
   )
 }

@@ -46,7 +46,35 @@ object PropertyFailureStore:
 
   // ── Minimal JSON encode/decode (avoids adding a library dependency) ───────
   // We control the output format: keys are known identifiers, values are
-  // strings or longs — no nesting beyond one level of object.
+  // strings or longs — no nesting beyond one level of object. Sampled column values are
+  // arbitrary user-generated strings, though, so the nested-object scan below is
+  // quote-aware (tracks whether it's inside a quoted string) rather than naively
+  // stopping at the first '}' byte — a generated value containing a literal brace
+  // must not be mistaken for the end of the object.
+
+  private def jsonUnescape(s: String): String =
+    s.replace("\\\"", "\"").replace("\\\\", "\\")
+
+  /**
+   * Find the index of the `}` that closes the object opened at `openIdx` (which
+   * must point at that object's `{`), skipping over any `}` that appears inside
+   * a quoted string value. Returns -1 if unterminated.
+   */
+  private def matchingBrace(s: String, openIdx: Int): Int = {
+    var i        = openIdx + 1
+    var inString = false
+    var result   = -1
+    while (result == -1 && i < s.length) {
+      val c = s.charAt(i)
+      if (inString) {
+        if (c == '\\') i += 1 // skip the escaped character, whatever it is
+        else if (c == '"') inString = false
+      } else if (c == '"') inString = true
+      else if (c == '}') result = i
+      i += 1
+    }
+    result
+  }
 
   private def encodeJson(rec: FailureRecord): String =
     def esc(s: String)              = s.replace("\\", "\\\\").replace("\"", "\\\"")
@@ -74,7 +102,7 @@ object PropertyFailureStore:
       val sep       = "\\s*:\\s*"
       (keyPart + sep + valuePart).r
         .findFirstMatchIn(json)
-        .map(m => m.group(1).replace("\\\"", "\"").replace("\\\\", "\\"))
+        .map(m => jsonUnescape(m.group(1)))
     }
     def longVal(key: String): Option[Long] = {
       val keyPart = "\"" + key + "\""
@@ -90,18 +118,23 @@ object PropertyFailureStore:
     }
     def objVal(key: String): Map[String, String] = {
       val keyPart = "\"" + key + "\""
-      val objBody = (keyPart + "\\s*:\\s*\\{([^}]*)\\}").r
-      objBody
+      val openPat = (keyPart + "\\s*:\\s*\\{").r
+      val pairPat = "\"([^\"]+)\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\""
+      openPat
         .findFirstMatchIn(json)
-        .map { m =>
-          val body    = m.group(1)
-          val pairPat = "\"([^\"]+)\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\""
-          pairPat.r
-            .findAllMatchIn(body)
-            .map { pm =>
-              pm.group(1) -> pm.group(2).replace("\\\"", "\"").replace("\\\\", "\\")
-            }
-            .toMap
+        .flatMap { m =>
+          val openIdx  = json.indexOf('{', m.start)
+          val closeIdx = matchingBrace(json, openIdx)
+          if (closeIdx < 0) None
+          else {
+            val body = json.substring(openIdx + 1, closeIdx)
+            Some(
+              pairPat.r
+                .findAllMatchIn(body)
+                .map(pm => pm.group(1) -> jsonUnescape(pm.group(2)))
+                .toMap
+            )
+          }
         }
         .getOrElse(Map.empty)
     }
@@ -128,11 +161,11 @@ object PropertyFailureStore:
   }
 
   def read(scenario: Scenario): UIO[Option[FailureRecord]] =
-    ZIO.attempt {
+    ZIO.attemptBlocking {
       val f = file(scenario)
       if (!f.exists()) None
       else {
-        val json = scala.io.Source.fromFile(f).mkString
+        val json = scala.util.Using.resource(scala.io.Source.fromFile(f))(_.mkString)
         decodeJson(json)
       }
     }
@@ -156,7 +189,7 @@ object PropertyFailureStore:
     shrunkValues: Map[String, String],
     generatorLabels: Map[String, String]
   ): UIO[Unit] =
-    ZIO.attempt {
+    ZIO.attemptBlocking {
       Files.createDirectories(dir)
       val rec = FailureRecord(
         scenarioId = slug(scenario),
@@ -167,10 +200,8 @@ object PropertyFailureStore:
         generatorLabels = generatorLabels,
         timestamp = Instant.now().toString
       )
-      val w = new PrintWriter(file(scenario))
-      try w.write(encodeJson(rec))
-      finally w.close()
+      scala.util.Using.resource(new PrintWriter(file(scenario)))(_.write(encodeJson(rec)))
     }.orDie
 
   def clear(scenario: Scenario): UIO[Unit] =
-    ZIO.attempt { val _ = file(scenario).delete() }.orDie
+    ZIO.attemptBlocking { val _ = file(scenario).delete() }.orDie

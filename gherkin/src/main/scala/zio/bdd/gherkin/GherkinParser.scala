@@ -87,7 +87,10 @@ object PropertyTag:
         }
         .toMap
       PropertyConfig(
-        samples = kv.get("samples").flatMap(_.toIntOption).getOrElse(100),
+        // A non-positive count would silently produce a trivially-"passing" property scenario
+        // (zero samples actually run), so it's treated the same as missing/unparseable and
+        // falls back to the default rather than being honored literally.
+        samples = kv.get("samples").flatMap(_.toIntOption).filter(_ > 0).getOrElse(100),
         seed = kv.get("seed").flatMap(_.toLongOption),
         shrink = kv.get("shrink").map(_ != "false").getOrElse(true),
         maxShrinks = kv.get("maxshrinks").flatMap(_.toIntOption).getOrElse(1000),
@@ -153,9 +156,16 @@ case class Scenario(
   // Non-None when this scenario was produced from a @property Examples block.
   // Contains the parsed config and per-column generator overrides.
   propertyConfig: Option[PropertyTag.PropertyConfig] = None,
-  columnGens: Map[String, String] = Map.empty
+  columnGens: Map[String, String] = Map.empty,
+  // Set by PropertyExecutor when it renames a scenario to display the sample count/seed
+  // (e.g. "... [500 samples passed, seed=42]") after execution. `id` is keyed on `name`, so
+  // without this the renamed copy would get a different `id` than the one logs were
+  // collected under during the run (annotated before the rename happened), and reporters
+  // would silently fail to find them. `None` for every scenario that isn't a renamed
+  // property-scenario result, in which case `id` is computed from `name` as before.
+  stableId: Option[Int] = None
 ) {
-  def id: Int            = s"scenario:$name:${file.getOrElse("unknown")}:${line.getOrElse(0)}".hashCode
+  def id: Int            = stableId.getOrElse(s"scenario:$name:${file.getOrElse("unknown")}:${line.getOrElse(0)}".hashCode)
   def isIgnored: Boolean = tags.exists(_.equalsIgnoreCase("ignore"))
 
   def prettyString(indentLevel: Int): String = {

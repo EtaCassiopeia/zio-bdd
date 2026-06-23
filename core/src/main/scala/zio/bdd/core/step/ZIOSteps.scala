@@ -547,17 +547,19 @@ trait ZIOSteps[R: Tag, S: Tag: Default]
   // ── Execution ───────────────────────────────────────────────────────────
 
   /**
-   * Override to provide named or type-based generator lookups for `@property`
-   * scenarios. The default returns `None` for every column, which means only
-   * the built-in `HasGen[T]` given instances (for `Int`, `Long`, `String`,
-   * etc.) and any named generators registered via `HasGen.named(...)` are
-   * available.
+   * Override to route `@property` Examples columns to a `HasGen[T]` by column
+   * name. The default returns `None` for every column, so only columns with a
+   * `| col: genName |` header override (resolved via `HasGen.named(...)`) work
+   * out of the box — every other column, including ones using a built-in type
+   * like `HasGen[Int]`, must be routed here explicitly. There is no automatic
+   * name-to-type inference.
    *
    * Example:
    * {{{
    * override def columnGenLookup = new ColumnGenLookup:
    *   def byColumn(col: String) = col match
    *     case "amount" => HasGen.resolve("smallAmounts")
+   *     case "retries" => Some(HasGen[Int])
    *     case _        => None
    * }}}
    */

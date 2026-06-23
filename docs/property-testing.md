@@ -415,6 +415,17 @@ If you don't override `flagLayer`, it defaults to `scenarioLayer(meta)` — flag
 
 ---
 
+## `--dry-run`
+
+`--dry-run` (validates step matching without executing step bodies) is honored by property
+scenarios too: instead of running the configured `samples` count for real, it samples exactly
+one value per column, substitutes it, and validates that every step pattern matches — without
+executing any step body, writing to the failure store, or consulting an existing replay record.
+A column with no resolvable `HasGen` still surfaces the usual setup error during a dry run, since
+that's a configuration problem independent of whether step bodies execute.
+
+---
+
 ## Failure replay
 
 When a property fails, the executor writes the failing seed and counterexample values to

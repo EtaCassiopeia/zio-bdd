@@ -213,6 +213,45 @@ object PrettyReporterSpec extends ZIOSpecDefault {
           )
         case _ => assertTrue(false)
     },
+    test("stepBranch for a [counterexample] step renders one table row per column") {
+      import zio.bdd.core.property.PropertyExecutor.counterexampleEntrySep
+      val pattern =
+        s"[counterexample] amount=42 (HasGen[Int])${counterexampleEntrySep}limit=0 (HasGen[Long])"
+      val step = mkStep(StepType.GivenStep, pattern)
+      val sr   = StepResult(step, Left(Cause.fail(new RuntimeException("boom"))), 0L)
+      DocBuilder.stepBranch(sr, isLast = false, emptyLogs) match
+        case Doc.Branch(_, children, false) =>
+          val texts = children.collect { case Doc.Leaf(t, _) => t }
+          assertTrue(
+            texts.exists(_.contains("amount")),
+            texts.exists(_.contains("42")),
+            texts.exists(_.contains("limit")),
+            // The two columns must end up as two distinct rows, not merged into one.
+            texts.count(_.contains("HasGen")) == 2
+          )
+        case _ => assertTrue(false)
+    },
+    test("stepBranch for a [counterexample] step is not corrupted by a comma inside a value") {
+      import zio.bdd.core.property.PropertyExecutor.counterexampleEntrySep
+      // A domain type's default toString commonly contains a literal comma, e.g. a case class:
+      // Address(Main St,London). A plain comma-separated join would mis-split this into two
+      // fake columns; the dedicated entry separator must keep it as one.
+      val pattern =
+        s"[counterexample] address=Address(Main St,London) (HasGen[Address])${counterexampleEntrySep}zip=12345 (HasGen[String])"
+      val step = mkStep(StepType.GivenStep, pattern)
+      val sr   = StepResult(step, Left(Cause.fail(new RuntimeException("boom"))), 0L)
+      DocBuilder.stepBranch(sr, isLast = false, emptyLogs) match
+        case Doc.Branch(_, children, false) =>
+          val texts = children.collect { case Doc.Leaf(t, _) => t }
+          assertTrue(
+            // Exactly one row contains the full, unsplit address value...
+            texts.count(_.contains("Address(Main St,London)")) == 1,
+            // ...and a separate row for zip, not three+ rows from a naive comma split.
+            texts.exists(_.contains("zip")),
+            texts.count(_.contains("HasGen")) == 2
+          )
+        case _ => assertTrue(false)
+    },
     test("featureSummary leaf contains Passed/Failed/Ignored/Pending labels") {
       val sc   = mkScenarioResult("s", List((StepType.GivenStep, "a", StepStatus.Passed)))
       val fr   = mkFeatureResult("F", List(sc))

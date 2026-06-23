@@ -2,6 +2,7 @@ package zio.bdd.core.report
 
 import zio.*
 import zio.bdd.core.*
+import zio.bdd.core.property.PropertyFalsifiedException
 import zio.bdd.gherkin.{Feature, Step, StepType}
 
 import java.time.Instant
@@ -51,8 +52,8 @@ object JUnitXMLFormatter {
         val e   = cause.squash
         val msg = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
         val trace = e match
-          case _: AssertionError                                                             => None // message is self-explanatory; no trace needed
-          case _ if e.getClass.getName == "zio.bdd.core.property.PropertyFalsifiedException" => None
+          case _: AssertionError             => None // message is self-explanatory; no trace needed
+          case _: PropertyFalsifiedException => None
           case _ =>
             Option(e.getStackTrace).map { frames =>
               val userFrames = frames.filterNot { f =>

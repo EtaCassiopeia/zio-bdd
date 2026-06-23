@@ -8,11 +8,16 @@ import scala.collection.concurrent.TrieMap
 /**
  * Typeclass that provides a ZIO Test `Gen[Any, A]` for a given type `A`.
  *
- * ==Default resolution==
- * Step parameters of type `T` that also have a `HasGen[T]` implicit in scope
- * are automatically sampled during `@property` scenario execution. Built-in
- * instances are provided for primitive types matching the existing
- * `TypedExtractor` built-ins.
+ * ==Resolution is by column name, not by type==
+ * A `@property` column is just a string name parsed from the Gherkin header —
+ * there is no automatic inference from a step's `TypedExtractor[T]` to a
+ * `HasGen[T]`. Every property column, including ones using a built-in type
+ * below, must be routed explicitly via `ZIOSteps#columnGenLookup` (see
+ * `zio.bdd.core.property.ColumnGenLookup`) or a named override (see below).
+ * Built-in instances exist for `Int`/`Long`/`Double`/`Boolean`/ `String`/`UUID`
+ * so you don't need to write `Gen.int` etc. yourself, but you still need to
+ * route the column name to `HasGen[Int]` (or whichever applies) in
+ * `columnGenLookup`.
  *
  * ==Named generator overrides==
  * Register a non-default generator for a column via
@@ -23,7 +28,8 @@ import scala.collection.concurrent.TrieMap
  * Example:
  * {{{
  * object MySteps extends ZIOSteps[MyEnv, Unit]:
- *   given HasGen[Money] = Gen.double(0, 10_000).map(Money.apply)
+ *   given HasGen[Money] with
+ *     def gen = Gen.double(0, 10_000).map(Money.apply)
  *   HasGen.named("smallAmounts")(Gen.double(0.01, 10.0).map(Money.apply))
  * }}}
  */

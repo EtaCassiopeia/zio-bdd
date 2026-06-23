@@ -101,8 +101,10 @@ object FeatureExecutor {
             // Property scenario — dispatch to PropertyExecutor. `flags` (if any @flags(...)
             // tag is present) is forwarded so each sample uses suite.flagLayer like the
             // literal path does; expandFlagScenarios already multiplied one full sample
-            // batch per @flags(...) combination upstream.
-            PropertyExecutor.run[R, S](scenario, suite, genLookup, flags)
+            // batch per @flags(...) combination upstream. `dryRun` is forwarded too, so
+            // --dry-run validates step matching with one sample instead of running the full
+            // configured sample count for real.
+            PropertyExecutor.run[R, S](scenario, suite, genLookup, flags, dryRun)
           case None =>
             val meta = ScenarioMetadata.from(scenario, flags)
             val layer =

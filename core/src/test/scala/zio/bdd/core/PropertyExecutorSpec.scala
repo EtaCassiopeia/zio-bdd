@@ -47,7 +47,9 @@ object PropertyExecutorSpec extends ZIOSpecDefault {
     mixedSuite,
     stateSuite,
     flagsSuite,
-    replaySuite
+    replaySuite,
+    columnIndependenceSuite,
+    dryRunSuite
   )
 
   // ── Passing property scenarios ─────────────────────────────────────────────
@@ -559,6 +561,140 @@ object PropertyExecutorSpec extends ZIOSpecDefault {
         // All 4 fresh samples ran — not a single-sample replay of the stale record.
         freshRuns.get() == 4
       )
+    }
+  )
+
+  // ── Column independence and reproducibility ─────────────────────────────────
+
+  private val columnIndependenceSuite = suite("Column sampling")(
+    test("two columns with the same generator type are sampled independently, not correlated") {
+      val captured = new java.util.concurrent.atomic.AtomicReference[List[(Int, Int)]](Nil)
+      val steps = new ZIOSteps[Any, S]:
+        Given("x is " / int / " and y is " / int) { (x: Int, y: Int) =>
+          ZIO.succeed(captured.updateAndGet((x, y) :: _)).unit
+        }
+        Then("ok")(ZIO.unit)
+
+      runFeature(
+        """Feature: F
+          |  Scenario Outline: independence
+          |    Given x is <x> and y is <y>
+          |    Then ok
+          |    @property(samples=20, seed=5, replay=false)
+          |    Examples:
+          |      | x | y |
+          |""".stripMargin,
+        steps
+      ).map { _ =>
+        val pairs = captured.get()
+        assertTrue(
+          pairs.length == 20,
+          // Both columns share HasGen[Int] — if they were sampled with the same seed (the
+          // bug this regresses), every pair would be equal. With 20 samples from the full
+          // Int range, at least one pair being unequal is overwhelming evidence of
+          // independence (and in practice all of them differ).
+          pairs.exists { case (x, y) => x != y }
+        )
+      }
+    },
+    test("same seed reproduces the same sampled values across separate runs") {
+      def capture() = new java.util.concurrent.atomic.AtomicReference[List[(Int, Int)]](Nil)
+
+      def runOnce(captured: java.util.concurrent.atomic.AtomicReference[List[(Int, Int)]]) =
+        val steps = new ZIOSteps[Any, S]:
+          Given("x is " / int / " and y is " / int) { (x: Int, y: Int) =>
+            ZIO.succeed(captured.updateAndGet((x, y) :: _)).unit
+          }
+          Then("ok")(ZIO.unit)
+        runFeature(
+          """Feature: F
+            |  Scenario Outline: reproducible
+            |    Given x is <x> and y is <y>
+            |    Then ok
+            |    @property(samples=10, seed=777, replay=false)
+            |    Examples:
+            |      | x | y |
+            |""".stripMargin,
+          steps
+        )
+
+      val captured1 = capture()
+      val captured2 = capture()
+      for {
+        _ <- runOnce(captured1)
+        _ <- runOnce(captured2)
+      } yield assertTrue(captured1.get() == captured2.get(), captured1.get().nonEmpty)
+    }
+  )
+
+  // ── --dry-run support ────────────────────────────────────────────────────────
+
+  private val dryRunSuite = suite("--dry-run on a property scenario")(
+    test("dry-run validates step matching once, without executing step bodies or looping samples") {
+      val invocations = new java.util.concurrent.atomic.AtomicInteger(0)
+      val steps = new ZIOSteps[Any, S]:
+        Given("value " / int)((n: Int) => ZIO.succeed(invocations.incrementAndGet()).unit)
+        Then("ok")(ZIO.succeed(invocations.incrementAndGet()).unit)
+
+      val lookup = new ColumnGenLookup:
+        def byColumn(col: String): Option[HasGen[?]] = col match
+          case "n" => Some(HasGen[Int])
+          case _   => None
+
+      GherkinParser
+        .parseFeature(
+          """Feature: Dry run
+            |  Scenario Outline: dry run check
+            |    Given value <n>
+            |    Then ok
+            |    @property(samples=500, replay=false)
+            |    Examples:
+            |      | n |
+            |""".stripMargin,
+          "dry-run.feature"
+        )
+        .flatMap { f =>
+          FeatureExecutor.executeFeatures[Any, S](List(f), steps.getSteps, steps, dryRun = true, genLookup = lookup)
+        }
+        .map { results =>
+          val sc = results.head.scenarioResults.head
+          assertTrue(
+            sc.isPassed,
+            // Step bodies never ran — dry-run only validates that patterns match.
+            invocations.get() == 0,
+            sc.scenario.name.contains("dry-run")
+          )
+        }
+    },
+    test("dry-run still surfaces a setup error when a column has no registered HasGen") {
+      val steps = new ZIOSteps[Any, S]:
+        Given("value " / int)((n: Int) => ZIO.unit)
+        Then("ok")(ZIO.unit)
+
+      GherkinParser
+        .parseFeature(
+          """Feature: Dry run missing gen
+            |  Scenario Outline: dry run missing gen
+            |    Given value <n>
+            |    Then ok
+            |    @property(samples=500, replay=false)
+            |    Examples:
+            |      | n |
+            |""".stripMargin,
+          "dry-run-missing-gen.feature"
+        )
+        .flatMap { f =>
+          FeatureExecutor.executeFeatures[Any, S](
+            List(f),
+            steps.getSteps,
+            steps,
+            dryRun = true,
+            genLookup = ColumnGenLookup.empty
+          )
+        }
+        .map { results =>
+          assertTrue(results.head.scenarioResults.head.setupError.isDefined)
+        }
     }
   )
 }

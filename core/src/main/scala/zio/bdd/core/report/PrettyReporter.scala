@@ -349,11 +349,17 @@ object DocBuilder:
 
   /** Render a `[counterexample]` pattern as a compact table. */
   private def counterexampleTable(pattern: String): List[Doc.Leaf] =
-    // Pattern: "[counterexample] col1=val1 (gen1), col2=val2 (gen2)"
+    // Pattern: "[counterexample] col1=val1 (gen1) ‖ col2=val2 (gen2)" — entries are joined with
+    // PropertyExecutor.counterexampleEntrySep, not a plain comma, since column values are
+    // arbitrary generated text that commonly contains literal commas (e.g. a case class's
+    // default toString: `Address(Main St,London)`).
     val body = pattern.stripPrefix("[counterexample]").trim
     if (body.isEmpty) Nil
     else
-      val entries = body.split(",").map(_.trim).toList
+      val entries = body
+        .split(java.util.regex.Pattern.quote(zio.bdd.core.property.PropertyExecutor.counterexampleEntrySep))
+        .map(_.trim)
+        .toList
       val colWidth = entries.map { e =>
         e.indexOf('=') match { case -1 => 0; case i => i }
       }.maxOption.getOrElse(0)
@@ -377,7 +383,7 @@ object DocBuilder:
       case e: AssertionError =>
         // User assertion: show only the message — no stack frames needed.
         List(Doc.Leaf(e.getMessage, Style(Color.Red)))
-      case e if e.getClass.getName == "zio.bdd.core.property.PropertyFalsifiedException" =>
+      case e: zio.bdd.core.property.PropertyFalsifiedException =>
         // Property counterexample summary: show only the message, no internal frames.
         List(Doc.Leaf(e.getMessage, Style(Color.Red)))
       case e =>

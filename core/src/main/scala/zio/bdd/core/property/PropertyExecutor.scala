@@ -28,11 +28,22 @@ object PropertyExecutor:
 
   case class ColumnGen(name: String, gen: Gen[Any, Any], label: String)
 
+  /**
+   * Separator between `col=val (gen)` entries in a `[counterexample]` step
+   * pattern. A plain comma would be ambiguous — a domain type's default
+   * `toString` (e.g. a case class) commonly contains one (`Address(Main
+   * St,London)`) — so this uses a token vanishingly unlikely to appear in
+   * generated text instead of escaping (and thus visually mangling) the values.
+   * `PrettyReporter.counterexampleTable` splits on this same separator.
+   */
+  val counterexampleEntrySep = " ‖ "
+
   def run[R: Tag, S: Tag: Default](
     scenario: Scenario,
     suite: ZIOSteps[R, S],
     genLookup: ColumnGenLookup,
-    flags: Map[String, String] = Map.empty
+    flags: Map[String, String] = Map.empty,
+    dryRun: Boolean = false
   ): ZIO[R & StepRegistry[R, S], Nothing, ScenarioResult] =
     scenario.propertyConfig match
       case None =>
@@ -50,26 +61,63 @@ object PropertyExecutor:
           )
         )
       case Some(config) =>
-        runProperty(scenario, config, suite, genLookup, flags)
+        runProperty(scenario, config, suite, genLookup, flags, dryRun)
 
   private def runProperty[R: Tag, S: Tag: Default](
     scenario: Scenario,
     config: PropertyTag.PropertyConfig,
     suite: ZIOSteps[R, S],
     lookup: ColumnGenLookup,
-    flags: Map[String, String]
+    flags: Map[String, String],
+    dryRun: Boolean
   ): ZIO[R & StepRegistry[R, S], Nothing, ScenarioResult] =
     resolveColumnGens(scenario, lookup).flatMap {
       case Left(err) =>
         ZIO.succeed(ScenarioResult(scenario, Nil, setupError = Some(Cause.fail(new RuntimeException(err)))))
       case Right(colGens) =>
-        for {
-          seed      <- config.seed.map(ZIO.succeed).getOrElse(Random.nextLong)
-          replayRec <- if (config.replay) PropertyFailureStore.read(scenario) else ZIO.none
-          result <- replayRec match
-                      case Some(rec) => handleReplay(scenario, config, suite, colGens, rec, seed, flags)
-                      case None      => runFreshSamples(scenario, config, suite, colGens, seed, flags)
-        } yield result
+        if (dryRun)
+          // --dry-run validates step matching without executing step bodies. Sampling the
+          // configured `samples` count for real would defeat that — instead, validate column
+          // resolution (already done above) and run exactly one dry-run sample to confirm
+          // every step pattern matches, without looping or touching the failure store.
+          runDryRunSample(scenario, suite, colGens, flags)
+        else
+          for {
+            seed      <- config.seed.map(ZIO.succeed).getOrElse(Random.nextLong)
+            replayRec <- if (config.replay) PropertyFailureStore.read(scenario) else ZIO.none
+            result <- replayRec match
+                        case Some(rec) => handleReplay(scenario, config, suite, colGens, rec, seed, flags)
+                        case None      => runFreshSamples(scenario, config, suite, colGens, seed, flags)
+          } yield result
+    }
+
+  private def runDryRunSample[R: Tag, S: Tag: Default](
+    scenario: Scenario,
+    suite: ZIOSteps[R, S],
+    colGens: List[ColumnGen],
+    flags: Map[String, String]
+  ): ZIO[R & StepRegistry[R, S], Nothing, ScenarioResult] =
+    sampleColumnValues(colGens, seed = 0L, sampleIdx = 0).flatMap { colValues =>
+      val substituted = substituteSteps(scenario, colValues.toMap)
+      val meta        = zio.bdd.gherkin.ScenarioMetadata.from(substituted, flags)
+      val layer       = if (flags.isEmpty) suite.scenarioLayer(meta) else suite.flagLayer(meta, flags)
+      ScenarioExecutor
+        .executeScenario[R, S](substituted, suite, dryRun = true, flagValues = flags)
+        .provideSomeLayer[R & StepRegistry[R, S]](layer.orDie)
+        .map { result =>
+          val genSummary = colGens.map(cg => s"${cg.name} (${cg.label})").mkString(", ")
+          val summaryStep = Step(
+            stepType = StepType.GivenStep,
+            pattern = s"[property] dry-run: step patterns validated — generators: $genSummary"
+          )
+          result.copy(
+            // stableId preserves the pre-rename id so logs collected during this run (tagged
+            // with the original scenario id by FeatureExecutor's logAnnotate, before this
+            // rename happens) are still found by reporters looking up by `scenario.id`.
+            scenario = scenario.copy(name = s"${scenario.name} [dry-run]", stableId = Some(scenario.id)),
+            stepResults = StepResult(summaryStep, Right(())) +: result.stepResults
+          )
+        }
     }
 
   private def handleReplay[R: Tag, S: Tag: Default](
@@ -173,7 +221,8 @@ object PropertyExecutor:
       pattern = s"[property] $label — generators: $genSummary"
     )
     ScenarioResult(
-      scenario = scenario.copy(name = s"${scenario.name} [$label]"),
+      // stableId: see the matching comment in runDryRunSample.
+      scenario = scenario.copy(name = s"${scenario.name} [$label]", stableId = Some(scenario.id)),
       stepResults = List(StepResult(summaryStep, Right(())))
     )
 
@@ -205,10 +254,16 @@ object PropertyExecutor:
     val replayNote = if (isReplay) " [replayed from failure store]" else ""
     val summary    = s"Falsified after ${sampleIndex + 1} samples (seed=$seed)$replayNote"
 
+    // Column values are arbitrary user-generated strings — a domain type's default toString
+    // (e.g. a case class: `Address(Main St,London)`) commonly contains a literal comma, which
+    // would make a plain ", "-joined list ambiguous to split back into entries. `entrySep` is
+    // a token vanishingly unlikely to appear in generated text, so entries split unambiguously
+    // without needing to escape (and thus visually mangle) the values themselves; kept in sync
+    // with PrettyReporter.counterexampleTable, which parses this exact format.
     val counterexampleLabel = shrunkValues.toList
       .sortBy(_._1)
       .map { case (col, v) => s"$col=$v (${generatorLabels.getOrElse(col, "?")})" }
-      .mkString(", ")
+      .mkString(PropertyExecutor.counterexampleEntrySep)
     val counterexampleStep = Step(
       stepType = StepType.GivenStep,
       pattern = s"[counterexample] $counterexampleLabel"
@@ -225,7 +280,8 @@ object PropertyExecutor:
     )
 
     originalResult.copy(
-      scenario = scenario.copy(name = s"${scenario.name} [seed=$seed]"),
+      // stableId: see the matching comment in runDryRunSample.
+      scenario = scenario.copy(name = s"${scenario.name} [seed=$seed]", stableId = Some(scenario.id)),
       stepResults = counterexampleResult +: originalResult.stepResults,
       // Error is now carried by the first StepResult, not setupError.
       // ScenarioResult.error already walks stepResults first, so this is consistent.
@@ -263,18 +319,28 @@ object PropertyExecutor:
 
   /**
    * Sample one string value per column using the column's `Gen`, seeded
-   * deterministically using `seed XOR sampleIndex` so each sample in a run is
-   * distinct while remaining reproducible.
+   * deterministically from `(seed, sampleIndex, columnIndex)` so each sample in
+   * a run is distinct, each column within a sample is independent — even when
+   * two columns share the exact same `Gen` (e.g. two `HasGen[Int]` columns must
+   * not always be equal) — while the whole run remains reproducible from `seed`
+   * alone.
    */
   private def sampleColumnValues(
     colGens: List[ColumnGen],
     seed: Long,
     sampleIdx: Int
   ): UIO[List[(String, String)]] =
-    ZIO.foreach(colGens) { cg =>
-      val itemSeed = seed ^ (sampleIdx.toLong * 6364136223846793005L + 1442695040888963407L)
-      sampleGenToString(cg.gen, itemSeed).map(v => cg.name -> v)
+    ZIO.foreach(colGens.zipWithIndex) { case (cg, colIdx) =>
+      sampleGenToString(cg.gen, mixSeed(seed, sampleIdx, colIdx)).map(v => cg.name -> v)
     }
+
+  /**
+   * Mix the property seed with the sample and column index into one
+   * well-distributed seed.
+   */
+  private def mixSeed(seed: Long, sampleIdx: Int, colIdx: Int): Long =
+    val bySample = seed ^ (sampleIdx.toLong * 6364136223846793005L + 1442695040888963407L)
+    bySample ^ (colIdx.toLong * 2685821657736338717L + 1L)
 
   private def sampleGenToString(gen: Gen[Any, Any], seed: Long): UIO[String] =
     (for {
