@@ -1,5 +1,6 @@
 import xerial.sbt.Sonatype.sonatypeCentralHost
 import StepGeneratorPlugin.autoImport.*
+import com.typesafe.tools.mima.core.*
 
 inThisBuild(
   List(
@@ -45,7 +46,17 @@ lazy val mimaSettings = Seq(
     // contain a '-'), so the 1.0.0 release itself is not checked against 0.1.0 or 1.0.0-RCx.
     .filter(v => v.startsWith("1.") && !v.contains("-"))
     .map(organization.value %% moduleName.value % _)
-    .toSet
+    .toSet,
+  // #96 added a `Tag[A]` member to `TypedExtractor[A]` (a prerequisite for type-based
+  // HasGen discovery in property testing, #99) so `table`/`tableWithMapping` gained a
+  // `Tag[T]` context bound and `TableExtractor` gained a `Tag[List[T]]` constructor param.
+  // Source-compatible, not binary-compatible against 1.0.0.
+  mimaBinaryIssueFilters ++= Seq(
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.step.DefaultTypedExtractor.table"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.step.DefaultTypedExtractor.tableWithMapping"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.step.TableExtractor.this"),
+    ProblemFilters.exclude[ReversedMissingMethodProblem]("zio.bdd.core.step.TypedExtractor.tag")
+  )
 )
 
 lazy val root = (project in file("."))
