@@ -8,7 +8,7 @@ This README provides instructions to run the tests for the `zio-bdd` example loc
 - **SBT**: Use SBT 1.9.x or later.
 - **Dependencies**: Add the following to your `build.sbt`:
   ```scala
-  libraryDependencies += "io.github.etacassiopeia" %% "zio-bdd" % "0.1.0" % Test
+  libraryDependencies += "io.github.etacassiopeia" %% "zio-bdd" % "1.0.0" % Test
   libraryDependencies += "dev.zio" %% "zio" % "2.1.17"
   Test / testFrameworks += new TestFramework("zio.bdd.ZIOBDDFramework")
   ```
@@ -19,8 +19,8 @@ The example includes a feature file with tagged scenarios:
 - Feature: `Simple Greeting` (`@core @greeting`)
 - Scenarios:
     - `Greet a user` (`@positive @smoke`)
-    - `Greet an empty user` (`@negative @ignore`)
-    - `Greet a different user` (`@positive @flaky @retry(2)`)
+    - `Greet an empty user` (`@ignore`)
+    - `Greet a different user` (`@negative`)
 
 ## Running Tests
 
@@ -32,29 +32,40 @@ sbt "example/test"
 ```
 - Runs all scenarios filtered by `@Suite(includeTags = Array("positive"))`, executing only `@positive` scenarios by default.
 
+> `testOnly` must be scoped to the `example` project (`example/testOnly ...`) — the root
+> project only aggregates `core` and `gherkin`, so an unscoped `testOnly` from the repo root
+> finds no tests at all.
+
 ### 2. Filter by Including Tags
 ```bash
-sbt "testOnly zio.bdd.example.SimpleSpec -- --include-tags smoke"
+sbt "example/testOnly zio.bdd.example.SimpleSpec -- --include-tags smoke"
 ```
-- Runs only scenarios with `@smoke` (e.g., `Greet a user`).
+- Runs only scenarios with `@smoke` (`Greet a user`). `--include-tags` fully replaces the
+  `@Suite`'s `includeTags = Array("positive")` for this run.
 
 ### 3. Filter by Excluding Tags
 ```bash
-sbt "testOnly zio.bdd.example.SimpleSpec -- --exclude-tags ignore"
+sbt "example/testOnly zio.bdd.example.SimpleSpec -- --exclude-tags ignore"
 ```
-- Runs scenarios without `@ignore` (e.g., `Greet a user` and `Greet a different user`).
+- `--include-tags` and `--exclude-tags` are resolved independently: since this command doesn't
+  set `--include-tags`, the `@Suite`'s `includeTags = Array("positive")` is still in effect.
+  Only `Greet a user` runs; `Greet a different user` (`@negative`) stays excluded.
 
 ### 4. Combine Include and Exclude Filters
 ```bash
-sbt "testOnly zio.bdd.example.SimpleSpec -- --include-tags positive --exclude-tags flaky"
+sbt "example/testOnly zio.bdd.example.SimpleSpec -- --include-tags positive --exclude-tags flaky"
 ```
-- Runs `@positive` scenarios excluding `@flaky` (e.g., `Greet a user`).
+- Runs `@positive` scenarios excluding `@flaky` (`Greet a user` — none of the scenarios carry
+  `@flaky` here, so this behaves the same as `--include-tags positive` alone).
 
 ### 5. Test Feature-Level Tags
 ```bash
-sbt "testOnly zio.bdd.example.SimpleSpec -- --include-tags core"
+sbt "example/testOnly zio.bdd.example.SimpleSpec -- --include-tags core"
 ```
-- Runs all scenarios because the feature has `@core`.
+- The `@core` tag on the `Feature:` line is inherited by every scenario, so this matches
+  `Greet a user` and `Greet a different user`. `Greet an empty user` still shows as `IGNORED` —
+  `@ignore` is a built-in status tag handled separately from `--include-tags`/`--exclude-tags`
+  filtering, so it's never run regardless of which tags are included.
 
 ### 6. Debug Mode (Verbose Output)
 ```bash
@@ -64,4 +75,8 @@ sbt --debug "example/test"
 
 ## Notes
 - Ensure the feature file is at `example/src/test/resources/features/simple.feature`.
-- Tag filters override the `@Suite` configuration when specified via the command line.
+- `--include-tags`/`--exclude-tags` on the command line each independently replace the
+  corresponding `@Suite` annotation field *only if supplied*; an omitted CLI flag falls back to
+  the `@Suite` value for that field. They do not merge with or fully override the annotation as
+  a pair.
+- `@ignore` always marks a scenario `IGNORED`, independent of `--include-tags`/`--exclude-tags`.

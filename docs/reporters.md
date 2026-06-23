@@ -127,14 +127,14 @@ for {
 
 ### junitxml
 
-`JUnitXMLReporter` writes one XML file per feature into `target/test-results/`. File names
+`JUnitXMLReporter` writes one XML file per feature into `target/test-reports/`. File names
 are derived from the feature name with non-alphanumeric characters replaced by `_`.
 
 **Configuration:**
 
 ```scala
 JUnitReporterConfig(
-  outputDir = "target/test-results",   // default
+  outputDir = "target/test-reports",   // default
   format    = JUnitXMLFormatter.Format.JUnit5  // default
 )
 ```
@@ -145,7 +145,7 @@ To override, instantiate the reporter directly in a custom `BDDTestConfig`.
 **File location:**
 
 ```
-target/test-results/
+target/test-reports/
   User_registration.xml
   Shopping_cart.xml
   ...
@@ -294,12 +294,14 @@ Step bodies and reporters interact with the following result types.
 enum StepStatus:
   case Passed
   case Failed(cause: Cause[Throwable])
+  case TimedOut(timeout: Duration, cause: Cause[Throwable])
   case Skipped
   case Pending(reason: String)
 ```
 
 A step is `Skipped` when a prior step in the same scenario failed and it was never attempted.
 A step is `Pending` when its body called `pending("reason")`.
+A step is `TimedOut` when it exceeded the configured step timeout (see `docs/running.md`).
 
 ### ScenarioResult
 
