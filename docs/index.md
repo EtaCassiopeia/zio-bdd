@@ -15,6 +15,8 @@ New to zio-bdd?  Read in this order:
    ZIO effects, what `R` and `S` mean, how state is isolated per scenario.
 3. **[Step DSL](step-dsl.md)** — the full extractor reference (`string`, `int`, `table[T]`,
    `docString`, `regex`, `oneOf`, etc.) plus the `StepEffect` / `StepIO` type aliases.
+4. **[Property-Based Testing](property-testing.md)** — once you're comfortable with literal
+   `Examples:` rows, learn the `@property(...)` tag to sample generated values instead.
 
 ---
 
