@@ -51,9 +51,9 @@ object PrettyReporterSpec extends ZIOSpecDefault {
   private val emptyLogs = CollectedLogs()
 
   private val statusColorTests = suite("StatusColor typeclass")(
-    test("StepStatus.Passed → Blue") {
+    test("StepStatus.Passed → Mint") {
       val s = summon[StatusColor[StepStatus]].style(StepStatus.Passed)
-      assertTrue(s.color == Color.Blue)
+      assertTrue(s.color == Color.Mint)
     },
     test("StepStatus.Failed → Red + cross icon") {
       val s = summon[StatusColor[StepStatus]].style(StepStatus.Failed(Cause.fail(new Exception())))
@@ -73,10 +73,10 @@ object PrettyReporterSpec extends ZIOSpecDefault {
       val s = summon[StatusColor[StepStatus]].style(StepStatus.Pending("todo"))
       assertTrue(s.color == Color.Orange)
     },
-    test("passed ScenarioResult → Yellow") {
+    test("passed ScenarioResult → Blue") {
       val sc = mkScenarioResult("s", List((StepType.GivenStep, "a step", StepStatus.Passed)))
       val s  = summon[StatusColor[ScenarioResult]].style(sc)
-      assertTrue(s.color == Color.Yellow)
+      assertTrue(s.color == Color.Blue)
     },
     test("failed ScenarioResult → Red") {
       val sc =
@@ -271,7 +271,7 @@ object PrettyReporterSpec extends ZIOSpecDefault {
     test("renders a Branch: header then indented children") {
       for {
         buf   <- BufferRenderer.make
-        header = Doc.Leaf("parent", Style(Color.Blue, "◉"))
+        header = Doc.Leaf("parent", Style(Color.Teal, "◉"))
         child  = Doc.Leaf("child", Style(Color.Green, "•"))
         _     <- buf.render(Doc.Branch(header, List(child), isLast = true))
         out   <- buf.collected
@@ -287,7 +287,7 @@ object PrettyReporterSpec extends ZIOSpecDefault {
         many = Doc.Many(
                  List(
                    Doc.Leaf("a", Style(Color.Green)),
-                   Doc.Leaf("b", Style(Color.Blue)),
+                   Doc.Leaf("b", Style(Color.Cyan)),
                    Doc.Leaf("c", Style(Color.Red))
                  )
                )

@@ -546,11 +546,37 @@ trait ZIOSteps[R: Tag, S: Tag: Default]
 
   // ── Execution ───────────────────────────────────────────────────────────
 
+  /**
+   * Override to provide named or type-based generator lookups for `@property`
+   * scenarios. The default returns `None` for every column, which means only
+   * the built-in `HasGen[T]` given instances (for `Int`, `Long`, `String`,
+   * etc.) and any named generators registered via `HasGen.named(...)` are
+   * available.
+   *
+   * Example:
+   * {{{
+   * override def columnGenLookup = new ColumnGenLookup:
+   *   def byColumn(col: String) = col match
+   *     case "amount" => HasGen.resolve("smallAmounts")
+   *     case _        => None
+   * }}}
+   */
+  def columnGenLookup: zio.bdd.core.property.ColumnGenLookup =
+    zio.bdd.core.property.ColumnGenLookup.empty
+
   def run(
     features: List[Feature],
     featureParallelism: Int = 1,
     scenarioParallelism: Int = 1,
     dryRun: Boolean = false
   ): ZIO[R, Nothing, List[FeatureResult]] =
-    FeatureExecutor.executeFeatures[R, S](features, getSteps, this, featureParallelism, scenarioParallelism, dryRun)
+    FeatureExecutor.executeFeatures[R, S](
+      features,
+      getSteps,
+      this,
+      featureParallelism,
+      scenarioParallelism,
+      dryRun,
+      genLookup = columnGenLookup
+    )
 }

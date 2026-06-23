@@ -40,6 +40,67 @@ object ScenarioMetadata {
  * `@flags(a=true) @flags(a=false)` → two runs, one with a=true, one with
  * a=false
  */
+/**
+ * Parses `@property(samples=N, seed=S, shrink=true, ...)` tags from Gherkin
+ * Examples blocks.
+ *
+ * When an Examples block carries an `@property(...)` tag and has no data rows
+ * (header-only), the test framework runs the scenario as a property test —
+ * sampling generated values for each column via the `HasGen[T]` registry
+ * instead of executing literal rows.
+ *
+ * Supported args:
+ *   - `samples` — number of samples (default 100)
+ *   - `seed` — fixed Long seed for reproducibility (default: random, always
+ *     logged)
+ *   - `shrink` — enable shrinking on failure (default true)
+ *   - `maxShrinks` — cap on shrink-tree walks (default 1000)
+ *   - `maxDiscarded` — cap on discarded samples (default samples × 5)
+ *   - `verbose` — print full shrink trace in failure output (default false)
+ *   - `replay` — consult/update the failures file (default true)
+ *
+ * A bare `@property` with no args is equivalent to `@property(samples=100)`.
+ */
+object PropertyTag:
+  private val tagPattern = """^property(?:\(([^)]*)\))?$""".r
+
+  case class PropertyConfig(
+    samples: Int = 100,
+    seed: Option[Long] = None,
+    shrink: Boolean = true,
+    maxShrinks: Int = 1000,
+    maxDiscarded: Option[Int] = None,
+    verbose: Boolean = false,
+    replay: Boolean = true
+  )
+
+  def parse(tag: String): Option[PropertyConfig] =
+    tagPattern.findFirstMatchIn(tag.trim.stripPrefix("@")).map { m =>
+      val args = Option(m.group(1)).getOrElse("")
+      val kv = args
+        .split(",")
+        .flatMap { kv =>
+          kv.trim.split("=", 2) match
+            case Array(k, v) if k.trim.nonEmpty => Some(k.trim.toLowerCase -> v.trim)
+            case Array(k) if k.trim.nonEmpty    => Some(k.trim.toLowerCase -> "true")
+            case _                              => None
+        }
+        .toMap
+      PropertyConfig(
+        samples = kv.get("samples").flatMap(_.toIntOption).getOrElse(100),
+        seed = kv.get("seed").flatMap(_.toLongOption),
+        shrink = kv.get("shrink").map(_ != "false").getOrElse(true),
+        maxShrinks = kv.get("maxshrinks").flatMap(_.toIntOption).getOrElse(1000),
+        maxDiscarded = kv.get("maxdiscarded").flatMap(_.toIntOption),
+        verbose = kv.get("verbose").map(_ == "true").getOrElse(false),
+        replay = kv.get("replay").map(_ != "false").getOrElse(true)
+      )
+    }
+
+  /** Extract the first @property config from a list of tags, if any. */
+  def extract(tags: List[String]): Option[PropertyConfig] =
+    tags.iterator.flatMap(parse).nextOption()
+
 object FlagsTag:
   private val tagPattern = """^flags\(([^)]+)\)$""".r
 
@@ -88,7 +149,11 @@ case class Scenario(
   tags: List[String] = Nil,
   steps: List[Step],
   file: Option[String] = None,
-  line: Option[Int] = None
+  line: Option[Int] = None,
+  // Non-None when this scenario was produced from a @property Examples block.
+  // Contains the parsed config and per-column generator overrides.
+  propertyConfig: Option[PropertyTag.PropertyConfig] = None,
+  columnGens: Map[String, String] = Map.empty
 ) {
   def id: Int            = s"scenario:$name:${file.getOrElse("unknown")}:${line.getOrElse(0)}".hashCode
   def isIgnored: Boolean = tags.exists(_.equalsIgnoreCase("ignore"))
@@ -456,7 +521,10 @@ object GherkinParser {
     tags: List[String],
     headers: List[String],
     rows: List[List[String]],
-    lineNo: Int
+    lineNo: Int,
+    // Per-column named generator overrides, e.g. `| amount: smallAmounts |`
+    // Absent for all non-property (literal) Examples blocks.
+    columnGens: Map[String, String] = Map.empty
   )
 
   private case class RawScenario(
@@ -585,12 +653,26 @@ object GherkinParser {
           case Some(TableRowLine(_, _)) => parseDataTable(cursor, file)
           case _                        => DataTable(Nil, Nil)
         }
+        val combinedTags = (prePendedTags ++ lineTags).distinct
+        // Split header cells on the first ':' to separate placeholder key from
+        // optional named-generator override, e.g. `| amount: smallAmounts |`.
+        // Plain cells with no ':' are unchanged.
+        val (plainHeaders, columnGens) = table.headers.foldLeft((List.empty[String], Map.empty[String, String])) {
+          case ((hs, gs), cell) =>
+            cell.split(":", 2) match
+              case Array(key, gen) =>
+                val k = key.trim
+                val g = gen.trim
+                (hs :+ k, if (g.nonEmpty) gs + (k -> g) else gs)
+              case _ => (hs :+ cell.trim, gs)
+        }
         RawExamplesBlock(
           name = name,
-          tags = (prePendedTags ++ lineTags).distinct,
-          headers = table.headers,
+          tags = combinedTags,
+          headers = plainHeaders,
           rows = table.rows.map(_.cells),
-          lineNo = lineNo
+          lineNo = lineNo,
+          columnGens = columnGens
         )
       case other =>
         throw ParseError(s"Expected Examples/Scenarios keyword, got: $other", 0, file)
@@ -684,22 +766,41 @@ object GherkinParser {
         val combinedTags = (rawSc.tags ++ block.tags).distinct
         val baseLabel    = if (block.name.nonEmpty) s"${rawSc.name} - ${block.name}" else rawSc.name
 
-        if (block.headers.isEmpty || block.rows.isEmpty) {
-          // Outline with no example rows — emit once as a placeholder with no param substitution
-          List(Scenario(s"$baseLabel - (no examples)", combinedTags, allSteps, Some(file), Some(rawSc.lineNo)))
-        } else {
-          block.rows.zipWithIndex.map { case (rowValues, i) =>
-            val data       = block.headers.zip(rowValues).toMap
-            val paramBg    = backgroundSteps.map(expandStep(_, data, file))
-            val paramSteps = rawSc.steps.map(expandStep(_, data, file))
-            Scenario(
-              name = s"$baseLabel - Example ${i + 1}",
-              tags = combinedTags,
-              steps = paramBg.collect { case Right(s) => s } ++ paramSteps.collect { case Right(s) => s },
-              file = Some(file),
-              line = Some(rawSc.lineNo)
+        // @property block: header-only (no rows) → one property scenario carrying config + column gens.
+        // Check combinedTags (scenario + block) so @property on either the Scenario Outline line
+        // OR the Examples block line both trigger property mode.
+        // If rows are also present on a @property block, treat as literal (user error; still run them).
+        PropertyTag.extract(combinedTags) match {
+          case Some(config) if block.rows.isEmpty =>
+            List(
+              Scenario(
+                name = baseLabel,
+                tags = combinedTags,
+                steps = allSteps,
+                file = Some(file),
+                line = Some(rawSc.lineNo),
+                propertyConfig = Some(config),
+                columnGens = block.columnGens
+              )
             )
-          }
+          case _ =>
+            if (block.headers.isEmpty || block.rows.isEmpty) {
+              // Outline with no example rows — emit once as a placeholder with no param substitution
+              List(Scenario(s"$baseLabel - (no examples)", combinedTags, allSteps, Some(file), Some(rawSc.lineNo)))
+            } else {
+              block.rows.zipWithIndex.map { case (rowValues, i) =>
+                val data       = block.headers.zip(rowValues).toMap
+                val paramBg    = backgroundSteps.map(expandStep(_, data, file))
+                val paramSteps = rawSc.steps.map(expandStep(_, data, file))
+                Scenario(
+                  name = s"$baseLabel - Example ${i + 1}",
+                  tags = combinedTags,
+                  steps = paramBg.collect { case Right(s) => s } ++ paramSteps.collect { case Right(s) => s },
+                  file = Some(file),
+                  line = Some(rawSc.lineNo)
+                )
+              }
+            }
         }
       }
     }

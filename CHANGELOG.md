@@ -4,6 +4,17 @@ All notable changes to zio-bdd are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Property-based testing (Mode P)** — `@property(samples=N, seed=S, shrink=true, ...)` on a
+  header-only `Examples:` block runs the scenario against N generated samples instead of literal
+  rows. The `HasGen[T]` typeclass resolves a `zio.test.Gen` per column (built-ins for
+  `Int`/`Long`/`Double`/`Boolean`/`String`/`UUID`), named overrides via `HasGen.named(name)(gen)`
+  and the `| column: generatorName |` header syntax, and `ZIOSteps#columnGenLookup` for
+  suite-level column-to-generator routing. Falsifying samples are persisted to
+  `.zio-bdd/failures/` and replayed first on the next run; `pretty` and `junitxml` reporters both
+  render the counterexample.
+
 ### Fixed
 
 - **`scenarioParallelism = 0` ("auto") silently ran sequentially outside `ZIOBDDFramework`** —

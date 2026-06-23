@@ -208,6 +208,33 @@ Examples: Block B
 Scenarios from Block A carry `smoke` and `regression`. Scenarios from Block B carry
 `smoke` and `slow`.
 
+**`@property(...)` tag — generative Examples:** when an `Examples:` block (or its parent
+`Scenario Outline:`) carries a `@property(...)` tag AND the block has no data rows
+(header only), the block triggers property-based testing instead of literal expansion.
+The framework samples values from the `HasGen[T]` registry for each column and runs the
+scenario N times.
+
+```gherkin
+@property(samples=500, seed=42)
+Scenario Outline: Balance is never negative
+  Given an account with balance <balance>
+  When I withdraw <amount>
+  Then the balance is not negative
+
+  Examples:
+    | balance | amount |
+```
+
+Column headers may carry a `: generatorName` suffix to select a named generator override
+for that column:
+
+```gherkin
+  Examples:
+    | balance | amount: smallAmounts |
+```
+
+See [Property-Based Testing](property-testing.md) for the full reference.
+
 ---
 
 ## Steps

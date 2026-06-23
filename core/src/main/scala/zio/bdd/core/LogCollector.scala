@@ -1,6 +1,6 @@
 package zio.bdd.core
 
-import zio.{Runtime, ZLogger, *}
+import zio.{ZLogger, *}
 import zio.logging.LogFormat
 
 import java.time.Instant
@@ -117,8 +117,9 @@ object LogCollector {
    * write with no ZIO runtime re-entry. Eliminates the `Unsafe.unsafe` bridge
    * and the associated interpreter overhead on every log call.
    *
-   * The runtime default logger is AUGMENTED (not replaced) so that step-level
-   * ZIO.log* calls also appear on the console.
+   * The runtime default logger is REPLACED (not augmented) so that ZIO.log*
+   * calls inside step bodies are captured by the collector only and not also
+   * echoed to stdout by the default logger.
    */
   private def customLogger(collector: LogCollectorImpl): ZLogger[String, Unit] = {
     val formatLogger = LogFormat.default.toLogger
@@ -152,7 +153,7 @@ object LogCollector {
     ZLayer.scoped {
       val collector = new LogCollectorImpl(config)
       FiberRef.currentLoggers
-        .locallyScoped(Runtime.defaultLoggers + customLogger(collector))
+        .locallyScoped(Set(customLogger(collector)))
         .as(collector)
     }
 

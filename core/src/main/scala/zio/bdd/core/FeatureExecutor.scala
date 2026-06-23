@@ -2,6 +2,7 @@ package zio.bdd.core
 
 import izumi.reflect.Tag
 import zio.*
+import zio.bdd.core.property.{ColumnGenLookup, PropertyExecutor}
 import zio.bdd.core.step.{StepDef, StepRegistry, ZIOSteps}
 import zio.bdd.gherkin.{Feature, FlagsTag, Scenario, ScenarioMetadata}
 
@@ -30,7 +31,8 @@ object FeatureExecutor {
     steps: List[StepDef[R, S]],
     suite: ZIOSteps[R, S],
     scenarioParallelism: Int = 1,
-    dryRun: Boolean = false
+    dryRun: Boolean = false,
+    genLookup: ColumnGenLookup = ColumnGenLookup.empty
   ): ZIO[R, Nothing, FeatureResult] =
     if (feature.isIgnored) {
       val ignoredScenarios = feature.scenarios.map { scenario =>
@@ -47,7 +49,7 @@ object FeatureExecutor {
             featureResult <- (for {
                                _       <- suite.beforeFeatureHook
                                expanded = expandFlagScenarios(feature.scenarios)
-                               results <- runScenarios(expanded, steps, suite, scenarioParallelism, dryRun)
+                               results <- runScenarios(expanded, steps, suite, scenarioParallelism, dryRun, genLookup)
                              } yield FeatureResult(feature, results))
                                // afterFeature teardown always runs, even on failure or interruption.
                                .ensuring(suite.afterFeatureHook)
@@ -89,18 +91,23 @@ object FeatureExecutor {
     steps: List[StepDef[R, S]],
     suite: ZIOSteps[R, S],
     scenarioParallelism: Int,
-    dryRun: Boolean
+    dryRun: Boolean,
+    genLookup: ColumnGenLookup
   ): ZIO[R & StepRegistry[R, S], Nothing, List[ScenarioResult]] = {
     def runOne(scenario: Scenario, flags: Map[String, String]): ZIO[R & StepRegistry[R, S], Nothing, ScenarioResult] =
       ZIO.logAnnotate("scenarioId", scenario.id.toString) {
-        val meta = ScenarioMetadata.from(scenario, flags)
-        // Use flagLayer when flags are present, scenarioLayer otherwise (backward-compatible)
-        val layer =
-          if (flags.isEmpty) suite.scenarioLayer(meta)
-          else suite.flagLayer(meta, flags)
-        ScenarioExecutor
-          .executeScenario[R, S](scenario, suite, dryRun, flags, suite.stepTimeout)
-          .provideSomeLayer[R & StepRegistry[R, S]](layer.orDie)
+        scenario.propertyConfig match
+          case Some(_) =>
+            // Property scenario — dispatch to PropertyExecutor, bypass flag expansion
+            PropertyExecutor.run[R, S](scenario, suite, genLookup)
+          case None =>
+            val meta = ScenarioMetadata.from(scenario, flags)
+            val layer =
+              if (flags.isEmpty) suite.scenarioLayer(meta)
+              else suite.flagLayer(meta, flags)
+            ScenarioExecutor
+              .executeScenario[R, S](scenario, suite, dryRun, flags, suite.stepTimeout)
+              .provideSomeLayer[R & StepRegistry[R, S]](layer.orDie)
       }
 
     val resolved = resolveParallelism(scenarioParallelism)
@@ -118,15 +125,16 @@ object FeatureExecutor {
     suite: ZIOSteps[R, S],
     featureParallelism: Int = 1,
     scenarioParallelism: Int = 1,
-    dryRun: Boolean = false
+    dryRun: Boolean = false,
+    genLookup: ColumnGenLookup = ColumnGenLookup.empty
   ): ZIO[R, Nothing, List[FeatureResult]] =
     for {
       _ <- suite.beforeAllHook
       results <- if (featureParallelism <= 1)
-                   ZIO.foreach(features)(executeFeature(_, steps, suite, scenarioParallelism, dryRun))
+                   ZIO.foreach(features)(executeFeature(_, steps, suite, scenarioParallelism, dryRun, genLookup))
                  else
                    ZIO.foreachExec(features)(ExecutionStrategy.ParallelN(featureParallelism.max(1)))(
-                     executeFeature(_, steps, suite, scenarioParallelism, dryRun)
+                     executeFeature(_, steps, suite, scenarioParallelism, dryRun, genLookup)
                    )
       _ <- suite.afterAllHook
     } yield results
