@@ -65,6 +65,32 @@ object StepExpressionSpec extends ZIOSpecDefault with DefaultTypedExtractor {
     }
   )
 
+  private val toPatternHelper = suite("StepExpression.toPattern")(
+    test("builds the same regex source the instance compiles internally") {
+      val parts   = List(Literal("age is "), Extractor(int))
+      val pattern = StepExpression.toPattern(parts)
+      assertTrue(pattern == "\\Qage is \\E(-?\\d+)")
+    },
+    test("matches the same inputs as extracting through a StepExpression instance") {
+      val parts   = List(Literal("count "), Extractor(double))
+      val pattern = StepExpression.toPattern(parts).r
+      val expr    = StepExpression[Tuple1[Double]](parts)
+      assertTrue(
+        pattern.matches("count 9.99"),
+        expr.extract(si("count 9.99")).isDefined
+      )
+    },
+    test("DefaultTypedExtractor.byName exposes the real built-in patterns, not a hand-copy") {
+      assertTrue(
+        DefaultTypedExtractor.byName("double").pattern == double.pattern,
+        DefaultTypedExtractor.byName("int").pattern == int.pattern,
+        DefaultTypedExtractor.byName("string").pattern == string.pattern,
+        DefaultTypedExtractor.byName("boolean").pattern == boolean.pattern,
+        DefaultTypedExtractor.byName("uuid").pattern == uuid.pattern
+      )
+    }
+  )
+
   private val regexCaching = suite("Regex is compiled once (lazy val)")(
     test("calling extract 1000 times completes without recompiling the regex") {
       val expr  = StepExpression[Tuple1[String]](List(Literal("step "), Extractor(string)))
@@ -210,6 +236,7 @@ object StepExpressionSpec extends ZIOSpecDefault with DefaultTypedExtractor {
 
   def spec: Spec[TestEnvironment & Scope, Any] = suite("StepExpression")(
     patternMatching,
+    toPatternHelper,
     regexCaching,
     stepDef,
     dslIntegration,
