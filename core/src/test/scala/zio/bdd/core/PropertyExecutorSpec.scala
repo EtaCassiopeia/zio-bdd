@@ -45,6 +45,7 @@ object PropertyExecutorSpec extends ZIOSpecDefault {
     failSuite,
     generatorSuite,
     autoResolutionSuite,
+    setupErrorVsFalsificationSuite,
     mixedSuite,
     stateSuite,
     flagsSuite,
@@ -407,6 +408,124 @@ object PropertyExecutorSpec extends ZIOSpecDefault {
             message.contains("amount"),
             message.contains("Int"),
             message.contains("String")
+          )
+        }
+    },
+    test("a typo'd named-generator header override produces a setup error, not a silent fallback") {
+      // Regression: `explicit(col)` used to do
+      // `scenario.columnGens.get(col).flatMap(HasGen.resolve).orElse(lookup.byColumn(col))` —
+      // an unregistered name fell through to columnGenLookup/automatic resolution instead of
+      // erroring, so a typo in `| n: smallInts |` silently used a *different* generator with
+      // no indication the override was ignored.
+      val steps = new ZIOSteps[Any, S]:
+        Given("value " / int)((n: Int) => ZIO.unit)
+        Then("ok")(ZIO.unit)
+
+      // A lookup that WOULD resolve "n" if the named override were (wrongly) skipped —
+      // proves the typo doesn't silently fall through to this path either.
+      val lookup = new ColumnGenLookup:
+        def byColumn(col: String): Option[HasGen[?]] = col match
+          case "n" => Some(HasGen[Int])
+          case _   => None
+
+      GherkinParser
+        .parseFeature(
+          """Feature: Typo'd named override
+            |  Scenario Outline: typo
+            |    Given value <n>
+            |    Then ok
+            |    @property(samples=5, replay=false)
+            |    Examples:
+            |      | n: definitelyNotRegistered |
+            |""".stripMargin,
+          "typo-named-gen.feature"
+        )
+        .flatMap { f =>
+          FeatureExecutor.executeFeatures[Any, S](List(f), steps.getSteps, steps, genLookup = lookup)
+        }
+        .map { results =>
+          val sc      = results.head.scenarioResults.head
+          val message = sc.error.map(_.getMessage).getOrElse("")
+          assertTrue(
+            sc.setupError.isDefined,
+            message.contains("n"),
+            message.contains("definitelyNotRegistered")
+          )
+        }
+    }
+  )
+
+  // ── Setup errors and pending steps must not be misreported as falsifications ────
+
+  private val setupErrorVsFalsificationSuite = suite(
+    "Setup errors and pending steps are distinguished from genuine falsifications"
+  )(
+    test("a beforeScenario hook failure surfaces as a setup error, not a [counterexample]") {
+      // Regression: runOneSample used to collapse every non-passed ScenarioResult — including
+      // one whose `setupError` is set because `beforeScenarioHook` failed — into "this sample
+      // falsified the property", persisting it to PropertyFailureStore and rendering it as
+      // "[counterexample] n=... (HasGen[Int])". A broken environment hook isn't evidence the
+      // property itself is false.
+      val steps = new ZIOSteps[Any, S]:
+        beforeScenario(_ => ZIO.die(new RuntimeException("environment is down")))
+        Given("value " / int)((n: Int) => ZIO.unit)
+        Then("ok")(ZIO.unit)
+
+      GherkinParser
+        .parseFeature(
+          """Feature: Broken setup
+            |  Scenario Outline: setup fails
+            |    Given value <n>
+            |    Then ok
+            |    @property(samples=5, replay=false)
+            |    Examples:
+            |      | n |
+            |""".stripMargin,
+          "setup-fails.feature"
+        )
+        .flatMap { f =>
+          FeatureExecutor.executeFeatures[Any, S](List(f), steps.getSteps, steps, genLookup = ColumnGenLookup.empty)
+        }
+        .map { results =>
+          val sc = results.head.scenarioResults.head
+          // beforeScenario's ScenarioHook is URIO — it can only fail via a defect (`die`), which
+          // ends up in setupError's Cause as a Die, not a Fail. `ScenarioResult.error`'s
+          // `failureOption` only unwraps typed Fail causes, so check the Cause directly here.
+          val causeText = sc.setupError.map(_.prettyPrint).getOrElse("")
+          assertTrue(
+            sc.setupError.isDefined,
+            causeText.contains("environment is down"),
+            !causeText.contains("counterexample"),
+            !causeText.contains("Falsified")
+          )
+        }
+    },
+    test("a pending step surfaces as pending, not a [counterexample], and is not persisted to the failure store") {
+      val steps = new ZIOSteps[Any, S]:
+        Given("value " / int)((n: Int) => ZIO.unit)
+        Then("ok")(pending("not implemented yet"))
+
+      GherkinParser
+        .parseFeature(
+          """Feature: Pending step
+            |  Scenario Outline: not implemented
+            |    Given value <n>
+            |    Then ok
+            |    @property(samples=5, replay=false)
+            |    Examples:
+            |      | n |
+            |""".stripMargin,
+          "pending-step.feature"
+        )
+        .flatMap { f =>
+          FeatureExecutor.executeFeatures[Any, S](List(f), steps.getSteps, steps, genLookup = ColumnGenLookup.empty)
+        }
+        .map { results =>
+          val sc = results.head.scenarioResults.head
+          assertTrue(
+            sc.hasPending,
+            sc.setupError.isEmpty,
+            !sc.stepResults.exists(_.step.pattern.contains("[counterexample]"))
           )
         }
     }

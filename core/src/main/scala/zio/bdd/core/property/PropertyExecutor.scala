@@ -29,6 +29,30 @@ object PropertyExecutor:
   case class ColumnGen(name: String, gen: Gen[Any, Any], label: String)
 
   /**
+   * What running one sample produced — distinguishes a genuine property
+   * falsification from an infrastructure problem (a failing `beforeScenario`
+   * hook, an unimplemented/`@pending` step) that happened to occur while
+   * running a sample.
+   *
+   * This distinction matters because `Errored` results must NOT be persisted to
+   * `PropertyFailureStore` or rendered as a `[counterexample]` — doing so would
+   * misreport "the environment is broken" or "this step isn't implemented yet"
+   * as "this property is falsified by these generated values", which is a
+   * different (and misleading) claim. See the regression tests in
+   * `PropertyExecutorSpec` for both failure modes.
+   */
+  private enum SampleOutcome:
+    case Passed
+    case Falsified(result: ScenarioResult)
+    case Errored(result: ScenarioResult)
+
+  private object SampleOutcome:
+    def from(result: ScenarioResult): SampleOutcome =
+      if (result.isPassed) Passed
+      else if (result.setupError.isDefined || result.hasPending) Errored(result)
+      else Falsified(result)
+
+  /**
    * Separator between `col=val (gen)` entries in a `[counterexample]` step
    * pattern. A plain comma would be ambiguous — a domain type's default
    * `toString` (e.g. a case class) commonly contains one (`Address(Main
@@ -131,13 +155,13 @@ object PropertyExecutor:
   ): ZIO[R & StepRegistry[R, S], Nothing, ScenarioResult] =
     val replayValues = colGens.map(cg => cg.name -> rec.shrunkValues.getOrElse(cg.name, ""))
     runOneSample(scenario, suite, replayValues, flags).flatMap {
-      case None =>
+      case SampleOutcome.Passed =>
         // The previously-falsifying sample now passes — the bug is fixed. Clear the stale
         // failure record and proceed with a full fresh batch of samples instead of just
         // reporting the one-sample replay as the whole scenario result.
         PropertyFailureStore.clear(scenario) *> runFreshSamples(scenario, config, suite, colGens, freshSeed, flags)
-      case Some(failResult) =>
-        // Still failing
+      case SampleOutcome.Falsified(failResult) =>
+        // Still failing the same way.
         ZIO.succeed(
           buildFailureResult(
             scenario = scenario,
@@ -149,6 +173,12 @@ object PropertyExecutor:
             isReplay = true
           )
         )
+      case SampleOutcome.Errored(result) =>
+        // The replay run hit a setup error or a pending step, not the original falsification —
+        // that's an infra/environment problem, not evidence the bug still reproduces (or
+        // doesn't). Surface it as-is and leave the failure record untouched so a later run can
+        // still attempt the real replay once the environment/step is fixed.
+        ZIO.succeed(result)
     }
 
   private def runFreshSamples[R: Tag, S: Tag: Default](
@@ -160,16 +190,20 @@ object PropertyExecutor:
     flags: Map[String, String]
   ): ZIO[R & StepRegistry[R, S], Nothing, ScenarioResult] =
     ZIO.logAnnotate("propertyScenario", scenario.name) {
-      // Run up to `config.samples` iterations. Short-circuit on first failure.
-      // State is (sampleIndex, Option[failResult]); we stop when failResult is Some.
+      // Run up to `config.samples` iterations. Short-circuit on the first non-Passed
+      // outcome. State is (sampleIndex, Option[terminal result]); we stop once that's Some —
+      // for either a genuine falsification (persisted to the failure store, wrapped as a
+      // [counterexample]) or an infra error (surfaced as-is, NOT persisted — see SampleOutcome).
       ZIO
         .iterate((0, Option.empty[ScenarioResult]))(s => s._2.isEmpty && s._1 < config.samples) { s =>
           val idx = s._1
           sampleColumnValues(colGens, seed, idx).flatMap { colValues =>
             runOneSample(scenario, suite, colValues, flags).flatMap {
-              case None =>
+              case SampleOutcome.Passed =>
                 ZIO.succeed((idx + 1, None))
-              case Some(failResult) =>
+              case SampleOutcome.Errored(result) =>
+                ZIO.succeed((idx + 1, Some(result)))
+              case SampleOutcome.Falsified(failResult) =>
                 val shrunkValues    = colValues.toMap
                 val generatorLabels = colGens.map(cg => cg.name -> cg.label).toMap
                 PropertyFailureStore
@@ -195,8 +229,8 @@ object PropertyExecutor:
         }
         .map { s =>
           s._2 match {
-            case Some(failResult) => failResult
-            case None             => buildPassResult(scenario, seed, s._1, colGens)
+            case Some(terminalResult) => terminalResult
+            case None                 => buildPassResult(scenario, seed, s._1, colGens)
           }
         }
     }
@@ -296,14 +330,14 @@ object PropertyExecutor:
     suite: ZIOSteps[R, S],
     colValues: List[(String, String)],
     flags: Map[String, String]
-  ): ZIO[R & StepRegistry[R, S], Nothing, Option[ScenarioResult]] =
+  ): ZIO[R & StepRegistry[R, S], Nothing, SampleOutcome] =
     val substituted = substituteSteps(scenario, colValues.toMap)
     val meta        = zio.bdd.gherkin.ScenarioMetadata.from(substituted, flags)
     val layer       = if (flags.isEmpty) suite.scenarioLayer(meta) else suite.flagLayer(meta, flags)
     ScenarioExecutor
       .executeScenario[R, S](substituted, suite, flagValues = flags)
       .provideSomeLayer[R & StepRegistry[R, S]](layer.orDie)
-      .map(result => if (result.isPassed) None else Some(result))
+      .map(SampleOutcome.from)
 
   /** Substitute `<placeholder>` in step patterns with sampled string values. */
   private def substituteSteps(scenario: Scenario, values: Map[String, String]): Scenario =
@@ -375,19 +409,40 @@ object PropertyExecutor:
       placeholderRe.findAllMatchIn(step.pattern).map(_.group(1)).toList
     }.distinct
 
-    def explicit(col: String): Option[HasGen[?]] =
-      scenario.columnGens.get(col).flatMap(HasGen.resolve).orElse(lookup.byColumn(col))
+    // A named header override (`| col: genName |`) that doesn't resolve against HasGen's
+    // named registry is a setup error, not a silent fall-through to tiers 2-3 — falling
+    // through would let a typo'd generator name go unnoticed and quietly resolve to a
+    // *different* generator (columnGenLookup's, or the automatic by-type one) instead of
+    // erroring, which defeats the point of naming an override at all.
+    def explicit(col: String): Either[String, Option[HasGen[?]]] =
+      scenario.columnGens.get(col) match
+        case Some(genName) =>
+          HasGen
+            .resolve(genName)
+            .map(hg => Some(hg))
+            .toRight(
+              s"Column '$col' specifies generator '$genName' via header override " +
+                s"(`| $col: $genName |`), but no generator is registered under that name. " +
+                s"""Register it with `HasGen.named("$genName")(...)`."""
+            )
+        case None => Right(lookup.byColumn(col))
+
+    val explicitOutcomes: Map[String, Either[String, Option[HasGen[?]]]] =
+      allPlaceholders.map(col => col -> explicit(col)).toMap
+
+    val namedOverrideErrors: List[String] = explicitOutcomes.values.collect { case Left(e) => e }.toList
+    val erroredCols: Set[String]          = explicitOutcomes.collect { case (col, Left(_)) => col }.toSet
 
     val explicitResolved: Map[String, HasGen[?]] =
-      allPlaceholders.flatMap(col => explicit(col).map(col -> _)).toMap
-    val unresolved = allPlaceholders.filterNot(explicitResolved.contains)
+      explicitOutcomes.collect { case (col, Right(Some(hg))) => col -> hg }
+    val unresolved = allPlaceholders.filterNot(col => explicitResolved.contains(col) || erroredCols.contains(col))
 
     val byType: URIO[StepRegistry[R, S], Map[String, Either[String, HasGen[?]]]] =
       if (unresolved.isEmpty) ZIO.succeed(Map.empty)
       else resolveByType[R, S](scenario, unresolved.toSet)
 
     byType.map { byTypeResolved =>
-      val resolved = allPlaceholders.map { col =>
+      val resolved = allPlaceholders.filterNot(erroredCols.contains).map { col =>
         explicitResolved
           .get(col)
           .map(Right(_))
@@ -399,7 +454,8 @@ object PropertyExecutor:
           )
           .map(hg => col -> hg)
       }
-      val errors = resolved.collect { case Left(e) => e }
+      val tierErrors = resolved.collect { case Left(e) => e }
+      val errors     = namedOverrideErrors ++ tierErrors
       if (errors.nonEmpty) Left(errors.mkString("; "))
       else
         Right(resolved.collect { case Right((col, hg)) =>
