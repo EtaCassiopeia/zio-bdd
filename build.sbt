@@ -55,7 +55,11 @@ lazy val mimaSettings = Seq(
     ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.step.DefaultTypedExtractor.table"),
     ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.step.DefaultTypedExtractor.tableWithMapping"),
     ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.step.TableExtractor.this"),
-    ProblemFilters.exclude[ReversedMissingMethodProblem]("zio.bdd.core.step.TypedExtractor.tag")
+    ProblemFilters.exclude[ReversedMissingMethodProblem]("zio.bdd.core.step.TypedExtractor.tag"),
+    // #97 added `resolveTemplateColumns` to `StepRegistry` — structurally matches a
+    // `@property` step template (placeholders still present) against the registry to find
+    // which extractor governs each `<col>`. Source-compatible, not binary-compatible against 1.0.0.
+    ProblemFilters.exclude[ReversedMissingMethodProblem]("zio.bdd.core.step.StepRegistry.resolveTemplateColumns")
   )
 )
 
