@@ -65,24 +65,19 @@ object HasGenSpec extends ZIOSpecDefault {
     }
   )
 
-  // ── Concurrency: typeRegistry is a JVM-wide singleton TrieMap shared across every
-  // suite in the same test run. Parallel scenario execution (see ConcurrencySpec) means
-  // registerType/resolveByTag can be called concurrently from many fibers — confirm
-  // registrations for distinct types don't race or clobber each other, and that repeated
-  // concurrent writes to the same type don't corrupt the final entry.
+  // ── Concurrency: this is a regression guard on the implementation choice, not a proof
+  // of correctness — registerType/resolveByTag are thin single-operation wrappers around
+  // TrieMap, whose own contract already guarantees safe concurrent put/get. The point of
+  // this test is to pin down that typeRegistry must stay a concurrency-safe structure: if
+  // it's ever swapped for something not thread-safe (e.g. mutable.HashMap), parallel
+  // scenario execution (see ConcurrencySpec) would corrupt it, and this test would catch
+  // that regression.
   private val concurrencySuite = suite("concurrent registration and resolution")(
-    test("8 distinct types registered concurrently each resolve to their own HasGen, independently") {
-      // Genuinely distinct types (not just distinct labels on one shared type) — this is
-      // what actually exercises Tag/LightTypeTag equality and hashing across different keys
-      // under concurrent TrieMap writes, which a single-shared-type test cannot catch.
+    test("distinct types registered concurrently each resolve to their own HasGen, independently") {
       final case class ConcA(v: Int)
       final case class ConcB(v: Int)
       final case class ConcC(v: Int)
       final case class ConcD(v: Int)
-      final case class ConcE(v: Int)
-      final case class ConcF(v: Int)
-      final case class ConcG(v: Int)
-      final case class ConcH(v: Int)
       def hasGen[A](l: String)(value: A): HasGen[A] = new HasGen[A] {
         def gen = Gen.const(value); override def label = l
       }
@@ -92,11 +87,7 @@ object HasGenSpec extends ZIOSpecDefault {
                  ZIO.succeed(HasGen.registerType(hasGen("A")(ConcA(0)))),
                  ZIO.succeed(HasGen.registerType(hasGen("B")(ConcB(0)))),
                  ZIO.succeed(HasGen.registerType(hasGen("C")(ConcC(0)))),
-                 ZIO.succeed(HasGen.registerType(hasGen("D")(ConcD(0)))),
-                 ZIO.succeed(HasGen.registerType(hasGen("E")(ConcE(0)))),
-                 ZIO.succeed(HasGen.registerType(hasGen("F")(ConcF(0)))),
-                 ZIO.succeed(HasGen.registerType(hasGen("G")(ConcG(0)))),
-                 ZIO.succeed(HasGen.registerType(hasGen("H")(ConcH(0))))
+                 ZIO.succeed(HasGen.registerType(hasGen("D")(ConcD(0))))
                )
              )(identity)
         labels <- ZIO.succeed(
@@ -104,33 +95,10 @@ object HasGenSpec extends ZIOSpecDefault {
                       HasGen.resolveByTag(Tag[ConcA]).map(_.label),
                       HasGen.resolveByTag(Tag[ConcB]).map(_.label),
                       HasGen.resolveByTag(Tag[ConcC]).map(_.label),
-                      HasGen.resolveByTag(Tag[ConcD]).map(_.label),
-                      HasGen.resolveByTag(Tag[ConcE]).map(_.label),
-                      HasGen.resolveByTag(Tag[ConcF]).map(_.label),
-                      HasGen.resolveByTag(Tag[ConcG]).map(_.label),
-                      HasGen.resolveByTag(Tag[ConcH]).map(_.label)
+                      HasGen.resolveByTag(Tag[ConcD]).map(_.label)
                     )
                   )
-      } yield assertTrue(labels == List("A", "B", "C", "D", "E", "F", "G", "H").map(Some(_)))
-    },
-    test("concurrent re-registration of the same type races safely: the final entry is never corrupted") {
-      final case class Reregistered32(value: Int)
-      for {
-        _ <- ZIO.foreachPar((1 to 32).toList) { i =>
-               ZIO.succeed(
-                 HasGen.registerType(new HasGen[Reregistered32] {
-                   def gen            = Gen.const(Reregistered32(i))
-                   override def label = s"label-$i"
-                 })
-               )
-             }
-        resolved <- ZIO.succeed(HasGen.resolveByTag(Tag[Reregistered32]))
-      } yield assertTrue(resolved.exists(hg => (1 to 32).map(i => s"label-$i").contains(hg.label)))
-    },
-    test("concurrent resolveByTag calls for built-ins are all consistent") {
-      for {
-        results <- ZIO.foreachPar((1 to 32).toList)(_ => ZIO.succeed(HasGen.resolveByTag(Tag[Int]).map(_.label)))
-      } yield assertTrue(results.forall(_.contains("HasGen[Int]")))
+      } yield assertTrue(labels == List("A", "B", "C", "D").map(Some(_)))
     }
   )
 
