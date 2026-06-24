@@ -546,11 +546,39 @@ trait ZIOSteps[R: Tag, S: Tag: Default]
 
   // ── Execution ───────────────────────────────────────────────────────────
 
+  /**
+   * Override to route `@property` Examples columns to a `HasGen[T]` by column
+   * name. The default returns `None` for every column, so only columns with a
+   * `| col: genName |` header override (resolved via `HasGen.named(...)`) work
+   * out of the box — every other column, including ones using a built-in type
+   * like `HasGen[Int]`, must be routed here explicitly. There is no automatic
+   * name-to-type inference.
+   *
+   * Example:
+   * {{{
+   * override def columnGenLookup = new ColumnGenLookup:
+   *   def byColumn(col: String) = col match
+   *     case "amount" => HasGen.resolve("smallAmounts")
+   *     case "retries" => Some(HasGen[Int])
+   *     case _        => None
+   * }}}
+   */
+  def columnGenLookup: zio.bdd.core.property.ColumnGenLookup =
+    zio.bdd.core.property.ColumnGenLookup.empty
+
   def run(
     features: List[Feature],
     featureParallelism: Int = 1,
     scenarioParallelism: Int = 1,
     dryRun: Boolean = false
   ): ZIO[R, Nothing, List[FeatureResult]] =
-    FeatureExecutor.executeFeatures[R, S](features, getSteps, this, featureParallelism, scenarioParallelism, dryRun)
+    FeatureExecutor.executeFeatures[R, S](
+      features,
+      getSteps,
+      this,
+      featureParallelism,
+      scenarioParallelism,
+      dryRun,
+      genLookup = columnGenLookup
+    )
 }

@@ -22,6 +22,10 @@ The example includes a feature file with tagged scenarios:
     - `Greet an empty user` (`@ignore`)
     - `Greet a different user` (`@negative`)
 
+The example also includes `example/src/test/resources/features/greeting_properties.feature`,
+demonstrating `@property(...)` generative Examples blocks — see
+[docs/property-testing.md](../docs/property-testing.md).
+
 ## Running Tests
 
 Use the following SBT commands from the project root to run the tests:

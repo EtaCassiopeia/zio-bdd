@@ -51,9 +51,9 @@ object PrettyReporterSpec extends ZIOSpecDefault {
   private val emptyLogs = CollectedLogs()
 
   private val statusColorTests = suite("StatusColor typeclass")(
-    test("StepStatus.Passed → Blue") {
+    test("StepStatus.Passed → Mint") {
       val s = summon[StatusColor[StepStatus]].style(StepStatus.Passed)
-      assertTrue(s.color == Color.Blue)
+      assertTrue(s.color == Color.Mint)
     },
     test("StepStatus.Failed → Red + cross icon") {
       val s = summon[StatusColor[StepStatus]].style(StepStatus.Failed(Cause.fail(new Exception())))
@@ -73,10 +73,10 @@ object PrettyReporterSpec extends ZIOSpecDefault {
       val s = summon[StatusColor[StepStatus]].style(StepStatus.Pending("todo"))
       assertTrue(s.color == Color.Orange)
     },
-    test("passed ScenarioResult → Yellow") {
+    test("passed ScenarioResult → Blue") {
       val sc = mkScenarioResult("s", List((StepType.GivenStep, "a step", StepStatus.Passed)))
       val s  = summon[StatusColor[ScenarioResult]].style(sc)
-      assertTrue(s.color == Color.Yellow)
+      assertTrue(s.color == Color.Blue)
     },
     test("failed ScenarioResult → Red") {
       val sc =
@@ -213,6 +213,45 @@ object PrettyReporterSpec extends ZIOSpecDefault {
           )
         case _ => assertTrue(false)
     },
+    test("stepBranch for a [counterexample] step renders one table row per column") {
+      import zio.bdd.core.property.PropertyExecutor.counterexampleEntrySep
+      val pattern =
+        s"[counterexample] amount=42 (HasGen[Int])${counterexampleEntrySep}limit=0 (HasGen[Long])"
+      val step = mkStep(StepType.GivenStep, pattern)
+      val sr   = StepResult(step, Left(Cause.fail(new RuntimeException("boom"))), 0L)
+      DocBuilder.stepBranch(sr, isLast = false, emptyLogs) match
+        case Doc.Branch(_, children, false) =>
+          val texts = children.collect { case Doc.Leaf(t, _) => t }
+          assertTrue(
+            texts.exists(_.contains("amount")),
+            texts.exists(_.contains("42")),
+            texts.exists(_.contains("limit")),
+            // The two columns must end up as two distinct rows, not merged into one.
+            texts.count(_.contains("HasGen")) == 2
+          )
+        case _ => assertTrue(false)
+    },
+    test("stepBranch for a [counterexample] step is not corrupted by a comma inside a value") {
+      import zio.bdd.core.property.PropertyExecutor.counterexampleEntrySep
+      // A domain type's default toString commonly contains a literal comma, e.g. a case class:
+      // Address(Main St,London). A plain comma-separated join would mis-split this into two
+      // fake columns; the dedicated entry separator must keep it as one.
+      val pattern =
+        s"[counterexample] address=Address(Main St,London) (HasGen[Address])${counterexampleEntrySep}zip=12345 (HasGen[String])"
+      val step = mkStep(StepType.GivenStep, pattern)
+      val sr   = StepResult(step, Left(Cause.fail(new RuntimeException("boom"))), 0L)
+      DocBuilder.stepBranch(sr, isLast = false, emptyLogs) match
+        case Doc.Branch(_, children, false) =>
+          val texts = children.collect { case Doc.Leaf(t, _) => t }
+          assertTrue(
+            // Exactly one row contains the full, unsplit address value...
+            texts.count(_.contains("Address(Main St,London)")) == 1,
+            // ...and a separate row for zip, not three+ rows from a naive comma split.
+            texts.exists(_.contains("zip")),
+            texts.count(_.contains("HasGen")) == 2
+          )
+        case _ => assertTrue(false)
+    },
     test("featureSummary leaf contains Passed/Failed/Ignored/Pending labels") {
       val sc   = mkScenarioResult("s", List((StepType.GivenStep, "a", StepStatus.Passed)))
       val fr   = mkFeatureResult("F", List(sc))
@@ -271,7 +310,7 @@ object PrettyReporterSpec extends ZIOSpecDefault {
     test("renders a Branch: header then indented children") {
       for {
         buf   <- BufferRenderer.make
-        header = Doc.Leaf("parent", Style(Color.Blue, "◉"))
+        header = Doc.Leaf("parent", Style(Color.Teal, "◉"))
         child  = Doc.Leaf("child", Style(Color.Green, "•"))
         _     <- buf.render(Doc.Branch(header, List(child), isLast = true))
         out   <- buf.collected
@@ -287,7 +326,7 @@ object PrettyReporterSpec extends ZIOSpecDefault {
         many = Doc.Many(
                  List(
                    Doc.Leaf("a", Style(Color.Green)),
-                   Doc.Leaf("b", Style(Color.Blue)),
+                   Doc.Leaf("b", Style(Color.Cyan)),
                    Doc.Leaf("c", Style(Color.Red))
                  )
                )

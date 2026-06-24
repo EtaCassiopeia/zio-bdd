@@ -47,11 +47,34 @@ lazy val mimaSettings = Seq(
     .filter(v => v.startsWith("1.") && !v.contains("-"))
     .map(organization.value %% moduleName.value % _)
     .toSet,
-  // #96 added a `Tag[A]` member to `TypedExtractor[A]` (a prerequisite for type-based
-  // HasGen discovery in property testing, #99) so `table`/`tableWithMapping` gained a
-  // `Tag[T]` context bound and `TableExtractor` gained a `Tag[List[T]]` constructor param.
-  // Source-compatible, not binary-compatible against 1.0.0.
+  // Property-based testing (#91) added new defaulted fields to `Scenario` / the internal
+  // `RawExamplesBlock`, a new defaulted `genLookup` parameter on `FeatureExecutor`, and
+  // replaced several `PrettyReporter.Color` case objects with `val` aliases of the same type.
+  // All of these are source-compatible but not binary-compatible against 1.0.0 — expected for
+  // a minor feature release; filtered rather than worked around.
   mimaBinaryIssueFilters ++= Seq(
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.gherkin.GherkinParser#RawExamplesBlock.apply"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.gherkin.GherkinParser#RawExamplesBlock.this"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.gherkin.GherkinParser#RawExamplesBlock.copy"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.gherkin.Scenario.apply"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.gherkin.Scenario.this"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.gherkin.Scenario.copy"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.FeatureExecutor.executeFeature"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.FeatureExecutor.executeFeatures"),
+    ProblemFilters.exclude[MissingFieldProblem]("zio.bdd.core.report.Color.Yellow"),
+    ProblemFilters.exclude[MissingFieldProblem]("zio.bdd.core.report.Color.PaleGreen"),
+    ProblemFilters.exclude[MissingFieldProblem]("zio.bdd.core.report.Color.PaleCyan"),
+    ProblemFilters.exclude[MissingFieldProblem]("zio.bdd.core.report.Color.PaleYellow"),
+    ProblemFilters.exclude[MissingFieldProblem]("zio.bdd.core.report.Color.PaleRed"),
+    ProblemFilters.exclude[MissingClassProblem]("zio.bdd.core.report.Color$PaleCyan$"),
+    ProblemFilters.exclude[MissingClassProblem]("zio.bdd.core.report.Color$PaleGreen$"),
+    ProblemFilters.exclude[MissingClassProblem]("zio.bdd.core.report.Color$PaleRed$"),
+    ProblemFilters.exclude[MissingClassProblem]("zio.bdd.core.report.Color$PaleYellow$"),
+    ProblemFilters.exclude[MissingClassProblem]("zio.bdd.core.report.Color$Yellow$"),
+    // #96 added a `Tag[A]` member to `TypedExtractor[A]` (a prerequisite for type-based
+    // HasGen discovery in property testing, #99) so `table`/`tableWithMapping` gained a
+    // `Tag[T]` context bound and `TableExtractor` gained a `Tag[List[T]]` constructor param.
+    // Source-compatible, not binary-compatible against 1.0.0.
     ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.step.DefaultTypedExtractor.table"),
     ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.step.DefaultTypedExtractor.tableWithMapping"),
     ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.step.TableExtractor.this"),

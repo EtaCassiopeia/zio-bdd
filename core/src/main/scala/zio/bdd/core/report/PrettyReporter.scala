@@ -69,21 +69,50 @@ sealed abstract class Color(val darkCode: String, val lightCode: String):
 
 object Color:
   // ── Result / status colors ────────────────────────────────────────────────
-  case object Green  extends Color("[92m", "[32m")             // passed feature
-  case object Red    extends Color("[91m", "[31m")             // failed / error
-  case object Blue   extends Color("[94m", "[34m")             // step (passed)
-  case object Yellow extends Color("[93m", "[33m")             // scenario (passed)
-  case object Gray   extends Color("[90m", "[37m")             // ignored / skipped
-  case object Orange extends Color("[38;5;214m", "[38;5;166m") // pending
-  case object Cyan   extends Color("[96m", "[36m")             // summary / headings
+  //
+  // Each entry: (darkTerminalCode, lightTerminalCode)
+  // Light codes are chosen for legibility on white backgrounds (WCAG AA contrast).
+  //
+  //   Feature  → dark forest green  / deep green
+  //   Scenario → sky blue           / dark navy blue
+  //   Step     → soft mint          / dark teal green
+  //   Failed   → bright red         / dark crimson
+  //   Pending  → amber orange       / dark burnt orange
+  //   Skipped  → dim gray           / dark charcoal (not ANSI white which vanishes on white bg)
+  //   Headings → bright cyan        / dark teal
+  //
+  case object Green  extends Color("[38;5;35m", "[38;5;22m")   // forest green  / deep green
+  case object Blue   extends Color("[38;5;75m", "[38;5;19m")   // sky blue      / dark navy
+  case object Mint   extends Color("[38;5;121m", "[38;5;29m")  // soft mint     / dark teal
+  case object Red    extends Color("[91m", "[38;5;160m")       // bright red    / dark crimson
+  case object Gray   extends Color("[90m", "[38;5;240m")       // dim gray      / dark charcoal
+  case object Orange extends Color("[38;5;214m", "[38;5;130m") // amber orange  / dark burnt orange
+  case object Cyan   extends Color("[96m", "[38;5;30m")        // bright cyan   / dark teal
+
+  // Aliases so any code outside StatusColor that used the old names compiles.
+  val Yellow: Color = Blue
+  val Teal: Color   = Blue
 
   // ── Muted log entry palette ────────────────────────────────────────────────
-  // Dark:  pale 24-bit tints — visible without competing with tree nodes
-  // Light: normal ANSI — pale 24-bit tints are near-invisible on white
-  case object PaleGreen  extends Color("[38;2;144;238;144m", "[32m")
-  case object PaleCyan   extends Color("[38;2;173;216;230m", "[36m")
-  case object PaleYellow extends Color("[38;2;200;200;100m", "[33m")
-  case object PaleRed    extends Color("[38;2;255;182;193m", "[31m")
+  // Dark:  faded enough not to compete with tree nodes
+  // Light: darker than the tree colours so they're readable on white,
+  //        but still clearly subordinate (muted hue, not bold)
+  //
+  //   Debug   → steel gray    / dark slate gray
+  //   Info    → dusty teal    / dark slate teal
+  //   Warning → muted gold    / dark olive/brown
+  //   Error   → muted rose    / dark rose/maroon
+  //
+  case object LogDebug   extends Color("[38;5;242m", "[38;5;238m")         // steel gray    / dark slate
+  case object LogInfo    extends Color("[38;2;100;180;160m", "[38;5;66m")  // dusty teal    / dark slate teal
+  case object LogWarning extends Color("[38;2;200;170;80m", "[38;5;94m")   // muted gold    / dark olive
+  case object LogError   extends Color("[38;2;210;100;100m", "[38;5;124m") // muted rose    / dark maroon
+
+  // Keep Pale* as aliases for any code that references them directly
+  val PaleGreen: Color  = LogInfo
+  val PaleCyan: Color   = LogDebug
+  val PaleYellow: Color = LogWarning
+  val PaleRed: Color    = LogError
 
 // ── Style ─────────────────────────────────────────────────────────────────────
 
@@ -108,32 +137,32 @@ object StatusColor:
   def from[A](f: A => Style): StatusColor[A] = a => f(a)
 
   given StatusColor[StepStatus] = from {
-    case StepStatus.Passed         => Style(Color.Blue, "•")   // •
-    case StepStatus.Failed(_)      => Style(Color.Red, "✗")    // ✗
-    case StepStatus.TimedOut(_, _) => Style(Color.Red, "⏱")    // ⏱
-    case StepStatus.Skipped        => Style(Color.Gray, "○")   // ○
-    case StepStatus.Pending(_)     => Style(Color.Orange, "◌") // ◌
+    case StepStatus.Passed         => Style(Color.Mint, "•") // soft mint  — leaf-level pass
+    case StepStatus.Failed(_)      => Style(Color.Red, "✗")
+    case StepStatus.TimedOut(_, _) => Style(Color.Red, "⏱")
+    case StepStatus.Skipped        => Style(Color.Gray, "○")
+    case StepStatus.Pending(_)     => Style(Color.Orange, "◌")
   }
 
   given StatusColor[ScenarioResult] = from { sc =>
-    if (sc.isIgnored) Style(Color.Gray, "◑")                           // ◑
-    else if (sc.hasPending && !sc.hasFailure) Style(Color.Orange, "◑") // ◑
-    else if (sc.isPassed) Style(Color.Yellow, "✓")                     // ✓
-    else Style(Color.Red, "✗")                                         // ✗
+    if (sc.isIgnored) Style(Color.Gray, "◑")
+    else if (sc.hasPending && !sc.hasFailure) Style(Color.Orange, "◑")
+    else if (sc.isPassed) Style(Color.Blue, "✓") // sky blue — scenario-level pass
+    else Style(Color.Red, "✗")
   }
 
   given StatusColor[FeatureResult] = from { f =>
-    if (f.isIgnored) Style(Color.Gray, "◉")      // ◉
-    else if (f.isPassed) Style(Color.Green, "◉") // ◉
-    else Style(Color.Red, "◉")                   // ◉
+    if (f.isIgnored) Style(Color.Gray, "◉")
+    else if (f.isPassed) Style(Color.Green, "◉") // bright green — feature-level pass
+    else Style(Color.Red, "◉")
   }
 
   given StatusColor[InternalLogLevel] = from {
-    case InternalLogLevel.Debug   => Style(Color.PaleCyan, "")
-    case InternalLogLevel.Info    => Style(Color.PaleGreen, "")
-    case InternalLogLevel.Warning => Style(Color.PaleYellow, "")
-    case InternalLogLevel.Error   => Style(Color.PaleRed, "")
-    case InternalLogLevel.Fatal   => Style(Color.PaleRed, "")
+    case InternalLogLevel.Debug   => Style(Color.LogDebug, "")    // steel gray  — least noise
+    case InternalLogLevel.Info    => Style(Color.LogInfo, "")     // dusty teal  — readable, calm
+    case InternalLogLevel.Warning => Style(Color.LogWarning, "⚠") // muted gold  — caution, noticeable
+    case InternalLogLevel.Error   => Style(Color.LogError, "✖")   // muted rose  — error, softer than tree red
+    case InternalLogLevel.Fatal   => Style(Color.Red, "✖")        // full red    — fatal demands attention
   }
 
 // ── Doc tree (pure, testable) ─────────────────────────────────────────────────
@@ -202,7 +231,8 @@ final class AnsiRenderer(val theme: Theme) extends DocRenderer[UIO]:
       if (theme == Theme.Plain)
         s"$indent$prefix${leaf.style.icon} ${leaf.text}"
       else
-        s"$indent${ansi(leaf.style.color)}$prefix${leaf.style.icon} ${leaf.text}$Reset"
+        // Glyph (├─ ╰─) — no colour, matches the plain │ in the indent string
+        s"$indent$prefix${ansi(leaf.style.color)}${leaf.style.icon} ${leaf.text}$Reset"
     Console.printLine(line).orDie
 
   def render(doc: Doc, indent: String = ""): UIO[Unit] = doc match
@@ -297,20 +327,81 @@ object DocBuilder:
 
   def stepLeaf(sr: StepResult): Doc.Leaf =
     val st  = sr.status
-    val sty = summon[StatusColor[StepStatus]].style(st)
     val kw  = sr.step.stepType.toString.replace("Step", "")
     val loc = sr.step.line.map(l => s":$l").getOrElse("")
-    Doc.Leaf(
-      text = s"$kw ${sr.step.pattern}$loc${statusLabel(st)}${durStr(sr.duration)}",
-      style = sty
-    )
+    val pat = sr.step.pattern
+    // Property synthetic steps get distinct styling instead of the normal step colour.
+    if (pat.startsWith("[counterexample]"))
+      Doc.Leaf(
+        text = s"$pat${statusLabel(st)}${durStr(sr.duration)}",
+        style = Style(Color.Orange, icon = "⚡")
+      )
+    else if (pat.startsWith("[property]"))
+      Doc.Leaf(
+        text = s"$pat${durStr(sr.duration)}",
+        style = Style(Color.Cyan, icon = "⟳")
+      )
+    else
+      Doc.Leaf(
+        text = s"$kw $pat$loc${statusLabel(st)}${durStr(sr.duration)}",
+        style = summon[StatusColor[StepStatus]].style(st)
+      )
+
+  /** Render a `[counterexample]` pattern as a compact table. */
+  private def counterexampleTable(pattern: String): List[Doc.Leaf] =
+    // Pattern: "[counterexample] col1=val1 (gen1) ‖ col2=val2 (gen2)" — entries are joined with
+    // PropertyExecutor.counterexampleEntrySep, not a plain comma, since column values are
+    // arbitrary generated text that commonly contains literal commas (e.g. a case class's
+    // default toString: `Address(Main St,London)`).
+    val body = pattern.stripPrefix("[counterexample]").trim
+    if (body.isEmpty) Nil
+    else
+      val entries = body
+        .split(java.util.regex.Pattern.quote(zio.bdd.core.property.PropertyExecutor.counterexampleEntrySep))
+        .map(_.trim)
+        .toList
+      val colWidth = entries.map { e =>
+        e.indexOf('=') match { case -1 => 0; case i => i }
+      }.maxOption.getOrElse(0)
+      val sep = "  " + "─" * (colWidth + 2 + 30)
+      val rows = entries.map { e =>
+        e.indexOf('=') match
+          case -1 => Doc.Leaf(s"  │ $e", Style(Color.Orange))
+          case i =>
+            val col  = e.take(i).padTo(colWidth, ' ')
+            val rest = e.drop(i + 1)
+            Doc.Leaf(s"  │ $col │ $rest", Style(Color.Orange))
+      }
+      Doc.Leaf(sep, Style(Color.Orange)) ::
+        rows ++
+        List(Doc.Leaf(sep, Style(Color.Orange)))
 
   def causeLeaves(cause: zio.Cause[Throwable]): List[Doc.Leaf] =
     cause.squash match
       case mae: zio.bdd.core.MultipleAssertionError =>
         mae.failures.map(msg => Doc.Leaf(s"  - $msg", Style(Color.Red)))
-      case _ =>
-        cause.prettyPrint.split("\n").map(line => Doc.Leaf(line, Style(Color.Red))).toList
+      case e: AssertionError =>
+        // User assertion: show only the message — no stack frames needed.
+        List(Doc.Leaf(e.getMessage, Style(Color.Red)))
+      case e: zio.bdd.core.property.PropertyFalsifiedException =>
+        // Property counterexample summary: show only the message, no internal frames.
+        List(Doc.Leaf(e.getMessage, Style(Color.Red)))
+      case e =>
+        // Other exceptions: show message then user-relevant frames only
+        // (strip zio.bdd.core.*, zio.*, scala.runtime.* internals).
+        val msg = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+        val frames = Option(e.getStackTrace)
+          .getOrElse(Array.empty[StackTraceElement])
+          .filterNot { f =>
+            val c = f.getClassName
+            c.startsWith("zio.bdd.") || c.startsWith("zio.") ||
+            c.startsWith("scala.runtime.") || c.startsWith("java.")
+          }
+          .take(5)
+          .map(f => s"  at ${f.getClassName}.${f.getMethodName}(${f.getFileName}:${f.getLineNumber})")
+        val msgLeaf     = Doc.Leaf(msg, Style(Color.Red))
+        val frameLeaves = frames.map(l => Doc.Leaf(l, Style(Color.Red))).toList
+        msgLeaf :: frameLeaves
 
   def logLeaves(logs: CollectedLogs): List[Doc.Leaf] =
     logs.entries.flatMap { entry =>
@@ -323,10 +414,15 @@ object DocBuilder:
 
   def stepBranch(sr: StepResult, isLast: Boolean, logs: CollectedLogs): Doc =
     val header = stepLeaf(sr)
-    val causeDoc = sr.status match
-      case StepStatus.Failed(cause)      => causeLeaves(cause)
-      case StepStatus.TimedOut(_, cause) => causeLeaves(cause)
-      case _                             => Nil
+    val causeDoc: List[Doc.Leaf] =
+      if (sr.step.pattern.startsWith("[counterexample]"))
+        // Replace the raw exception message with the table view.
+        counterexampleTable(sr.step.pattern)
+      else
+        sr.status match
+          case StepStatus.Failed(cause)      => causeLeaves(cause)
+          case StepStatus.TimedOut(_, cause) => causeLeaves(cause)
+          case _                             => Nil
     val logDoc   = logLeaves(logs)
     val children = (causeDoc ++ logDoc).map(l => l: Doc)
     Doc.Branch(header, children, isLast)

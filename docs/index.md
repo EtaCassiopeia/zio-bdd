@@ -15,6 +15,8 @@ New to zio-bdd?  Read in this order:
    ZIO effects, what `R` and `S` mean, how state is isolated per scenario.
 3. **[Step DSL](step-dsl.md)** — the full extractor reference (`string`, `int`, `table[T]`,
    `docString`, `regex`, `oneOf`, etc.) plus the `StepEffect` / `StepIO` type aliases.
+4. **[Property-Based Testing](property-testing.md)** — once you're comfortable with literal
+   `Examples:` rows, learn the `@property(...)` tag to sample generated values instead.
 
 ---
 
@@ -27,6 +29,7 @@ New to zio-bdd?  Read in this order:
 | [Hooks](hooks.md) | `beforeAll`, `afterAll`, `beforeFeature`, `afterFeature`, `beforeScenario`, `afterScenario`, `beforeScenarioTagged`, `beforeStep`, `afterStep` |
 | [Step DSL](step-dsl.md) | All extractors, `StepEffect`, `StepIO`, `InlineStepMethods`, `pending`, `withSnapshot`, soft assertions |
 | [Gherkin Syntax](gherkin.md) | Complete Gherkin reference — `Feature`, `Background`, `Scenario`, `Scenario Outline`, `Examples`, `Rule`, tags, data tables, doc strings |
+| [Property-Based Testing](property-testing.md) | `@property(...)` tag, `HasGen[T]` registry, named generator overrides, failure replay, JUnit XML output |
 | [Running Tests](running.md) | `@Suite` annotation, sbt commands, CLI flags, dry-run, tag filtering, parallelism, step timeout, IDE integration |
 | [Feature Flag Testing](testing-flags.md) | `@flags(k=v)` matrix expansion, `flagLayer`, `ScenarioMetadata.flagValues`, OpenFeature / Optimizely patterns |
 | [Reporters](reporters.md) | `pretty` (console tree), `junitxml` (CI reports), `StreamingReporter`, `LiveProgressReporter`, custom reporters |

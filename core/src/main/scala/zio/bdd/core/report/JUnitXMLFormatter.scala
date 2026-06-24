@@ -2,6 +2,7 @@ package zio.bdd.core.report
 
 import zio.*
 import zio.bdd.core.*
+import zio.bdd.core.property.PropertyFalsifiedException
 import zio.bdd.gherkin.{Feature, Step, StepType}
 
 import java.time.Instant
@@ -48,9 +49,21 @@ object JUnitXMLFormatter {
       case StepStatus.TimedOut(d, cause) =>
         TimedOut(s"Step timed out after ${d.toSeconds}s")
       case StepStatus.Failed(cause) =>
-        val msg =
-          cause.failureOption.map(_.getMessage).orElse(cause.dieOption.map(_.getMessage)).getOrElse("Test failed")
-        val trace = Option(cause.prettyPrint)
+        val e   = cause.squash
+        val msg = Option(e.getMessage).getOrElse(e.getClass.getSimpleName)
+        val trace = e match
+          case _: AssertionError             => None // message is self-explanatory; no trace needed
+          case _: PropertyFalsifiedException => None
+          case _ =>
+            Option(e.getStackTrace).map { frames =>
+              val userFrames = frames.filterNot { f =>
+                val c = f.getClassName
+                c.startsWith("zio.bdd.") || c.startsWith("zio.") ||
+                c.startsWith("scala.runtime.") || c.startsWith("java.")
+              }
+                .take(10)
+              userFrames.mkString("\n\tat ", "\n\tat ", "")
+            }
         Failed(msg, trace)
 
     def xmlStatus(o: StepOutcome): String = o match

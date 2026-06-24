@@ -46,6 +46,7 @@ object AccountSpec extends ZIOSteps[Any, AccountState]:
 - **Three-tier environment** — `globalLayer` (once per JVM), `featureLayer` (once per feature), `scenarioLayer(meta)` (once per scenario) for fine-grained resource sharing
 - **Lifecycle hooks** — `beforeAll`, `afterAll`, `beforeFeature`, `afterFeature`, `beforeScenario`, `afterScenario`, `beforeStep`, `afterStep`
 - **Full Gherkin support** — Background, Scenario Outline (Examples tables), data tables, doc strings, tags
+- **Property-based testing** — `@property(samples=N, seed=S)` on a header-only `Examples:` block runs the scenario N times with ZIO Test `Gen`-sampled values; `HasGen[T]` typeclass wires domain generators; named column overrides (`| amount: smallAmounts |`); automatic failure replay via `.zio-bdd/failures/`
 - **Flag matrix** — `@flags(key=value)` tags expand a scenario into N runs with different environment values
 - **Tag filtering** — `includeTags` / `excludeTags` in `@Suite` or via `--include-tags` / `--exclude-tags` CLI
 - **Parallel execution** — feature-level via `@Suite(parallelism = N)`, scenario-level via `--scenario-parallelism N`
@@ -75,6 +76,7 @@ transitively and are needed to derive `Schema[S]` for your state type.
 | [docs/quickstart.md](docs/quickstart.md) | Zero to running test in 5 minutes |
 | [docs/concepts.md](docs/concepts.md) | Mental model: how the framework works |
 | [docs/step-dsl.md](docs/step-dsl.md) | Step DSL, extractors, and patterns |
+| [docs/property-testing.md](docs/property-testing.md) | `@property(...)` tag, `HasGen[T]` registry, named generator overrides, failure replay, JUnit XML output |
 | [docs/index.md](docs/index.md) | Full documentation index — Gherkin syntax, state, layers, hooks, reporters, feature flags, cookbook, migrating from Cucumber, troubleshooting |
 
 ## Used by
