@@ -414,11 +414,13 @@ object PropertyExecutor:
    * Tag-keyed registry. Only the steps mentioning one of `columns` are
    * structurally matched.
    */
+  private def mentionsColumn(step: Step, col: String): Boolean = step.pattern.contains(s"<$col>")
+
   private def resolveByType[R: Tag, S: Tag](
     scenario: Scenario,
     columns: Set[String]
   ): URIO[StepRegistry[R, S], Map[String, Either[String, HasGen[?]]]] = {
-    val relevantSteps = scenario.steps.filter(step => columns.exists(col => step.pattern.contains(s"<$col>")))
+    val relevantSteps = scenario.steps.filter(step => columns.exists(mentionsColumn(step, _)))
     ZIO
       .foreach(relevantSteps) { step =>
         StepRegistry.resolveTemplateColumns[R, S](step.stepType, step.pattern).either.map(step -> _)
@@ -432,10 +434,13 @@ object PropertyExecutor:
     col: String,
     perStep: List[(Step, Either[TemplateLookupError, List[(String, Tag[?])]])]
   ): Either[String, HasGen[?]] = {
-    val mentions = perStep.filter { case (step, _) => step.pattern.contains(s"<$col>") }
+    val mentions = perStep.filter { case (step, _) => mentionsColumn(step, col) }
+    // Distinct: the same step can legitimately mention `col` more than once (the same
+    // sampled value substitutes into every occurrence), which would otherwise duplicate
+    // entries here without indicating any real conflict.
     val seen: List[(Tag[?], String)] = mentions.collect { case (step, Right(cols)) =>
       cols.collect { case (name, tag) if name == col => tag -> step.pattern }
-    }.flatten
+    }.flatten.distinct
     val distinctTags = seen.map(_._1).distinct
 
     distinctTags match {
@@ -468,9 +473,11 @@ object PropertyExecutor:
 
   /**
    * Render a Tag's underlying type name for error messages, e.g. `Tag[Money]`
-   * -> `"Money"`.
+   * -> `"Money"`. `tag.tag` is the underlying `LightTypeTag`, whose own
+   * `toString` already renders just the type name — more robust than parsing
+   * `Tag.toString`'s `"Tag[...]"` wrapper.
    */
-  private def typeName(tag: Tag[?]): String = tag.toString.stripPrefix("Tag[").stripSuffix("]")
+  private def typeName(tag: Tag[?]): String = tag.tag.toString
 
 /**
  * Thrown when a property scenario is falsified. Message contains the
