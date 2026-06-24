@@ -55,6 +55,26 @@ object TemplateStructuralMatchSpec extends ZIOSpecDefault with DefaultTypedExtra
       val expr = StepExpression(List(Literal("amount "), Extractor(int), Literal(" exactly")))
       assertTrue(expr.structuralMatch("amount <amount> exactly").contains(List("amount" -> Tag[Int])))
       assertTrue(expr.structuralMatch("amount <amount> roughly").isEmpty)
+    },
+    test("the same column name repeated with the same extractor type yields both occurrences in order") {
+      val expr = StepExpression(
+        List(Literal("transfer "), Extractor(int), Literal(" to cover a fee of "), Extractor(int))
+      )
+      assertTrue(
+        expr
+          .structuralMatch("transfer <amount> to cover a fee of <amount>")
+          .contains(List("amount" -> Tag[Int], "amount" -> Tag[Int]))
+      )
+    },
+    test("the same column name repeated with different extractor types still structurally aligns") {
+      // structuralMatch is purely positional — it doesn't judge type consistency across
+      // occurrences of the same name. StepRegistry.resolveTemplateColumns is what rejects this.
+      val expr = StepExpression(List(Literal("from "), Extractor(int), Literal(" to "), Extractor(string)))
+      assertTrue(
+        expr
+          .structuralMatch("from <amount> to <amount>")
+          .contains(List("amount" -> Tag[Int], "amount" -> Tag[String]))
+      )
     }
   )
 
@@ -132,11 +152,72 @@ object TemplateStructuralMatchSpec extends ZIOSpecDefault with DefaultTypedExtra
       assertZIO(reg.resolveTemplateColumns(StepType.ThenStep, "role is <role>"))(
         equalTo(List("role" -> Tag[String]))
       )
+    },
+    test("the same column governed by two different extractor types fails with ConflictingColumnType") {
+      val step = makeStep(
+        StepType.GivenStep,
+        StepExpression(List(Literal("from "), Extractor(int), Literal(" to "), Extractor(string)))
+      )
+      val reg = registry(List(step))
+      assertZIO(reg.resolveTemplateColumns(StepType.GivenStep, "from <amount> to <amount>").either)(
+        isLeft(isSubtype[ConflictingColumnType](anything))
+      )
+    },
+    test("the same column repeated with the same extractor type succeeds with both occurrences") {
+      val step = makeStep(
+        StepType.GivenStep,
+        StepExpression(List(Literal("transfer "), Extractor(int), Literal(" twice as "), Extractor(int)))
+      )
+      val reg = registry(List(step))
+      assertZIO(reg.resolveTemplateColumns(StepType.GivenStep, "transfer <amount> twice as <amount>"))(
+        equalTo(List("amount" -> Tag[Int], "amount" -> Tag[Int]))
+      )
+    }
+  )
+
+  // ── Concurrency: a StepRegistryLive is immutable after construction, so resolving
+  // many templates against the same registry from parallel fibers must be as safe as
+  // findStep already is — this is the lookup #98/#99 will call once per scenario, and
+  // scenarios run under featureParallelism/scenarioParallelism (see ConcurrencySpec).
+
+  private val concurrencySuite = suite("concurrent resolution")(
+    test("200 concurrent resolveTemplateColumns calls on the same registry all return the same result") {
+      val step = makeStep(
+        StepType.GivenStep,
+        StepExpression(List(Literal("balance "), Extractor(int), Literal(" limit "), Extractor(long)))
+      )
+      val reg      = registry(List(step))
+      val expected = List("balance" -> Tag[Int], "limit" -> Tag[Long])
+      for {
+        results <- ZIO.foreachPar((1 to 200).toList)(_ =>
+                     reg.resolveTemplateColumns(StepType.GivenStep, "balance <balance> limit <limit>")
+                   )
+      } yield assertTrue(results.forall(_ == expected))
+    },
+    test("concurrent calls resolving different templates against a shared registry don't cross-contaminate") {
+      val balanceStep = makeStep(StepType.GivenStep, StepExpression(List(Literal("balance "), Extractor(int))))
+      val nameStep    = makeStep(StepType.GivenStep, StepExpression(List(Literal("name "), Extractor(string))))
+      val reg         = registry(List(balanceStep, nameStep))
+      for {
+        results <- ZIO.foreachPar((1 to 100).toList) { i =>
+                     if (i % 2 == 0)
+                       reg.resolveTemplateColumns(StepType.GivenStep, "balance <amount>").map(_ -> "balance")
+                     else
+                       reg.resolveTemplateColumns(StepType.GivenStep, "name <who>").map(_ -> "name")
+                   }
+      } yield assertTrue(
+        results.forall {
+          case (cols, "balance") => cols == List("amount" -> Tag[Int])
+          case (cols, "name")    => cols == List("who" -> Tag[String])
+          case _                 => false
+        }
+      )
     }
   )
 
   def spec: Spec[TestEnvironment, Any] = suite("Template structural matching (#97)")(
     exprLevel,
-    registryLevel
+    registryLevel,
+    concurrencySuite
   )
 }

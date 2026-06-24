@@ -34,6 +34,13 @@ case class StepExpression[Out <: Tuple](parts: List[StepPart]) {
    * structure doesn't align with this `StepExpression` at all (including the
    * common case of a template with no placeholders facing a StepExpression that
    * has extractors — there's no placeholder to supply their type).
+   *
+   * Purely structural: if the same column name appears more than once, every
+   * occurrence is included in order, even if they're governed by different
+   * `Tag`s. This method doesn't judge whether that's usable — that's a
+   * cross-cutting concern about the whole template, not about whether one
+   * `StepExpression` aligns with it, so `StepRegistry.resolveTemplateColumns`
+   * is what rejects that case (as `ConflictingColumnType`).
    */
   def structuralMatch(template: String): Option[List[(String, Tag[?])]] =
     StepExpression.structuralMatch(template, parts)

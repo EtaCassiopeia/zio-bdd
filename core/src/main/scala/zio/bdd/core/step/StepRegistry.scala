@@ -57,6 +57,26 @@ class AmbiguousTemplateException(stepType: StepType, template: String, patterns:
         "\nRename one of the step definitions to remove the ambiguity."
     )
 
+/**
+ * The same `<col>` placeholder appears more than once in `template`, governed
+ * by extractors that produce different types (e.g. `<amount>` captured once as
+ * `Tag[Int]` and once as `Tag[Long]`). `PropertyExecutor` samples exactly one
+ * string value per column name and substitutes it into every occurrence, so a
+ * single sampled value can never satisfy two different extractor types for the
+ * same placeholder — this is a step-definition bug, not ambiguity.
+ */
+final case class ConflictingColumnType(
+  stepType: StepType,
+  template: String,
+  column: String,
+  first: Tag[?],
+  second: Tag[?]
+) extends TemplateLookupError:
+  def toException: Throwable = new RuntimeException(
+    s"Column '$column' in $stepType template '$template' is captured as both $first and $second.\n" +
+      "Use one consistent extractor type for this placeholder, or rename one of the occurrences."
+  )
+
 trait StepRegistry[R, S]:
   /** Look up the effect to run for a given step. */
   def findStep(stepType: StepType, input: StepInput): IO[StepLookupError, RIO[R & State[S] & Scope, Unit]]
@@ -72,124 +92,109 @@ trait StepRegistry[R, S]:
 final case class StepRegistryLive[R, S](steps: List[StepDef[R, S]]) extends StepRegistry[R, S]:
   // Index definitions by their declared keyword once at construction, so per-step lookup
   // is a map access rather than a full scan. Registration order is preserved per bucket.
+  // Everything below is read-only after construction (`steps`, `byKeyword`, and every
+  // method here are pure functions over immutable data), so a single StepRegistryLive
+  // instance is safe to share and call concurrently across parallel scenario fibers —
+  // there's no mutable state to race on.
   private val byKeyword: Map[StepType, List[StepDef[R, S]]] =
     steps.groupBy { case StepDefImpl(rt, _, _) => rt }
 
-  private def matchesFor(
+  /**
+   * Shared fallback cascade for both literal-text lookup (`findStep`) and
+   * template lookup (`resolveTemplateColumns`): try the exact keyword first; if
+   * nothing matches at all, fall back to And steps as universal glue, then to
+   * any step type. This mirrors Cucumber semantics — the keyword on a step
+   * definition is just documentation; any step can match any keyword at
+   * runtime. Stops at the first level that has at least one match, even if that
+   * level has several (disambiguation happens one level up).
+   */
+  private def candidatesWithFallback[A](
     stepType: StepType,
-    input: StepInput
-  ): List[(StepDef[R, S], RIO[R & State[S] & Scope, Unit])] =
-    byKeyword.getOrElse(stepType, Nil).flatMap(s => s.tryExecute(input).map(effect => (s, effect)))
+    tryMatch: StepDef[R, S] => Option[A]
+  ): List[(StepDef[R, S], A)] = {
+    def matchesIn(candidates: List[StepDef[R, S]]): List[(StepDef[R, S], A)] =
+      candidates.flatMap(sd => tryMatch(sd).map(a => (sd, a)))
 
-  def findStep(stepType: StepType, input: StepInput): IO[StepLookupError, RIO[R & State[S] & Scope, Unit]] = {
-    val typedMatches = matchesFor(stepType, input)
-
-    typedMatches match {
-      case Nil =>
-        // Fall back to And steps as universal glue, then to any step type.
-        // This matches Cucumber's semantics: keyword on the step definition is just
-        // documentation — any step can match any keyword at runtime.
-        val andMatches = matchesFor(StepType.AndStep, input)
-        andMatches match {
-          case (_, effect) :: Nil => ZIO.succeed(effect)
-          case Nil                =>
-            // Cross-keyword fallback: find a match across all step types.
-            val allMatches = steps
-              .flatMap(s => s.tryExecute(input).map(effect => (s, effect)))
-            allMatches match {
-              case Nil =>
-                ZIO.fail(NoMatchingStep(stepType, input, generateSnippet(stepType, input)))
-              case (_, effect) :: Nil =>
-                ZIO.succeed(effect)
-              case multiple =>
-                disambiguate(multiple, stepType, input)
-            }
-          case multiple =>
-            disambiguate(multiple, stepType, input)
-        }
-
-      case (_, effect) :: Nil =>
-        ZIO.succeed(effect)
-
-      case multiple =>
-        disambiguate(multiple, stepType, input)
+    val exact = matchesIn(byKeyword.getOrElse(stepType, Nil))
+    if (exact.nonEmpty) exact
+    else {
+      val and = matchesIn(byKeyword.getOrElse(StepType.AndStep, Nil))
+      if (and.nonEmpty) and else matchesIn(steps)
     }
   }
 
   // The definition with the fewest extractor placeholders is the most specific (most
-  // literal) one. Shared by literal-text disambiguation (`disambiguate`) and template
-  // disambiguation (`disambiguateTemplate`) — both prefer the same specificity ordering.
+  // literal) one. This lets a literal step like `the response body is not empty` win
+  // over a wildcard `the response body is {string}`. Only a tie at the most-specific
+  // level is a genuine ambiguity. Shared by both literal-text and template lookup —
+  // both prefer the same specificity ordering.
   private def extractorCount(sd: StepDef[R, S]): Int = sd match {
     case StepDefImpl(_, expr, _) => expr.parts.count { case _: Extractor[?] => true; case _ => false }
   }
 
-  // When several definitions match the same text, prefer the most specific one —
-  // the definition with the fewest extractor placeholders. This lets a literal step
-  // like `the response body is not empty` win over a wildcard `the response body is {string}`.
-  // Only a tie at the most-specific level is reported as a genuine ambiguity.
-  private def disambiguate(
-    matches: List[(StepDef[R, S], RIO[R & State[S] & Scope, Unit])],
-    stepType: StepType,
-    input: StepInput
-  ): IO[StepLookupError, RIO[R & State[S] & Scope, Unit]] = {
+  private def fewestExtractorsWinner[A](matches: List[(StepDef[R, S], A)]): Either[List[String], A] = {
     val fewest  = matches.map { case (sd, _) => extractorCount(sd) }.min
     val winners = matches.filter { case (sd, _) => extractorCount(sd) == fewest }
     winners match {
-      case (_, effect) :: Nil => ZIO.succeed(effect)
-      case _ =>
-        ZIO.fail(AmbiguousStep(stepType, input, winners.map { case (StepDefImpl(_, expr, _), _) => expr.toString }))
+      case (_, a) :: Nil => Right(a)
+      case _             => Left(winners.map { case (StepDefImpl(_, expr, _), _) => expr.toString })
     }
   }
+
+  def findStep(stepType: StepType, input: StepInput): IO[StepLookupError, RIO[R & State[S] & Scope, Unit]] =
+    candidatesWithFallback(stepType, (sd: StepDef[R, S]) => sd.tryExecute(input)) match {
+      case Nil                => ZIO.fail(NoMatchingStep(stepType, input, generateSnippet(stepType, input)))
+      case (_, effect) :: Nil => ZIO.succeed(effect)
+      case multiple =>
+        ZIO.fromEither(fewestExtractorsWinner(multiple).left.map(patterns => AmbiguousStep(stepType, input, patterns)))
+    }
 
   def resolveTemplateColumns(
     stepType: StepType,
     template: String
   ): IO[TemplateLookupError, List[(String, Tag[?])]] = {
-    def structuralMatchesFor(st: StepType): List[(StepDef[R, S], List[(String, Tag[?])])] =
-      byKeyword
-        .getOrElse(st, Nil)
-        .collect { case sd @ StepDefImpl(_, expr, _) =>
-          expr.structuralMatch(template).map(cols => (sd, cols))
-        }
-        .flatten
-
-    val typedMatches = structuralMatchesFor(stepType)
-    typedMatches match {
-      case Nil =>
-        // Same fallback chain as findStep: And steps as universal glue, then any step type.
-        val andMatches = structuralMatchesFor(StepType.AndStep)
-        andMatches match {
-          case (_, cols) :: Nil => ZIO.succeed(cols)
-          case Nil =>
-            val allMatches = steps.collect { case sd @ StepDefImpl(_, expr, _) =>
-              expr.structuralMatch(template).map(cols => (sd, cols))
-            }.flatten
-            allMatches match {
-              case Nil              => ZIO.fail(NoMatchingTemplate(stepType, template))
-              case (_, cols) :: Nil => ZIO.succeed(cols)
-              case multiple         => disambiguateTemplate(multiple, stepType, template)
-            }
-          case multiple => disambiguateTemplate(multiple, stepType, template)
-        }
-      case (_, cols) :: Nil => ZIO.succeed(cols)
-      case multiple         => disambiguateTemplate(multiple, stepType, template)
+    def structuralMatchOf(sd: StepDef[R, S]): Option[List[(String, Tag[?])]] = sd match {
+      case StepDefImpl(_, expr, _) => expr.structuralMatch(template)
     }
+
+    val resolved: IO[TemplateLookupError, List[(String, Tag[?])]] =
+      candidatesWithFallback(stepType, structuralMatchOf) match {
+        case Nil              => ZIO.fail(NoMatchingTemplate(stepType, template))
+        case (_, cols) :: Nil => ZIO.succeed(cols)
+        case multiple =>
+          ZIO.fromEither(
+            fewestExtractorsWinner(multiple).left.map(patterns => AmbiguousTemplate(stepType, template, patterns))
+          )
+      }
+    resolved.flatMap(cols => validateColumnTypes(stepType, template, cols))
   }
 
-  // Same fewest-extractors specificity heuristic as `disambiguate`, applied to templates.
-  private def disambiguateTemplate(
-    matches: List[(StepDef[R, S], List[(String, Tag[?])])],
+  // A `<col>` placeholder can legitimately appear more than once in one template (the
+  // same sampled value is substituted everywhere) — but only if every occurrence is
+  // governed by the same Tag. If two occurrences disagree, no single sampled value can
+  // satisfy both, so this is reported distinctly from "no match"/"ambiguous": it's a
+  // bug in how the matching StepDef's extractors are typed, not a lookup failure.
+  private def validateColumnTypes(
     stepType: StepType,
-    template: String
+    template: String,
+    cols: List[(String, Tag[?])]
   ): IO[TemplateLookupError, List[(String, Tag[?])]] = {
-    val fewest  = matches.map { case (sd, _) => extractorCount(sd) }.min
-    val winners = matches.filter { case (sd, _) => extractorCount(sd) == fewest }
-    winners match {
-      case (_, cols) :: Nil => ZIO.succeed(cols)
-      case _ =>
-        ZIO.fail(
-          AmbiguousTemplate(stepType, template, winners.map { case (StepDefImpl(_, expr, _), _) => expr.toString })
-        )
+    // Walk left to right (template order) rather than `groupBy` (Map iteration order is
+    // unspecified) so the reported conflict is always the first one a developer would
+    // spot reading the template themselves.
+    @scala.annotation.tailrec
+    def firstConflict(remaining: List[(String, Tag[?])], seen: Map[String, Tag[?]]): Option[ConflictingColumnType] =
+      remaining match {
+        case Nil => None
+        case (column, tag) :: rest =>
+          seen.get(column) match {
+            case Some(prior) if prior != tag => Some(ConflictingColumnType(stepType, template, column, prior, tag))
+            case _                           => firstConflict(rest, seen.updated(column, tag))
+          }
+      }
+    firstConflict(cols, Map.empty) match {
+      case Some(conflict) => ZIO.fail(conflict)
+      case None           => ZIO.succeed(cols)
     }
   }
 
