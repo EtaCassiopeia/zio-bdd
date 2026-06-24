@@ -4,7 +4,7 @@ import zio.*
 import zio.test.*
 import zio.test.Assertion.*
 import zio.bdd.core.property.{ColumnGenLookup, HasGen}
-import zio.bdd.core.step.{State, ZIOSteps}
+import zio.bdd.core.step.{State, TypedExtractor, ZIOSteps}
 import zio.bdd.gherkin.GherkinParser
 import zio.test.Gen
 
@@ -44,6 +44,7 @@ object PropertyExecutorSpec extends ZIOSpecDefault {
     passSuite,
     failSuite,
     generatorSuite,
+    autoResolutionSuite,
     mixedSuite,
     stateSuite,
     flagsSuite,
@@ -218,9 +219,13 @@ object PropertyExecutorSpec extends ZIOSpecDefault {
         }
     },
     test("unknown column with no registered HasGen produces a setup error") {
-      val steps = new ZIOSteps[Any, S]:
-        Given("x is " / int)((n: Int) => ZIO.unit)
-        Then("ok")(ZIO.unit)
+      // A genuinely unregistered custom type (not int/string) — those auto-resolve via the
+      // built-in HasGen now, so this must use a type nothing has registered a HasGen for.
+      final case class Unresolvable(raw: String)
+      val unresolvableExtractor: TypedExtractor[Unresolvable] =
+        TypedExtractor.make[Unresolvable]("(.+)") { (_, groups, idx) =>
+          groups.lift(idx).map(s => (Unresolvable(s), idx + 1)).toRight("expected a value")
+        }
 
       runFeature(
         """Feature: Missing gen
@@ -232,13 +237,178 @@ object PropertyExecutorSpec extends ZIOSpecDefault {
           |      | unknownColumn |
           |""".stripMargin,
         new ZIOSteps[Any, S]:
-          Given("x is " / string)((s: String) => ZIO.unit)
+          Given("x is " / unresolvableExtractor)((u: Unresolvable) => ZIO.unit)
           Then("ok")(ZIO.unit)
       ).map { results =>
         val sc = results.head.scenarioResults.head
         // setupError should be set because no HasGen resolved for the column
         assertTrue(sc.setupError.isDefined)
       }
+    }
+  )
+
+  // ── Automatic type-based resolution (#99) ───────────────────────────────────
+
+  private val autoResolutionSuite = suite("Automatic type-based resolution")(
+    test("a built-in-typed column resolves automatically with no columnGenLookup entry") {
+      val steps = new ZIOSteps[Any, S]:
+        Given("value " / int)((n: Int) => ZIO.unit)
+        Then("ok")(ZIO.unit)
+
+      GherkinParser
+        .parseFeature(
+          """Feature: Auto resolve built-in
+            |  Scenario Outline: auto int
+            |    Given value <amount>
+            |    Then ok
+            |    @property(samples=10, replay=false)
+            |    Examples:
+            |      | amount |
+            |""".stripMargin,
+          "auto-builtin.feature"
+        )
+        .flatMap { f =>
+          FeatureExecutor.executeFeatures[Any, S](List(f), steps.getSteps, steps, genLookup = ColumnGenLookup.empty)
+        }
+        .map(results => assertTrue(results.head.scenarioResults.head.isPassed))
+    },
+    test("a custom registered type resolves automatically via HasGen.registerType, with no columnGenLookup entry") {
+      // toString must round-trip through the extractor's pattern, since sampled values are
+      // substituted into step text via toString (see PropertyExecutor.sampleGenToString) —
+      // same constraint the Title example in example/SimpleSpec.scala relies on.
+      final case class Score(value: Int) {
+        override def toString: String = value.toString
+      }
+      val scoreExtractor: TypedExtractor[Score] =
+        TypedExtractor.make[Score]("(-?\\d+)") { (_, groups, idx) =>
+          groups.lift(idx).flatMap(_.toIntOption).map(n => (Score(n), idx + 1)).toRight("expected an int")
+        }
+      given HasGen[Score] with
+        def gen            = Gen.int(0, 100).map(Score.apply)
+        override def label = "HasGen[Score]"
+      HasGen.registerType(HasGen[Score])
+
+      val steps = new ZIOSteps[Any, S]:
+        Given("score " / scoreExtractor)((s: Score) => ZIO.unit)
+        Then("ok")(ZIO.unit)
+
+      GherkinParser
+        .parseFeature(
+          """Feature: Auto resolve custom type
+            |  Scenario Outline: auto score
+            |    Given score <s>
+            |    Then ok
+            |    @property(samples=10, replay=false)
+            |    Examples:
+            |      | s |
+            |""".stripMargin,
+          "auto-custom.feature"
+        )
+        .flatMap { f =>
+          FeatureExecutor.executeFeatures[Any, S](List(f), steps.getSteps, steps, genLookup = ColumnGenLookup.empty)
+        }
+        .map(results => assertTrue(results.head.scenarioResults.head.isPassed))
+    },
+    test("columnGenLookup's explicit entry still wins over automatic resolution") {
+      val captured = new java.util.concurrent.atomic.AtomicReference[List[Int]](Nil)
+      val steps = new ZIOSteps[Any, S]:
+        Given("value " / int) { (n: Int) =>
+          ZIO.succeed(captured.updateAndGet(n :: _)).unit
+        }
+        Then("ok")(ZIO.unit)
+
+      val narrowGen = new HasGen[Int]:
+        def gen            = Gen.int(1, 5)
+        override def label = "HasGen[Int] (narrow override)"
+      val lookup = new ColumnGenLookup:
+        def byColumn(col: String): Option[HasGen[?]] = col match
+          case "amount" => Some(narrowGen)
+          case _        => None
+
+      GherkinParser
+        .parseFeature(
+          """Feature: Override wins
+            |  Scenario Outline: override wins
+            |    Given value <amount>
+            |    Then ok
+            |    @property(samples=20, replay=false)
+            |    Examples:
+            |      | amount |
+            |""".stripMargin,
+          "override-wins.feature"
+        )
+        .flatMap { f =>
+          FeatureExecutor.executeFeatures[Any, S](List(f), steps.getSteps, steps, genLookup = lookup)
+        }
+        .map { results =>
+          val sc     = results.head.scenarioResults.head
+          val values = captured.get()
+          assertTrue(sc.isPassed, values.nonEmpty, values.forall(v => v >= 1 && v <= 5))
+        }
+    },
+    test("a named header override still wins over automatic resolution") {
+      val captured = new java.util.concurrent.atomic.AtomicReference[List[Int]](Nil)
+      HasGen.named("tinyInts")(Gen.int(1, 3))
+
+      val steps = new ZIOSteps[Any, S]:
+        Given("value " / int) { (n: Int) =>
+          ZIO.succeed(captured.updateAndGet(n :: _)).unit
+        }
+        Then("ok")(ZIO.unit)
+
+      GherkinParser
+        .parseFeature(
+          """Feature: Named override wins
+            |  Scenario Outline: named override wins
+            |    Given value <amount>
+            |    Then ok
+            |    @property(samples=20, replay=false)
+            |    Examples:
+            |      | amount: tinyInts |
+            |""".stripMargin,
+          "named-override-wins.feature"
+        )
+        .flatMap { f =>
+          FeatureExecutor.executeFeatures[Any, S](List(f), steps.getSteps, steps, genLookup = ColumnGenLookup.empty)
+        }
+        .map { results =>
+          val sc     = results.head.scenarioResults.head
+          val values = captured.get()
+          assertTrue(sc.isPassed, values.nonEmpty, values.forall(v => v >= 1 && v <= 3))
+        }
+    },
+    test("the same column inferred as two different types across steps produces a setup error naming both types") {
+      val steps = new ZIOSteps[Any, S]:
+        Given("amount is " / int)((n: Int) => ZIO.unit)
+        Given("moved " / string)((s: String) => ZIO.unit)
+        Then("ok")(ZIO.unit)
+
+      GherkinParser
+        .parseFeature(
+          """Feature: Ambiguous column type
+            |  Scenario Outline: ambiguous
+            |    Given amount is <amount>
+            |    Given moved <amount>
+            |    Then ok
+            |    @property(samples=5, replay=false)
+            |    Examples:
+            |      | amount |
+            |""".stripMargin,
+          "ambiguous.feature"
+        )
+        .flatMap { f =>
+          FeatureExecutor.executeFeatures[Any, S](List(f), steps.getSteps, steps, genLookup = ColumnGenLookup.empty)
+        }
+        .map { results =>
+          val sc      = results.head.scenarioResults.head
+          val message = sc.error.map(_.getMessage).getOrElse("")
+          assertTrue(
+            sc.setupError.isDefined,
+            message.contains("amount"),
+            message.contains("Int"),
+            message.contains("String")
+          )
+        }
     }
   )
 
@@ -667,8 +837,15 @@ object PropertyExecutorSpec extends ZIOSpecDefault {
         }
     },
     test("dry-run still surfaces a setup error when a column has no registered HasGen") {
+      // A genuinely unregistered custom type — int/string now auto-resolve via the built-in
+      // HasGen, so this must use a type nothing has registered a HasGen for.
+      final case class Unresolvable(raw: String)
+      val unresolvableExtractor: TypedExtractor[Unresolvable] =
+        TypedExtractor.make[Unresolvable]("(.+)") { (_, groups, idx) =>
+          groups.lift(idx).map(s => (Unresolvable(s), idx + 1)).toRight("expected a value")
+        }
       val steps = new ZIOSteps[Any, S]:
-        Given("value " / int)((n: Int) => ZIO.unit)
+        Given("value " / unresolvableExtractor)((u: Unresolvable) => ZIO.unit)
         Then("ok")(ZIO.unit)
 
       GherkinParser

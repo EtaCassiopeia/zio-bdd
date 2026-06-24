@@ -125,12 +125,15 @@ object SimpleSpec extends ZIOSteps[GreetingService, ScenarioContext]:
   }
 
   // ── Column generator lookup ────────────────────────────────────────────
-  // Routes @property Examples columns to their HasGen instance. Three distinct styles:
-  //   - "name"  → a *named* override registered above via HasGen.named("name")(...)
-  //   - "title" → a *domain-type* generator resolved via the `given HasGen[Title]` above
-  //   - any built-in-typed column (Int/Long/Double/Boolean/String/UUID) would still need
-  //     an entry here too — HasGen's built-ins are summonable, but column→type routing is
-  //     always explicit; there's no automatic name-to-type inference.
+  // columnGenLookup is the *override* path, not mandatory wiring — both columns below
+  // are governed by a `string` extractor (Given("a user named " / string), Given("a
+  // title " / string)), so they'd resolve automatically to the built-in HasGen[String]
+  // (unconstrained alphanumeric text) with no entry here at all. Both are overridden
+  // anyway because the automatic choice isn't the generator we actually want:
+  //   - "name"  → a *named* override (HasGen.named("name")(...) above) for readable
+  //     capitalised names instead of alphanumeric gibberish.
+  //   - "title" → a *domain-type* generator (`given HasGen[Title]` above) so it only
+  //     ever generates one of the three known honorifics, not arbitrary text.
   override def columnGenLookup: ColumnGenLookup = new ColumnGenLookup:
     def byColumn(col: String): Option[HasGen[?]] = col match
       case "name"  => HasGen.resolve("name")

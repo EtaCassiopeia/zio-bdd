@@ -39,19 +39,24 @@ object AccountSpec extends ZIOSteps[AccountService, AccountState]:
   given HasGen[Limit] with
     def gen = Gen.long(0, 5_000).map(Limit.apply)
 
+  // One-time registration makes Money/Limit resolve automatically by type for every
+  // column of that type — no per-column columnGenLookup entry needed below.
+  HasGen.registerType(HasGen[Money])
+  HasGen.registerType(HasGen[Limit])
+
   Given("an account with balance " / money / " and limit " / limit) { (bal, lim) =>
     ScenarioContext.update(_.copy(balance = bal, limit = lim))
   }
   When("I withdraw " / money) { (amount: Money) => ... }
   Then("the resulting balance is at least negative " / limit) { (lim: Limit) => ... }
 
-  // Every property column — including these — must still be routed by name in
-  // columnGenLookup; see "Wiring column resolution" below.
+  // columnGenLookup is now the override path, not mandatory — every column above already
+  // resolves automatically via registerType. Only needed for a narrower/different
+  // generator than the automatic choice, e.g. constraining `amount` to smaller values:
   override def columnGenLookup: ColumnGenLookup = new ColumnGenLookup:
     def byColumn(col: String): Option[HasGen[?]] = col match
-      case "balance" | "amount" => Some(HasGen[Money])
-      case "limit"              => Some(HasGen[Limit])
-      case _                    => None
+      case "amount" => Some(new HasGen[Money] { def gen = Gen.double(0, 100).map(Money.apply) })
+      case _        => None
 ```
 
 On failure the pretty reporter shows:
@@ -183,19 +188,24 @@ them:
 | `String` | `Gen.alphaNumericString` |
 | `UUID` | `Gen.uuid` |
 
-**This does not mean property mode works with zero setup.** Column-to-generator
-resolution is always by *column name*, never by inferred type — there is no mechanism
-that looks at a step's `/ int` extractor and concludes "this column is an `Int`, use
-`HasGen[Int]`". Every property column, including ones that only need a built-in type,
-must still have an entry in `columnGenLookup` (see below) that explicitly returns
-`Some(HasGen[Int])` (or whichever built-in applies) for that column name. What the
-built-ins save you from is writing `Gen.int` yourself — not from wiring the column.
+**A built-in-typed column needs no `columnGenLookup` entry at all.** The executor infers
+a column's type from the `TypedExtractor` that governs it in your step definitions (e.g.
+`/ int`), then resolves that type automatically against `HasGen`'s built-in registry — no
+mechanism existed for this before; now it does. `columnGenLookup` is the *override* path:
+reach for it when you want a narrower or different generator than the automatic choice,
+or to resolve an ambiguity (see [Wiring column resolution](#wiring-column-resolution-via-columngenlookup)
+below). A column with no explicit override and a built-in extractor type just works:
+
+```gherkin
+Given a value of <retries>
+@property(samples=100)
+Examples:
+  | retries |
+```
 
 ```scala
-override def columnGenLookup: ColumnGenLookup = new ColumnGenLookup:
-  def byColumn(col: String): Option[HasGen[?]] = col match
-    case "retries" => Some(HasGen[Int])    // built-in HasGen[Int], still routed explicitly
-    case _         => None
+// No columnGenLookup entry needed for `retries` — it resolves automatically from the
+// `int` extractor in `Given("a value of " / int)`.
 ```
 
 ---
@@ -247,10 +257,17 @@ given HasGen[Money] with
 
 #### Using `HasGen.apply` to summon an instance
 
-Once a `given HasGen[A]` is in scope, summon it with `HasGen[A]`:
+Once a `given HasGen[A]` is in scope, summon it with `HasGen[A]`. This is the same idiom
+used both for an explicit `columnGenLookup` override and for `HasGen.registerType` (the
+one-time-per-type registration that makes automatic resolution work — see
+[Wiring column resolution](#wiring-column-resolution-via-columngenlookup) below):
 
 ```scala
-// In columnGenLookup:
+// One-time registration — Money/Currency now resolve automatically by type:
+HasGen.registerType(HasGen[Money])
+HasGen.registerType(HasGen[Currency])
+
+// Or, as an explicit per-column override in columnGenLookup:
 override def columnGenLookup: ColumnGenLookup = new ColumnGenLookup:
   def byColumn(col: String): Option[HasGen[?]] = col match
     case "amount" | "balance" => Some(HasGen[Money])     // summons the given above
@@ -294,20 +311,21 @@ names to avoid accidental collision between suites.
 
 ### Wiring column resolution via `columnGenLookup`
 
-Override `columnGenLookup` on your suite to tell the executor which `HasGen` to use for
-each placeholder column name. **This override is required for every property column** —
-domain types and built-in types alike. There is no automatic fallback by inferred type;
-resolution is entirely by column name.
+`columnGenLookup` is the *override* path, not a mandatory per-column registry. Most
+columns — anything whose extractor produces a built-in type, or a domain type registered
+via `HasGen.registerType` (see below) — resolve automatically with no entry here at all.
+Override `columnGenLookup` when you want a different generator than the automatic choice
+(a narrower range, a domain type that hasn't been registered, or to disambiguate a
+conflict):
 
 ```scala
 import zio.bdd.core.property.{ColumnGenLookup, HasGen}
 
 override def columnGenLookup: ColumnGenLookup = new ColumnGenLookup:
   def byColumn(col: String): Option[HasGen[?]] = col match
-    case "balance" | "amount" => Some(HasGen[Money])
-    case "limit"              => Some(HasGen[Limit])
-    case "currency"           => Some(HasGen[Currency])
-    case _                    => None  // unresolved → setup error (see below)
+    case "amount" => Some(HasGen[Money])  // Money isn't registered via registerType, so
+                                           // it needs an explicit entry (or call registerType instead)
+    case _        => None                 // everything else resolves automatically
 ```
 
 **Resolution order** for a column named `"amount"`:
@@ -315,32 +333,43 @@ override def columnGenLookup: ColumnGenLookup = new ColumnGenLookup:
 1. Named override from the column header annotation (`| amount: smallAmounts |`) —
    checked against `HasGen.resolve("smallAmounts")`.
 2. `columnGenLookup.byColumn("amount")`.
-3. Setup error — the scenario fails immediately with a clear message:
-   ``No HasGen registered for column 'amount'. Register `given HasGen[T]` for its type.``
+3. **Automatic type-based lookup:** the executor finds the `Tag[_]` the column's extractor
+   produces (from the step definition that governs it) and resolves it via
+   `HasGen.resolveByTag` — this is where the six built-ins, and any type registered via
+   `HasGen.registerType`, resolve with no further wiring.
+4. Setup error — the scenario fails immediately with a clear message naming the column
+   and, if a type was inferred, that type: e.g.
+   ``Column 'amount' was inferred as Money but no HasGen is registered for that type.
+   Register one via `given HasGen[Money] with ...` then `HasGen.registerType(HasGen[Money])`,
+   or add an explicit `columnGenLookup` entry for 'amount'.``
 
-There is deliberately no third "automatic built-in by type" step: a column is just a
-string name parsed from the Gherkin header, with no attached type information, so the
-executor cannot infer that a column named `"amount"` should resolve to `HasGen[Int]`
-versus `HasGen[Money]` versus anything else. Step 2 must say so explicitly, even when the
-`HasGen` instance being routed to is one of the built-ins.
+**Ambiguity:** if the same column name is used in two different steps and each step's
+extractor infers a *different* type, that's reported as a setup error too (not
+first-match-wins) — the message names the column and both conflicting types, since no
+single generator could be right for both.
 
 ---
 
 ### Complete setup checklist
 
-For a property scenario with a domain-type column to work:
+For a property scenario with a **built-in-typed** column (`Int`, `String`, `Long`,
+`Double`, `Boolean`, `UUID`) to work, there is no checklist — it resolves automatically
+from the step's extractor with zero setup.
 
-- [ ] Define `case class Money(value: Double)` (or whatever your type is).
-- [ ] Add `given HasGen[Money] with { def gen = Gen.double(...).map(Money.apply) }` in the
-      suite object.
-- [ ] Add `case "amount" => Some(HasGen[Money])` in `columnGenLookup`.
+For a property scenario with a **domain-type** column, pick one of two paths:
+
+- **Register the type once** (works for every column of that type, no per-column wiring):
+  - [ ] Define `case class Money(value: Double)` (or whatever your type is).
+  - [ ] Add `given HasGen[Money] with { def gen = Gen.double(...).map(Money.apply) }`.
+  - [ ] Call `HasGen.registerType(HasGen[Money])` once (e.g. in the suite's object body).
+- **Or route it explicitly per column** (useful for a one-off override):
+  - [ ] Define the `given HasGen[Money]` as above.
+  - [ ] Add `case "amount" => Some(HasGen[Money])` in `columnGenLookup`.
+
+Either way:
 - [ ] Ensure the step definition uses the same `TypedExtractor[Money]` it already uses
-      for literal scenarios (e.g. `/ money`).  No step change is needed.
+      for literal scenarios (e.g. `/ money`). No step change is needed.
 - [ ] Add `@property(samples=N)` to a header-only `Examples:` block.
-
-If the column uses a built-in type (`Int`, `String`, `Long`, `Double`, `Boolean`,
-`UUID`), steps 1–2 are not required — but step 3 (`columnGenLookup` wiring) still is;
-just route the column to `Some(HasGen[Int])` (etc.) directly, no custom `given` needed.
 
 ---
 
@@ -423,6 +452,17 @@ one value per column, substitutes it, and validates that every step pattern matc
 executing any step body, writing to the failure store, or consulting an existing replay record.
 A column with no resolvable `HasGen` still surfaces the usual setup error during a dry run, since
 that's a configuration problem independent of whether step bodies execute.
+
+**Use it as a fast CI pre-check.** Column resolution (including the automatic type-based
+lookup above) already runs before any sampling on every normal test run, so a missing
+`HasGen` fails fast as an ordinary test failure even without `--dry-run`. `--dry-run` goes
+one step further and skips real step-body execution too, across every suite, for a
+near-instant "is every property column resolvable and does every step pattern match"
+smoke check — useful as an early CI stage before the full (slower) test run:
+
+```sh
+sbt "Test/testOnly * -- --dry-run"
+```
 
 ---
 
@@ -563,4 +603,4 @@ sbt "example/testOnly zio.bdd.example.SimpleSpec -- --include-tags negative"
 | Full ZIO Test shrink-tree walking | v1 records the failing seed; minimal counterexample via shrink traversal is planned for v2 |
 | `Assume` / filter step to discard samples | Planned for v2 (`maxDiscarded` arg is reserved) |
 | Parallel sample execution | All samples for one property scenario run sequentially; scenario-level parallelism still applies across multiple property scenarios |
-| Automatic built-in-type resolution | Not supported — every column, including built-in-typed ones, must be routed explicitly via `columnGenLookup`; see [Built-in `HasGen` instances](#built-in-hasgen-instances) above |
+| Compile-time detection of missing `HasGen` instances | Not possible — `.feature` files are plain text parsed at runtime, and Scala can't enumerate `given HasGen[_]` instances at compile time either. A missing `HasGen` fails fast as an ordinary test failure (column resolution runs before any sampling); `--dry-run` gives an even faster all-suites pre-check — see [`--dry-run`](#--dry-run) above |

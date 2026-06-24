@@ -9,24 +9,18 @@ import scala.collection.concurrent.TrieMap
 /**
  * Typeclass that provides a ZIO Test `Gen[Any, A]` for a given type `A`.
  *
- * ==Resolution is by column name, not by type (for now)==
- * A `@property` column is just a string name parsed from the Gherkin header —
- * there is no automatic inference from a step's `TypedExtractor[T]` to a
- * `HasGen[T]`. Every property column, including ones using a built-in type
- * below, must be routed explicitly via `ZIOSteps#columnGenLookup` (see
- * `zio.bdd.core.property.ColumnGenLookup`) or a named override (see below).
- * Built-in instances exist for `Int`/`Long`/`Double`/`Boolean`/ `String`/`UUID`
- * so you don't need to write `Gen.int` etc. yourself, but you still need to
- * route the column name to `HasGen[Int]` (or whichever applies) in
- * `columnGenLookup`.
- *
- * The type-keyed registry below (`registerType`/`resolveByTag`) is the piece
- * that makes automatic by-type resolution possible — see
- * `StepRegistry.resolveTemplateColumns`, which finds the `Tag[_]` a column's
- * extractor produces. Wiring that into column resolution so `columnGenLookup`
- * becomes optional rather than mandatory is tracked separately; until then,
- * this paragraph's "must be routed explicitly" still describes the current
- * runtime behavior.
+ * ==Resolution order==
+ * A `@property` column resolves in this order: (1) a named header override (`|
+ * col: genName |`, see below), (2) the suite's `ZIOSteps#columnGenLookup` (see
+ * `zio.bdd.core.property.ColumnGenLookup`), (3) automatic type-based lookup —
+ * `PropertyExecutor` finds the `Tag[_]` the column's step extractor produces
+ * (via `StepRegistry.resolveTemplateColumns`) and resolves it through this
+ * object's type-keyed registry (`registerType`/`resolveByTag` below). The six
+ * built-in types (`Int`/`Long`/`Double`/`Boolean`/`String`/ `UUID`) are
+ * pre-registered, so columns of those types need no `columnGenLookup` entry at
+ * all. Domain types need one `registerType` call per *type* to get the same
+ * automatic resolution — `columnGenLookup` is then the override path, for when
+ * the automatic choice isn't the one you want.
  *
  * ==Named generator overrides==
  * Register a non-default generator for a column via
@@ -126,18 +120,26 @@ object HasGen:
     typeRegistry.put(summon[Tag[A]].tag, instance)
 
   /**
-   * Look up a registered `HasGen` by runtime type tag. `tag` is taken as a
-   * plain value (not a context bound) so this also accepts an existential
-   * `Tag[_]` — e.g. one of the `Tag[_]`s `StepRegistry.resolveTemplateColumns`
-   * returns, where the underlying type isn't statically known at the call site.
-   * Returns `None` if `A` is neither a built-in nor was registered via
+   * Look up a registered `HasGen` by runtime type tag.
+   *
+   * Takes an existential `Tag[_]` — e.g. one of the `Tag[_]`s
+   * `StepRegistry.resolveTemplateColumns` returns, where the underlying type
+   * isn't statically known at the call site — rather than a statically-typed
+   * `Tag[A]`. (`izumi.reflect.Tag[T <: AnyKind]`'s kind bound means a `Tag[?]`
+   * value doesn't actually unify with a `Tag[A]` parameter at a generic call
+   * site, since `A` there defaults to the narrower proper-type kind `*` — so
+   * the existential form is the one callers can actually use.) The returned
+   * `HasGen[?]` is erased the same way; callers that need it for sampling only
+   * use `.gen`/`.label`, neither of which needs the concrete type back.
+   *
+   * Returns `None` if the type is neither a built-in nor was registered via
    * `registerType`.
    */
-  def resolveByTag[A](tag: Tag[A]): Option[HasGen[A]] =
-    typeRegistry.get(tag.tag).asInstanceOf[Option[HasGen[A]]]
+  def resolveByTag(tag: Tag[?]): Option[HasGen[?]] =
+    typeRegistry.get(tag.tag)
 
   // Built-ins are usable by type with zero setup — pre-populate eagerly so
-  // resolveByTag[Int] etc. works without any suite ever calling registerType.
+  // resolveByTag(Tag[Int]) etc. works without any suite ever calling registerType.
   registerType(HasGen[Int])
   registerType(HasGen[Long])
   registerType(HasGen[Double])

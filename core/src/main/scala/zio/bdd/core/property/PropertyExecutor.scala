@@ -2,7 +2,7 @@ package zio.bdd.core.property
 
 import izumi.reflect.Tag
 import zio.*
-import zio.bdd.core.step.{StepRegistry, ZIOSteps}
+import zio.bdd.core.step.{StepRegistry, TemplateLookupError, ZIOSteps}
 import zio.bdd.core.{Default, ScenarioExecutor, ScenarioResult, StepResult}
 import zio.bdd.gherkin.{PropertyTag, Scenario, Step, StepType}
 import zio.test.{Gen, Sized, TestRandom}
@@ -71,7 +71,7 @@ object PropertyExecutor:
     flags: Map[String, String],
     dryRun: Boolean
   ): ZIO[R & StepRegistry[R, S], Nothing, ScenarioResult] =
-    resolveColumnGens(scenario, lookup).flatMap {
+    resolveColumnGens[R, S](scenario, lookup).flatMap {
       case Left(err) =>
         ZIO.succeed(ScenarioResult(scenario, Nil, setupError = Some(Cause.fail(new RuntimeException(err)))))
       case Right(colGens) =>
@@ -350,27 +350,127 @@ object PropertyExecutor:
       .provideLayer(Sized.default ++ TestRandom.deterministic)
 
   // ── Column generator resolution ──────────────────────────────────────────
+  //
+  // Resolution order for each `<col>` placeholder:
+  //   1. Named override from the column header (`| col: genName |`)
+  //   2. The suite's explicit `columnGenLookup`
+  //   3. Automatic type-based lookup: find the Tag[_] the column's extractor
+  //      produces (StepRegistry.resolveTemplateColumns, #97) and resolve it via
+  //      HasGen.resolveByTag (#98)
+  //   4. Setup error
+  //
+  // Tiers 1-2 are pure (no StepRegistry needed). Tier 3 only runs for columns
+  // still unresolved after 1-2, and only queries StepRegistry for steps that
+  // actually mention one of those columns — a suite that already wires every
+  // column explicitly (tiers 1-2 resolve everything) never touches tier 3 at
+  // all, so existing fully-explicit suites see zero behavior or performance
+  // change.
 
-  private def resolveColumnGens(
+  private def resolveColumnGens[R: Tag, S: Tag](
     scenario: Scenario,
     lookup: ColumnGenLookup
-  ): UIO[Either[String, List[ColumnGen]]] =
-    ZIO.succeed {
-      val placeholderRe = "<([^>]+)>".r
-      val allPlaceholders = scenario.steps.flatMap { step =>
-        placeholderRe.findAllMatchIn(step.pattern).map(_.group(1)).toList
-      }.distinct
+  ): URIO[StepRegistry[R, S], Either[String, List[ColumnGen]]] = {
+    val placeholderRe = "<([^>]+)>".r
+    val allPlaceholders = scenario.steps.flatMap { step =>
+      placeholderRe.findAllMatchIn(step.pattern).map(_.group(1)).toList
+    }.distinct
 
+    def explicit(col: String): Option[HasGen[?]] =
+      scenario.columnGens.get(col).flatMap(HasGen.resolve).orElse(lookup.byColumn(col))
+
+    val explicitResolved: Map[String, HasGen[?]] =
+      allPlaceholders.flatMap(col => explicit(col).map(col -> _)).toMap
+    val unresolved = allPlaceholders.filterNot(explicitResolved.contains)
+
+    val byType: URIO[StepRegistry[R, S], Map[String, Either[String, HasGen[?]]]] =
+      if (unresolved.isEmpty) ZIO.succeed(Map.empty)
+      else resolveByType[R, S](scenario, unresolved.toSet)
+
+    byType.map { byTypeResolved =>
       val resolved = allPlaceholders.map { col =>
-        val namedGen = scenario.columnGens.get(col).flatMap(HasGen.resolve)
-        namedGen.orElse(lookup.byColumn(col)) match
-          case Some(hg) => Right(ColumnGen(col, hg.gen.asInstanceOf[Gen[Any, Any]], hg.label))
-          case None     => Left(s"No HasGen registered for column '$col'. Register `given HasGen[T]` for its type.")
+        explicitResolved
+          .get(col)
+          .map(Right(_))
+          .getOrElse(
+            byTypeResolved.getOrElse(
+              col,
+              Left(s"No HasGen registered for column '$col'. Register `given HasGen[T]` for its type.")
+            )
+          )
+          .map(hg => col -> hg)
       }
       val errors = resolved.collect { case Left(e) => e }
       if (errors.nonEmpty) Left(errors.mkString("; "))
-      else Right(resolved.collect { case Right(cg) => cg })
+      else
+        Right(resolved.collect { case Right((col, hg)) =>
+          ColumnGen(col, hg.gen.asInstanceOf[Gen[Any, Any]], hg.label)
+        })
     }
+  }
+
+  /**
+   * Tier 3: resolve `columns` by inferring each one's type from the step
+   * extractor that governs it, then looking that type up in `HasGen`'s
+   * Tag-keyed registry. Only the steps mentioning one of `columns` are
+   * structurally matched.
+   */
+  private def resolveByType[R: Tag, S: Tag](
+    scenario: Scenario,
+    columns: Set[String]
+  ): URIO[StepRegistry[R, S], Map[String, Either[String, HasGen[?]]]] = {
+    val relevantSteps = scenario.steps.filter(step => columns.exists(col => step.pattern.contains(s"<$col>")))
+    ZIO
+      .foreach(relevantSteps) { step =>
+        StepRegistry.resolveTemplateColumns[R, S](step.stepType, step.pattern).either.map(step -> _)
+      }
+      .map { perStep =>
+        columns.toList.map(col => col -> resolveOneColumnByType(col, perStep)).toMap
+      }
+  }
+
+  private def resolveOneColumnByType(
+    col: String,
+    perStep: List[(Step, Either[TemplateLookupError, List[(String, Tag[?])]])]
+  ): Either[String, HasGen[?]] = {
+    val mentions = perStep.filter { case (step, _) => step.pattern.contains(s"<$col>") }
+    val seen: List[(Tag[?], String)] = mentions.collect { case (step, Right(cols)) =>
+      cols.collect { case (name, tag) if name == col => tag -> step.pattern }
+    }.flatten
+    val distinctTags = seen.map(_._1).distinct
+
+    distinctTags match {
+      case Nil =>
+        // No step told us this column's type — surface why, preferring the most direct cause.
+        val message = mentions.collectFirst { case (step, Left(err)) =>
+          s"Column '$col': could not determine its type from step \"${step.pattern}\" (${err.toException.getMessage})."
+        }
+          .getOrElse(s"No HasGen registered for column '$col'. Register `given HasGen[T]` for its type.")
+        Left(message)
+      case tag :: Nil =>
+        HasGen.resolveByTag(tag) match {
+          case Some(hg) => Right(hg)
+          case None =>
+            val name = typeName(tag)
+            Left(
+              s"Column '$col' was inferred as $name (from its step's extractor) but no HasGen is " +
+                s"registered for that type. Register one via `given HasGen[$name] with ...` then " +
+                s"`HasGen.registerType(HasGen[$name])`, or add an explicit `columnGenLookup` entry for '$col'."
+            )
+        }
+      case _ =>
+        val detail = seen.map { case (tag, pattern) => s"${typeName(tag)} (from \"$pattern\")" }.mkString(", ")
+        Left(
+          s"Column '$col' has conflicting inferred types across steps: $detail. " +
+            "Use `columnGenLookup` to disambiguate."
+        )
+    }
+  }
+
+  /**
+   * Render a Tag's underlying type name for error messages, e.g. `Tag[Money]`
+   * -> `"Money"`.
+   */
+  private def typeName(tag: Tag[?]): String = tag.toString.stripPrefix("Tag[").stripSuffix("]")
 
 /**
  * Thrown when a property scenario is falsified. Message contains the
@@ -379,9 +479,12 @@ object PropertyExecutor:
 class PropertyFalsifiedException(message: String) extends RuntimeException(message)
 
 /**
- * Resolves a column name to a `HasGen` instance. Suites provide this by mapping
- * placeholder names to the `HasGen` for the corresponding `TypedExtractor`
- * type.
+ * Resolves a column name to a `HasGen` instance. This is the *override* path —
+ * most columns resolve automatically (named header override, then automatic
+ * type-based lookup via `HasGen.resolveByTag`; see `resolveColumnGens` above).
+ * Provide an entry here when you want a different generator than the automatic
+ * choice, or to disambiguate a column whose inferred type conflicts across
+ * steps.
  */
 trait ColumnGenLookup:
   def byColumn(columnName: String): Option[HasGen[?]]
