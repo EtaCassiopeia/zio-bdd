@@ -36,18 +36,28 @@ Feature: Greeting invariants
     Examples:
       | name |
 
-  # Two HasGen columns in the same property scenario, each resolved a different way:
-  #   - name  → named override (HasGen.named("name"))
-  #   - title → domain-type generator (given HasGen[Title])
+  # Three HasGen columns in the same property scenario, each resolved a different way —
+  # demonstrates that automatic type-based resolution needs no registration at all for a
+  # built-in type, one `HasGen.registerType` call (ever, not per-column) for a domain type,
+  # and columnGenLookup only where the automatic choice isn't the one actually wanted:
+  #   - name  → resolves automatically to HasGen[String], but overridden via
+  #             `columnGenLookup` + `HasGen.named("name")` for readable output
+  #   - title → a domain type (Title); resolves automatically by type because
+  #             `HasGen.registerType(HasGen[Title])` ran once in SimpleSpec — no
+  #             `columnGenLookup` entry
+  #   - age   → a built-in type (Int); resolves automatically with *zero* setup — no
+  #             `given`, no `registerType`, no `columnGenLookup` entry
   # Also demonstrates the @property tag placed on the Scenario Outline line itself,
   # rather than on the Examples: block — both placements are equivalent.
   @positive @property(samples=300, seed=17)
-  Scenario Outline: Greeting always contains the name regardless of title
+  Scenario Outline: Greeting always contains the name regardless of title or age
     Given a user named <name>
     And a title <title>
+    And the user's age is <age>
     When the user is greeted
     Then the title is a known honorific
+    And the age is recorded
     And the greeting contains the name
 
     Examples:
-      | name | title |
+      | name | title | age |
