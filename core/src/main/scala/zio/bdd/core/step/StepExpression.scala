@@ -15,11 +15,7 @@ case class Extractor[T](extractor: TypedExtractor[T]) extends StepPart
 case class StepExpression[Out <: Tuple](parts: List[StepPart]) {
 
   // Compiled once on first use, not on every extract() call (r08 perf fix)
-  private lazy val compiledPattern: Pattern =
-    parts.map {
-      case Literal(s)   => Pattern.quote(s)
-      case Extractor(e) => e.pattern
-    }.mkString.r.pattern
+  private lazy val compiledPattern: Pattern = StepExpression.toPattern(parts).r.pattern
 
   /**
    * Structural match against a `@property` step template that still has `<col>`
@@ -77,6 +73,18 @@ case class StepExpression[Out <: Tuple](parts: List[StepPart]) {
 }
 
 object StepExpression {
+
+  /**
+   * Builds the regex source a `StepExpression` made of `parts` matches against,
+   * without requiring a `StepExpression` instance. Pulled out so external
+   * tooling (e.g. an LSP scanning source for step definitions) can derive the
+   * same regex zio-bdd uses at runtime instead of re-deriving its own.
+   */
+  def toPattern(parts: List[StepPart]): String =
+    parts.map {
+      case Literal(s)   => Pattern.quote(s)
+      case Extractor(e) => e.pattern
+    }.mkString
 
   private val placeholderRe = "<([^>]+)>".r
 

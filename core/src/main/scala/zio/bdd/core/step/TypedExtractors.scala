@@ -248,6 +248,30 @@ trait DefaultTypedExtractor {
 }
 
 /**
+ * Singleton instance of the built-in extractors, keyed by the name they're
+ * referenced by in step-expression source (`Given("..." / int / "...")`).
+ *
+ * Lets external tooling (e.g. an LSP that statically scans `.scala` source for
+ * step definitions) look up the *real* regex a built-in extractor uses instead
+ * of hand-copying it, which would silently drift out of sync if this file
+ * changes a pattern.
+ */
+object DefaultTypedExtractor extends DefaultTypedExtractor {
+  val byName: Map[String, TypedExtractor[?]] = Map(
+    "string"     -> string,
+    "word"       -> word,
+    "rest"       -> rest,
+    "int"        -> int,
+    "long"       -> long,
+    "double"     -> double,
+    "bigDecimal" -> bigDecimal,
+    "boolean"    -> boolean,
+    "uuid"       -> uuid,
+    "docString"  -> docString
+  )
+}
+
+/**
  * Typed extractor for data tables. Uses Schema to map header row to case-class
  * fields.
  *
