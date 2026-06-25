@@ -159,7 +159,12 @@ FAILED: Given a valid provision request dated -7 days
 4. The step definition uses an extractor pattern that does not match the actual text.
 
 **Fix:** Run `sbt "testOnly MySuite -- --dry-run"` to see all unmatched steps at once.
-Run `sbt zioBddSnippets` to generate skeleton definitions for unmatched steps.
+If you're working inside this repository (or have vendored `SnippetGeneratorPlugin.scala`
+into your own `project/` — see `docs/running.md`'s "zioBddSnippets task" for why it isn't
+available otherwise), `sbt zioBddSnippets` prints a skeleton for each unmatched step. With the
+[zio-bdd-tooling](https://github.com/EtaCassiopeia/zio-bdd-tooling) LSP/editor extensions
+installed, the same skeleton appears live as a completion item the moment you start typing
+inside a `Given`/`When`/`Then(...)` call.
 
 ---
 

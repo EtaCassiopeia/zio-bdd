@@ -346,10 +346,32 @@ When("a very slow operation completes") {
 ---
 
 
-## IDE integration: generateStepRegistry
+## IDE integration
 
-The `generateStepRegistry` sbt task produces a `step-registry.json` file that IDE plugins
-can use to navigate from `.feature` file steps to their Scala definitions.
+**For a live editing experience** (go-to-definition, hover, autocomplete, real-time
+"no matching step" diagnostics with a closest-match hint, and a code lens to run a
+scenario/feature) — install the LSP server, VSCode extension, or IntelliJ plugin from
+[zio-bdd-tooling](https://github.com/EtaCassiopeia/zio-bdd-tooling). It scans `.scala`/
+`.feature` source text directly and needs no build step or registry file.
+
+The two sbt tasks below (`generateStepRegistry`, `zioBddSnippets`) predate that tooling and
+serve a narrower, different purpose — read on only if you specifically need one of them.
+
+### generateStepRegistry — interop with *other* Cucumber IDE plugins
+
+> **Scope note:** `generateStepRegistry` is defined by an sbt auto-plugin in *this
+> repository's own build* (`project/StepRegistryPlugin.scala`), not by the published
+> `io.github.etacassiopeia:zio-bdd` artifact. A project that only adds zio-bdd as a library
+> dependency does not get this task — running it fails with "not a valid command". It's
+> usable today if you're working inside a clone of this repository, or if you copy
+> `StepRegistryPlugin.scala` into your own `project/` directory. See
+> [zio-bdd#104](https://github.com/EtaCassiopeia/zio-bdd/issues/104) if you'd find a
+> published, `addSbtPlugin`-installable version of this task valuable.
+
+The `generateStepRegistry` sbt task produces a `step-registry.json` file that *generic*
+Cucumber-ecosystem IDE plugins (the VS Code Cucumber extension, IntelliJ's built-in Cucumber
+support) can use for step navigation — it is not consumed by zio-bdd-tooling's own LSP, which
+resolves steps itself from live source text and needs no intermediate file.
 
 ```sh
 sbt generateStepRegistry
@@ -397,6 +419,13 @@ Regenerate after adding or renaming step definitions to keep the registry curren
 ---
 
 ## zioBddSnippets task
+
+> **Scope note:** same caveat as `generateStepRegistry` above — `zioBddSnippets` is defined
+> in this repository's own build (`project/SnippetGeneratorPlugin.scala`), not published for
+> consumers of the library. If you're using zio-bdd-tooling's LSP/VSCode/IntelliJ extension,
+> you don't need this task at all: opening a step-definition `.scala` file and typing inside a
+> `Given`/`When`/`Then(...)` call already surfaces a completion item for any unmatched step
+> text found in your `.feature` files, live, with no command to run.
 
 The `zioBddSnippets` sbt task scans feature files for steps that do not appear to have a
 matching step definition and prints skeleton code to stdout.
