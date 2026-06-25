@@ -181,9 +181,13 @@ Feature file:
 Given a post dated -7 days relative to current date
 ```
 
-If the step text already exists in the feature file, run `sbt zioBddSnippets` to get a
-skeleton. Run `sbt "testOnly MySuite -- --dry-run"` to confirm all feature file steps
-match registered definitions without executing them.
+If the step text already exists in the feature file, the
+[zio-bdd-tooling](https://github.com/EtaCassiopeia/zio-bdd-tooling) LSP/editor extensions
+surface a skeleton live as a completion item the moment you start typing inside a
+`Given`/`When`/`Then(...)` call. `sbt zioBddSnippets` does the same from the command line, but
+only inside this repository's own build (see `docs/running.md`). Run
+`sbt "testOnly MySuite -- --dry-run"` to confirm all feature file steps match registered
+definitions without executing them.
 
 ---
 
