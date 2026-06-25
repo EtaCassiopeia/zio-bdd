@@ -586,9 +586,9 @@ trait ZIOSteps[R: Tag, S: Tag: Default]
    * Returns a runtime-accurate summary of every registered step definition.
    *
    * Unlike `getSteps` this does NOT seal the registry or run ambiguity
-   * validation — it is safe to call from external tooling (e.g. the
-   * zio-bdd LSP server's BSP class-loader subprocess) at any point after
-   * the object initializer has run.
+   * validation — it is safe to call from external tooling (e.g. the zio-bdd LSP
+   * server's BSP class-loader subprocess) at any point after the object
+   * initializer has run.
    *
    * The `pattern` field carries the exact regex used by `StepRegistry` at
    * runtime, so extractor-based steps (e.g. `/ int /`, `/ string /`) are

@@ -12,6 +12,7 @@ package zio.bdd.core.step
  *   at runtime, so extractor types are correctly reflected (e.g. a `/ int /`
  *   extractor produces `\-?\d+` rather than the literal string "int").
  * @param displayText
- *   Human-readable representation for UI (e.g. `"the cart has " / int / " items"`).
+ *   Human-readable representation for UI (e.g. `"the cart has " / int / "
+ *   items"`).
  */
 case class StepSummary(keyword: String, pattern: String, displayText: String)
