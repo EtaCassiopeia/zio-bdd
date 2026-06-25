@@ -106,8 +106,12 @@ trait StepRegistry[R, S]:
    * All registered step definitions as lightweight metadata. Intended for
    * external tooling (LSP servers, IDE plugins) that need a structural view of
    * the registry without running the step effects.
+   *
+   * Default returns Nil so that any StepRegistry implementation predating this
+   * method (or custom implementations) remains binary-compatible.
+   * StepRegistryLive overrides this with the real list.
    */
-  def allDefinitions: UIO[List[StepMetadata]]
+  def allDefinitions: UIO[List[StepMetadata]] = ZIO.succeed(Nil)
 
 final case class StepRegistryLive[R, S](steps: List[StepDef[R, S]]) extends StepRegistry[R, S]:
   // Index definitions by their declared keyword once at construction, so per-step lookup
@@ -169,7 +173,7 @@ final case class StepRegistryLive[R, S](steps: List[StepDef[R, S]]) extends Step
         ZIO.fromEither(fewestExtractorsWinner(multiple).left.map(patterns => AmbiguousStep(stepType, input, patterns)))
     }
 
-  def allDefinitions: UIO[List[StepMetadata]] =
+  override def allDefinitions: UIO[List[StepMetadata]] =
     ZIO.succeed(steps.map { case StepDefImpl(st, expr, _) =>
       val keyword = st match {
         case StepType.GivenStep => "Given"
