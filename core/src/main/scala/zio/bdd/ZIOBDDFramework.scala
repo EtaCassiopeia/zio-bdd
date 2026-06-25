@@ -196,7 +196,19 @@ class ZIOBDDTask(
         scenarioParallelism = config.scenarioParallelism,
         dryRun = config.dryRun
       )
-      .tap(reporter.report)
+      .tap { results =>
+        // In focused mode, strip @ignore scenario results before reporting so the
+        // output only shows what actually ran. Execution is unaffected — the
+        // scenarios still run (or are skipped) according to the normal filter logic;
+        // we just suppress the IGNORED noise in the reporter output.
+        val toReport =
+          if (config.focused)
+            results
+              .map(fr => fr.copy(scenarioResults = fr.scenarioResults.filterNot(_.isIgnored)))
+              .filter(_.scenarioResults.nonEmpty)
+          else results
+        reporter.report(toReport)
+      }
 
     val results =
       try {
@@ -480,40 +492,32 @@ object ZIOBDDTask {
     val includeTags = config.includeTags
     val excludeTags = config.excludeTags
 
-    def nameFilteredOut(name: String): Boolean =
-      config.scenarioNameFilter.exists { pattern =>
-        val regex = ("(?i)" + pattern.split("\\*", -1).map(java.util.regex.Pattern.quote).mkString(".*")).r
-        !regex.matches(name)
-      }
-
     def shouldIgnoreScenario(featureTags: List[String], scenarioTags: List[String], name: String): Boolean = {
       // Feature tags are inherited by the scenario for filtering.
       val effectiveTags     = (featureTags ++ scenarioTags).distinct
       val hasExcludeTag     = effectiveTags.exists(excludeTags.contains)
       val missingIncludeTag = includeTags.nonEmpty && !effectiveTags.exists(includeTags.contains)
-      hasExcludeTag || missingIncludeTag || nameFilteredOut(name)
+      // Scenario-name filter: glob where '*' = any sequence of chars, rest matched
+      // literally and case-insensitively. Split on '*' and quote each literal segment so
+      // regex metacharacters in the name (and the pattern) are not interpreted.
+      val nameFiltered = config.scenarioNameFilter.exists { pattern =>
+        val regex = ("(?i)" + pattern.split("\\*", -1).map(java.util.regex.Pattern.quote).mkString(".*")).r
+        !regex.matches(name)
+      }
+      hasExcludeTag || missingIncludeTag || nameFiltered
     }
 
-    features.flatMap { feature =>
-      val updatedScenarios = feature.scenarios.flatMap { scenario =>
-        // In focused mode, scenarios excluded purely by the name filter are dropped
-        // entirely so they do not appear as IGNORED noise in the report.
-        if (config.focused && nameFilteredOut(scenario.name)) Nil
-        else {
-          val newTags =
-            if (shouldIgnoreScenario(feature.tags, scenario.tags, scenario.name)) scenario.tags :+ "ignore"
-            else scenario.tags
-          List(scenario.copy(tags = newTags))
-        }
+    features.map { feature =>
+      val updatedScenarios = feature.scenarios.map { scenario =>
+        val scenarioTags =
+          if (shouldIgnoreScenario(feature.tags, scenario.tags, scenario.name)) scenario.tags :+ "ignore"
+          else scenario.tags
+        scenario.copy(tags = scenarioTags)
       }
-      // In focused mode, drop features that have no remaining scenarios.
-      if (config.focused && updatedScenarios.isEmpty) Nil
-      else {
-        // Mark the feature itself as ignored when all of its scenarios are ignored.
-        val allScenariosIgnored = updatedScenarios.nonEmpty && updatedScenarios.forall(_.isIgnored)
-        val featureTags         = if (allScenariosIgnored) feature.tags :+ "ignore" else feature.tags
-        List(feature.copy(tags = featureTags, scenarios = updatedScenarios))
-      }
+      // Mark the feature itself as ignored when all of its scenarios are ignored.
+      val allScenariosIgnored = updatedScenarios.nonEmpty && updatedScenarios.forall(_.isIgnored)
+      val featureTags         = if (allScenariosIgnored) feature.tags :+ "ignore" else feature.tags
+      feature.copy(tags = featureTags, scenarios = updatedScenarios)
     }
   }
 }
