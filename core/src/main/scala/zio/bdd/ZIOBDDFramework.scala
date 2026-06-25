@@ -63,7 +63,13 @@ case class BDDTestConfig(
   /**
    * Step execution timeout in seconds from @Suite annotation. None = unlimited.
    */
-  stepTimeoutSeconds: Option[Int] = None
+  stepTimeoutSeconds: Option[Int] = None,
+  /**
+   * When true: scenarios excluded by a name or tag filter are removed from the
+   * report entirely rather than printed as IGNORED. Pass `--focused` from the
+   * IDE test runner to get a clean single-scenario report with no noise.
+   */
+  focused: Boolean = false
 )
 
 case class CompositeReporter(reporters: List[Reporter]) extends Reporter {
@@ -268,7 +274,8 @@ class ZIOBDDTask(
       excludeTags = parseExcludeTags(args),
       logLevel = parseLogLevel(args, loggers),
       scenarioNameFilter = parseScenarioName(args),
-      dryRun = args.contains("--dry-run")
+      dryRun = args.contains("--dry-run"),
+      focused = args.contains("--focused")
     )
 
     BDDTestConfig(
@@ -283,6 +290,7 @@ class ZIOBDDTask(
       logLevel = if (cliConfig.logLevel != InternalLogLevel.Info) cliConfig.logLevel else annoConfig.logLevel,
       scenarioNameFilter = cliConfig.scenarioNameFilter.orElse(annoConfig.scenarioNameFilter),
       dryRun = cliConfig.dryRun || annoConfig.dryRun,
+      focused = cliConfig.focused || annoConfig.focused,
       stepTimeoutSeconds = annoConfig.stepTimeoutSeconds
     )
   }
@@ -472,32 +480,40 @@ object ZIOBDDTask {
     val includeTags = config.includeTags
     val excludeTags = config.excludeTags
 
+    def nameFilteredOut(name: String): Boolean =
+      config.scenarioNameFilter.exists { pattern =>
+        val regex = ("(?i)" + pattern.split("\\*", -1).map(java.util.regex.Pattern.quote).mkString(".*")).r
+        !regex.matches(name)
+      }
+
     def shouldIgnoreScenario(featureTags: List[String], scenarioTags: List[String], name: String): Boolean = {
       // Feature tags are inherited by the scenario for filtering.
       val effectiveTags     = (featureTags ++ scenarioTags).distinct
       val hasExcludeTag     = effectiveTags.exists(excludeTags.contains)
       val missingIncludeTag = includeTags.nonEmpty && !effectiveTags.exists(includeTags.contains)
-      // Scenario-name filter: glob where '*' = any sequence of chars, rest matched
-      // literally and case-insensitively. Split on '*' and quote each literal segment so
-      // regex metacharacters in the name (and the pattern) are not interpreted.
-      val nameFiltered = config.scenarioNameFilter.exists { pattern =>
-        val regex = ("(?i)" + pattern.split("\\*", -1).map(java.util.regex.Pattern.quote).mkString(".*")).r
-        !regex.matches(name)
-      }
-      hasExcludeTag || missingIncludeTag || nameFiltered
+      hasExcludeTag || missingIncludeTag || nameFilteredOut(name)
     }
 
-    features.map { feature =>
-      val updatedScenarios = feature.scenarios.map { scenario =>
-        val scenarioTags =
-          if (shouldIgnoreScenario(feature.tags, scenario.tags, scenario.name)) scenario.tags :+ "ignore"
-          else scenario.tags
-        scenario.copy(tags = scenarioTags)
+    features.flatMap { feature =>
+      val updatedScenarios = feature.scenarios.flatMap { scenario =>
+        // In focused mode, scenarios excluded purely by the name filter are dropped
+        // entirely so they do not appear as IGNORED noise in the report.
+        if (config.focused && nameFilteredOut(scenario.name)) Nil
+        else {
+          val newTags =
+            if (shouldIgnoreScenario(feature.tags, scenario.tags, scenario.name)) scenario.tags :+ "ignore"
+            else scenario.tags
+          List(scenario.copy(tags = newTags))
+        }
       }
-      // Mark the feature itself as ignored when all of its scenarios are ignored.
-      val allScenariosIgnored = updatedScenarios.nonEmpty && updatedScenarios.forall(_.isIgnored)
-      val featureTags         = if (allScenariosIgnored) feature.tags :+ "ignore" else feature.tags
-      feature.copy(tags = featureTags, scenarios = updatedScenarios)
+      // In focused mode, drop features that have no remaining scenarios.
+      if (config.focused && updatedScenarios.isEmpty) Nil
+      else {
+        // Mark the feature itself as ignored when all of its scenarios are ignored.
+        val allScenariosIgnored = updatedScenarios.nonEmpty && updatedScenarios.forall(_.isIgnored)
+        val featureTags         = if (allScenariosIgnored) feature.tags :+ "ignore" else feature.tags
+        List(feature.copy(tags = featureTags, scenarios = updatedScenarios))
+      }
     }
   }
 }
