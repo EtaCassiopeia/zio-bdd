@@ -581,4 +581,28 @@ trait ZIOSteps[R: Tag, S: Tag: Default]
       dryRun,
       genLookup = columnGenLookup
     )
+
+  /**
+   * Returns a runtime-accurate summary of every registered step definition.
+   *
+   * Unlike `getSteps` this does NOT seal the registry or run ambiguity
+   * validation — it is safe to call from external tooling (e.g. the
+   * zio-bdd LSP server's BSP class-loader subprocess) at any point after
+   * the object initializer has run.
+   *
+   * The `pattern` field carries the exact regex used by `StepRegistry` at
+   * runtime, so extractor-based steps (e.g. `/ int /`, `/ string /`) are
+   * represented faithfully rather than as static-scan approximations.
+   */
+  def allDefinitions: List[StepSummary] =
+    steps.toList.collect { case s: StepDefImpl[?, ?, ?] =>
+      val keyword = s.stepType match {
+        case zio.bdd.gherkin.StepType.GivenStep => "Given"
+        case zio.bdd.gherkin.StepType.WhenStep  => "When"
+        case zio.bdd.gherkin.StepType.ThenStep  => "Then"
+        case zio.bdd.gherkin.StepType.AndStep   => "And"
+        case zio.bdd.gherkin.StepType.ButStep   => "But"
+      }
+      StepSummary(keyword, StepExpression.toPattern(s.stepExpr.parts), s.stepExpr.toString)
+    }
 }
