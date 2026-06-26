@@ -77,6 +77,19 @@ final case class ConflictingColumnType(
       "Use one consistent extractor type for this placeholder, or rename one of the occurrences."
   )
 
+/**
+ * Snapshot of a single registered step definition, as structural metadata.
+ * Consumed by external tooling (LSP, IntelliJ plugin) via `allDefinitions`
+ * without needing to execute the step or run a ZIO runtime.
+ */
+final case class StepMetadata(
+  keyword: String,
+  pattern: String,
+  displayText: String,
+  literals: List[String],
+  extractorCount: Int
+)
+
 trait StepRegistry[R, S]:
   /** Look up the effect to run for a given step. */
   def findStep(stepType: StepType, input: StepInput): IO[StepLookupError, RIO[R & State[S] & Scope, Unit]]
@@ -88,6 +101,17 @@ trait StepRegistry[R, S]:
    * `(columnName, Tag[_])` pairs from whichever StepDef matches.
    */
   def resolveTemplateColumns(stepType: StepType, template: String): IO[TemplateLookupError, List[(String, Tag[?])]]
+
+  /**
+   * All registered step definitions as lightweight metadata. Intended for
+   * external tooling (LSP servers, IDE plugins) that need a structural view of
+   * the registry without running the step effects.
+   *
+   * Default returns Nil so that any StepRegistry implementation predating this
+   * method (or custom implementations) remains binary-compatible.
+   * StepRegistryLive overrides this with the real list.
+   */
+  def allDefinitions: UIO[List[StepMetadata]] = ZIO.succeed(Nil)
 
 final case class StepRegistryLive[R, S](steps: List[StepDef[R, S]]) extends StepRegistry[R, S]:
   // Index definitions by their declared keyword once at construction, so per-step lookup
@@ -148,6 +172,30 @@ final case class StepRegistryLive[R, S](steps: List[StepDef[R, S]]) extends Step
       case multiple =>
         ZIO.fromEither(fewestExtractorsWinner(multiple).left.map(patterns => AmbiguousStep(stepType, input, patterns)))
     }
+
+  override def allDefinitions: UIO[List[StepMetadata]] =
+    ZIO.succeed(steps.map { case StepDefImpl(st, expr, _) =>
+      val keyword = st match {
+        case StepType.GivenStep => "Given"
+        case StepType.WhenStep  => "When"
+        case StepType.ThenStep  => "Then"
+        case StepType.AndStep   => "And"
+        case StepType.ButStep   => "But"
+      }
+      val lits = expr.parts.collect { case Literal(s) => s }
+      val exts = expr.parts.count { case _: Extractor[?] => true; case _ => false }
+      val display = expr.parts.map {
+        case Literal(s)   => s
+        case Extractor(e) => s"{${e.getClass.getSimpleName.stripSuffix("$").toLowerCase}}"
+      }.mkString
+      StepMetadata(
+        keyword = keyword,
+        pattern = "^" + StepExpression.toPattern(expr.parts) + "$",
+        displayText = display,
+        literals = lits,
+        extractorCount = exts
+      )
+    })
 
   def resolveTemplateColumns(
     stepType: StepType,
@@ -243,3 +291,6 @@ object StepRegistry:
     template: String
   ): ZIO[StepRegistry[R, S], TemplateLookupError, List[(String, Tag[?])]] =
     ZIO.serviceWithZIO[StepRegistry[R, S]](_.resolveTemplateColumns(stepType, template))
+
+  def allDefinitions[R: Tag, S: Tag]: URIO[StepRegistry[R, S], List[StepMetadata]] =
+    ZIO.serviceWithZIO[StepRegistry[R, S]](_.allDefinitions)
