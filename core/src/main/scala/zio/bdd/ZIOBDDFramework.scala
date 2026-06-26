@@ -343,10 +343,21 @@ class ZIOBDDTask(
       .fold(Set.empty)(_ ++ _)
 
   private def parseFeatureFiles(args: Array[String]): List[String] =
-    args.sliding(2).collect { case Array("--feature-file", path) => path }.toList
+    args.sliding(2).collect { case Array("--feature-file", path) => unquote(path) }.toList
 
   private def parseScenarioName(args: Array[String]): Option[String] =
-    args.sliding(2).collectFirst { case Array("--scenario-name", name) => name }
+    args.sliding(2).collectFirst { case Array("--scenario-name", name) => unquote(name) }
+
+  // sbt's argument parser does not strip single quotes — it passes them literally,
+  // so '--feature-file '/path/file.feature'' yields the path with embedded quotes.
+  // Strip matching outer quotes as a defensive measure.  Double quotes may arrive
+  // similarly on Windows or when commands are composed by hand.
+  private def unquote(s: String): String =
+    if (s.length >= 2 &&
+        ((s.charAt(0) == '\'' && s.last == '\'') ||
+         (s.charAt(0) == '"'  && s.last == '"')))
+      s.drop(1).dropRight(1)
+    else s
 
   // Build a Reporter from its layer on the runner's runtime. Centralises the Unsafe.run
   // boilerplate so reporter construction is defined once.
