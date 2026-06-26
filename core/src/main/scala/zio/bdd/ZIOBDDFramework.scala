@@ -63,7 +63,13 @@ case class BDDTestConfig(
   /**
    * Step execution timeout in seconds from @Suite annotation. None = unlimited.
    */
-  stepTimeoutSeconds: Option[Int] = None
+  stepTimeoutSeconds: Option[Int] = None,
+  /**
+   * When true: scenarios excluded by a name or tag filter are removed from the
+   * report entirely rather than printed as IGNORED. Pass `--focused` from the
+   * IDE test runner to get a clean single-scenario report with no noise.
+   */
+  focused: Boolean = false
 )
 
 case class CompositeReporter(reporters: List[Reporter]) extends Reporter {
@@ -190,7 +196,19 @@ class ZIOBDDTask(
         scenarioParallelism = config.scenarioParallelism,
         dryRun = config.dryRun
       )
-      .tap(reporter.report)
+      .tap { results =>
+        // In focused mode, strip @ignore scenario results before reporting so the
+        // output only shows what actually ran. Execution is unaffected — the
+        // scenarios still run (or are skipped) according to the normal filter logic;
+        // we just suppress the IGNORED noise in the reporter output.
+        val toReport =
+          if (config.focused)
+            results
+              .map(fr => fr.copy(scenarioResults = fr.scenarioResults.filterNot(_.isIgnored)))
+              .filter(_.scenarioResults.nonEmpty)
+          else results
+        reporter.report(toReport)
+      }
 
     val results =
       try {
@@ -268,7 +286,8 @@ class ZIOBDDTask(
       excludeTags = parseExcludeTags(args),
       logLevel = parseLogLevel(args, loggers),
       scenarioNameFilter = parseScenarioName(args),
-      dryRun = args.contains("--dry-run")
+      dryRun = args.contains("--dry-run"),
+      focused = args.contains("--focused")
     )
 
     BDDTestConfig(
@@ -283,6 +302,7 @@ class ZIOBDDTask(
       logLevel = if (cliConfig.logLevel != InternalLogLevel.Info) cliConfig.logLevel else annoConfig.logLevel,
       scenarioNameFilter = cliConfig.scenarioNameFilter.orElse(annoConfig.scenarioNameFilter),
       dryRun = cliConfig.dryRun || annoConfig.dryRun,
+      focused = cliConfig.focused || annoConfig.focused,
       stepTimeoutSeconds = annoConfig.stepTimeoutSeconds
     )
   }
@@ -323,10 +343,23 @@ class ZIOBDDTask(
       .fold(Set.empty)(_ ++ _)
 
   private def parseFeatureFiles(args: Array[String]): List[String] =
-    args.sliding(2).collect { case Array("--feature-file", path) => path }.toList
+    args.sliding(2).collect { case Array("--feature-file", path) => unquote(path) }.toList
 
   private def parseScenarioName(args: Array[String]): Option[String] =
-    args.sliding(2).collectFirst { case Array("--scenario-name", name) => name }
+    args.sliding(2).collectFirst { case Array("--scenario-name", name) => unquote(name) }
+
+  // sbt's argument parser does not strip single quotes — it passes them literally,
+  // so '--feature-file '/path/file.feature'' yields the path with embedded quotes.
+  // Strip matching outer quotes as a defensive measure.  Double quotes may arrive
+  // similarly on Windows or when commands are composed by hand.
+  private def unquote(s: String): String =
+    if (
+      s.length >= 2 &&
+      ((s.charAt(0) == '\'' && s.last == '\'') ||
+        (s.charAt(0) == '"' && s.last == '"'))
+    )
+      s.drop(1).dropRight(1)
+    else s
 
   // Build a Reporter from its layer on the runner's runtime. Centralises the Unsafe.run
   // boilerplate so reporter construction is defined once.

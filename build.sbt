@@ -82,7 +82,13 @@ lazy val mimaSettings = Seq(
     // #97 added `resolveTemplateColumns` to `StepRegistry` — structurally matches a
     // `@property` step template (placeholders still present) against the registry to find
     // which extractor governs each `<col>`. Source-compatible, not binary-compatible against 1.0.0.
-    ProblemFilters.exclude[ReversedMissingMethodProblem]("zio.bdd.core.step.StepRegistry.resolveTemplateColumns")
+    ProblemFilters.exclude[ReversedMissingMethodProblem]("zio.bdd.core.step.StepRegistry.resolveTemplateColumns"),
+    // #108 added `focused: Boolean = false` to `BDDTestConfig`, enabling the --focused CLI flag
+    // which suppresses @ignore noise from the report when running a single scenario from the IDE.
+    // Binary-incompatible with 1.0.0 (case class apply/copy/constructor changed).
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.BDDTestConfig.apply"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.BDDTestConfig.this"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.BDDTestConfig.copy")
   )
 )
 
