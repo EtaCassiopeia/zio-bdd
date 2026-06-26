@@ -353,9 +353,11 @@ class ZIOBDDTask(
   // Strip matching outer quotes as a defensive measure.  Double quotes may arrive
   // similarly on Windows or when commands are composed by hand.
   private def unquote(s: String): String =
-    if (s.length >= 2 &&
-        ((s.charAt(0) == '\'' && s.last == '\'') ||
-         (s.charAt(0) == '"'  && s.last == '"')))
+    if (
+      s.length >= 2 &&
+      ((s.charAt(0) == '\'' && s.last == '\'') ||
+        (s.charAt(0) == '"' && s.last == '"'))
+    )
       s.drop(1).dropRight(1)
     else s
 
