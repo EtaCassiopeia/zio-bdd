@@ -1,6 +1,6 @@
 package zio.bdd.mock
 
-import zio.IO
+import zio.{IO, ZIO}
 
 /**
  * Type-level tag for a concrete backend, used to pin a [[NativeSpec]] to one
@@ -27,8 +27,30 @@ trait NativeSpec[B <: Backend]
  */
 trait MockControl:
 
+  /**
+   * Stable, human-readable name of the backing provider (e.g. "rift",
+   * "wiremock"). Named in every [[Unsupported]] this adapter raises so a
+   * capability gap points at the backend that has it.
+   */
+  def backendName: String
+
   /** The optional capabilities this adapter advertises. */
   def capabilities: Set[Capability]
+
+  /**
+   * Fail-fast capability negotiation: declare what a suite needs up front.
+   * Succeeds when every required capability is advertised; otherwise fails with
+   * the first missing one (in argument order), naming it and the backend.
+   *
+   * Run this at wiring time — e.g. `ZLayer.fromZIO(control.require(Faults) *>
+   * ...)` — so a backend that lacks a needed capability is rejected at layer
+   * construction, never mid-scenario. The accessors stay the only per-call
+   * gate; `require` just moves the same failure earlier.
+   */
+  final def require(required: Capability*): IO[Unsupported, Unit] =
+    required.find(c => !capabilities.contains(c)) match
+      case Some(missing) => ZIO.fail(Unsupported(missing, backendName))
+      case None          => ZIO.unit
 
   /** Stand up one or more mock spaces from a portable source. */
   def provision(source: MockSource): IO[MockError, List[MockSpace]]
