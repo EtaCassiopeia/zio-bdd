@@ -30,7 +30,26 @@ object PropertyFailureStore:
     timestamp: String
   )
 
-  private val dir: Path = Paths.get(".zio-bdd", "failures")
+  /**
+   * The production on-disk location, used whenever no `withBaseDir` override is
+   * in effect.
+   */
+  private[property] val defaultBaseDir: Path = Paths.get(".zio-bdd", "failures")
+
+  // The active base directory for per-scenario failure records. A FiberRef (not a constant)
+  // so a caller can redirect it for the duration of an effect via `withBaseDir`, scoped to
+  // its own fiber and children — concurrent scenarios never observe one another's override.
+  // Nothing overrides it in normal runs, so the on-disk layout is unchanged; tests use it to
+  // isolate the store and stop racing on a single shared directory — see #138.
+  private val baseDir: FiberRef[Path] =
+    Unsafe.unsafe(implicit unsafe => FiberRef.unsafe.make(defaultBaseDir))
+
+  /**
+   * Run `zio` with the failure store redirected to `dir` (for this fiber and
+   * its children).
+   */
+  def withBaseDir[R, E, A](dir: Path)(zio: => ZIO[R, E, A]): ZIO[R, E, A] =
+    baseDir.locally(dir)(zio)
 
   private[property] def slug(scenario: Scenario): String =
     val feature = scenario.file.getOrElse("unknown").replaceAll(""".*[/\\]""", "").stripSuffix(".feature")
@@ -41,8 +60,8 @@ object PropertyFailureStore:
     val content = scenario.steps.map(s => s"${s.stepType}:${s.pattern}").mkString("|")
     Integer.toHexString(content.hashCode)
 
-  private def file(scenario: Scenario): File =
-    dir.resolve(slug(scenario) + ".json").toFile
+  private def fileIn(base: Path, scenario: Scenario): File =
+    base.resolve(slug(scenario) + ".json").toFile
 
   // ── Minimal JSON encode/decode (avoids adding a library dependency) ───────
   // We control the output format: keys are known identifiers, values are
@@ -161,26 +180,28 @@ object PropertyFailureStore:
   }
 
   def read(scenario: Scenario): UIO[Option[FailureRecord]] =
-    ZIO.attemptBlocking {
-      val f = file(scenario)
-      if (!f.exists()) None
-      else {
-        val json = scala.util.Using.resource(scala.io.Source.fromFile(f))(_.mkString)
-        decodeJson(json)
+    baseDir.get.flatMap { base =>
+      ZIO.attemptBlocking {
+        val f = fileIn(base, scenario)
+        if (!f.exists()) None
+        else {
+          val json = scala.util.Using.resource(scala.io.Source.fromFile(f))(_.mkString)
+          decodeJson(json)
+        }
       }
+        .orElse(ZIO.none)
+        .flatMap {
+          case Some(rec) if rec.bodyHash == bodyHash(scenario) => ZIO.some(rec)
+          case Some(_)                                         =>
+            // The scenario's step list changed since this failure was recorded — the stored
+            // counterexample no longer corresponds to the current scenario body. Discard it
+            // rather than replaying a test that no longer exists in this form.
+            ZIO.logWarning(
+              s"Discarding stale property-failure record for '${scenario.name}' — scenario body changed since it was recorded."
+            ) *> clear(scenario).as(None)
+          case None => ZIO.none
+        }
     }
-      .orElse(ZIO.none)
-      .flatMap {
-        case Some(rec) if rec.bodyHash == bodyHash(scenario) => ZIO.some(rec)
-        case Some(_)                                         =>
-          // The scenario's step list changed since this failure was recorded — the stored
-          // counterexample no longer corresponds to the current scenario body. Discard it
-          // rather than replaying a test that no longer exists in this form.
-          ZIO.logWarning(
-            s"Discarding stale property-failure record for '${scenario.name}' — scenario body changed since it was recorded."
-          ) *> clear(scenario).as(None)
-        case None => ZIO.none
-      }
 
   def write(
     scenario: Scenario,
@@ -189,19 +210,21 @@ object PropertyFailureStore:
     shrunkValues: Map[String, String],
     generatorLabels: Map[String, String]
   ): UIO[Unit] =
-    ZIO.attemptBlocking {
-      Files.createDirectories(dir)
-      val rec = FailureRecord(
-        scenarioId = slug(scenario),
-        bodyHash = bodyHash(scenario),
-        seed = seed,
-        sampleIndex = sampleIndex,
-        shrunkValues = shrunkValues,
-        generatorLabels = generatorLabels,
-        timestamp = Instant.now().toString
-      )
-      scala.util.Using.resource(new PrintWriter(file(scenario)))(_.write(encodeJson(rec)))
-    }.orDie
+    baseDir.get.flatMap { base =>
+      ZIO.attemptBlocking {
+        Files.createDirectories(base)
+        val rec = FailureRecord(
+          scenarioId = slug(scenario),
+          bodyHash = bodyHash(scenario),
+          seed = seed,
+          sampleIndex = sampleIndex,
+          shrunkValues = shrunkValues,
+          generatorLabels = generatorLabels,
+          timestamp = Instant.now().toString
+        )
+        scala.util.Using.resource(new PrintWriter(fileIn(base, scenario)))(_.write(encodeJson(rec)))
+      }.orDie
+    }
 
   def clear(scenario: Scenario): UIO[Unit] =
-    ZIO.attemptBlocking { val _ = file(scenario).delete() }.orDie
+    baseDir.get.flatMap(base => ZIO.attemptBlocking { val _ = fileIn(base, scenario).delete() }.orDie)
