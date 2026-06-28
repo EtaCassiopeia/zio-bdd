@@ -93,7 +93,7 @@ lazy val mimaSettings = Seq(
 )
 
 lazy val root = (project in file("."))
-  .aggregate(core, gherkin)
+  .aggregate(core, gherkin, mock)
   .settings(
     name                  := "zio-bdd-root",
     description           := "A ZIO-based BDD testing framework for Scala 3",
@@ -123,6 +123,17 @@ lazy val gherkin = (project in file("gherkin"))
     name := "zio-bdd-gherkin",
     libraryDependencies ++= commonDependencies,
     mimaSettings
+  )
+
+// Portable MockControl SPI (#110). Standalone, backend-neutral: no dependency on
+// any adapter (Rift, WireMock) — adapters depend on this module, never the reverse.
+lazy val mock = (project in file("mock"))
+  .settings(
+    name := "zio-bdd-mock",
+    libraryDependencies ++= commonDependencies,
+    testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
+    // Not yet published as a 1.x artifact — no binary-compat baseline to check against.
+    mimaPreviousArtifacts := Set.empty
   )
 
 lazy val example = (project in file("example"))
