@@ -113,7 +113,7 @@ object RawSourceNoDslSpec extends ZIOSpecDefault:
       yield assertTrue(res == Left(MockError.InvalidDefinition("resource not found: mocks/does-not-exist.json")))
     },
     test("provisionNative escape hatch stands up a space without a portable source") {
-      val nativeSpec = new NativeSpec[Backend] {}
+      val nativeSpec = NativeSpec.Rift("""{"stubs":[]}""")
       for
         mc     <- control
         spaces <- mc.provisionNative(nativeSpec)

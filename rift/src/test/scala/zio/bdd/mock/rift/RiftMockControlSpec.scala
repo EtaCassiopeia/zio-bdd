@@ -13,6 +13,14 @@ object RiftMockControlSpec extends ZIOSpecDefault:
   )
   private val pingSource = MockSource.Dsl(MockSpec(List(pingRule)))
 
+  // A full Rift imposter document with backend-specific `_rift` extensions — the
+  // kind of full-fidelity spec the native escape hatch exists for.
+  private val nativeImposter =
+    """{"port":9999,"protocol":"http",
+      | "stubs":[{"predicates":[{"equals":{"path":"/native"}}],
+      |           "responses":[{"is":{"statusCode":200,"body":"native!"}}]}],
+      | "_rift":{"script":{"engine":"rhai","code":"200"}}}""".stripMargin
+
   private def portOf(baseUri: String): Int = baseUri.substring(baseUri.lastIndexOf(':') + 1).toInt
 
   /**
@@ -169,19 +177,108 @@ object RiftMockControlSpec extends ZIOSpecDefault:
         )
       }
     },
-    test("advertises no capabilities; accessors fail fast; native specs unsupported") {
+    test("advertises no capabilities; every accessor fails fast") {
       withAdapter { (control, _) =>
-        for
-          faultsE <- control.faults.either
-          nativeE <- control.provisionNative(new NativeSpec[Backend] {}).either
+        for faultsE <- control.faults.either
         yield assertTrue(
           control.capabilities.isEmpty,
-          faultsE == Left(Unsupported(Capability.Faults, "rift")),
-          nativeE.swap.toOption.exists {
-            case MockError.InvalidDefinition(_) => true
-            case _                              => false
-          }
+          faultsE == Left(Unsupported(Capability.Faults, "rift"))
         )
+      }
+    },
+    test("provisionNative(Rift) stands up a full-fidelity space (stubs + _rift) on our pooled port") {
+      withAdapter { (control, fake) =>
+        for
+          sE     <- control.provisionNative(NativeSpec.Rift(nativeImposter)).either
+          posted <- fake.posted.get
+        yield
+          val space = sE.toOption.get.head
+          val body  = posted.headOption.getOrElse("")
+          val req   = HttpRequest(Method.Get, "http://sut/")
+          assertTrue(
+            sE.isRight,
+            body.contains("\"_rift\""),                            // full-fidelity: _rift extensions preserved
+            body.contains("/native"),                              // the native stub preserved
+            body.contains("\"recordRequests\":true"),              // forced on so received() works
+            FakeRift.portOf(body).contains(portOf(space.baseUri)), // our pool port, not the spec's 9999
+            !body.contains("9999"),
+            space.inject(req) == req // isolation: identity inject like a portable space
+          )
+      }
+    },
+    test("a natively-provisioned space participates in received and is space-local on destroy") {
+      withAdapter { (control, fake) =>
+        for
+          sE  <- control.provisionNative(NativeSpec.Rift(nativeImposter)).either
+          s    = sE.toOption.get.head
+          port = portOf(s.baseUri)
+          _ <- fake.setView(
+                 port,
+                 s"""{"port":$port,"requests":[{"method":"GET","path":"/native","headers":{},"body":null}]}"""
+               )
+          recvE    <- control.received(s).either
+          destroyE <- control.destroy(s).either
+          deleted  <- fake.deletedPorts.get
+          globals  <- fake.globalDeletes.get
+        yield assertTrue(
+          recvE == Right(List(RecordedRequest(Method.Get, "/native", Map.empty, None))),
+          destroyE.isRight,
+          deleted == Chunk(port), // space-local: only this imposter
+          globals == 0            // never the global reset
+        )
+      }
+    },
+    test("native spaces isolate: two get distinct ports; destroy(A) leaves B") {
+      withAdapter { (control, _) =>
+        for
+          aE    <- control.provisionNative(NativeSpec.Rift(nativeImposter)).either
+          bE    <- control.provisionNative(NativeSpec.Rift(nativeImposter)).either
+          a      = aE.toOption.get.head
+          b      = bE.toOption.get.head
+          _     <- control.destroy(a).either
+          recvB <- control.received(b).either
+          recvA <- control.received(a).either
+        yield assertTrue(
+          a.baseUri != b.baseUri,
+          recvB.isRight,
+          recvA == Left(MockError.SpaceNotFound(a.id))
+        )
+      }
+    },
+    test("provisionNative rejects a non-Rift (WireMock) spec with InvalidDefinition") {
+      withAdapter { (control, _) =>
+        for e <- control.provisionNative(NativeSpec.WireMock("{}")).either
+        yield assertTrue(e.swap.toOption.exists {
+          case MockError.InvalidDefinition(_) => true
+          case _                              => false
+        })
+      }
+    },
+    test("a native space participates in overlays with stable rule ids (native stub is counted)") {
+      withAdapter { (control, fake) =>
+        for
+          sE    <- control.provisionNative(NativeSpec.Rift(nativeImposter)).either       // native stub -> [r1]
+          s      = sE.toOption.get.head
+          port   = portOf(s.baseUri)
+          baseE <- control.addRule(s, pingRule, Priority.Base).either                    // r2 -> index 1 -> [r1, r2]
+          ovE   <- control.addRule(s, pingRule, Priority.Overlay).either                 // r3 -> index 0 -> [r3, r1, r2]
+          rmE   <- ZIO.fromEither(baseE).flatMap(id => control.removeRule(s, id)).either // remove r2
+          calls <- fake.stubCalls.get
+        yield assertTrue(
+          baseE == Right(RuleId("r2")), // only holds if the native imposter's 1 stub was counted
+          ovE == Right(RuleId("r3")),
+          rmE.isRight,
+          calls.contains(s"DELETE $port/2") // r2 shifted to index 2 by the overlay insert
+        )
+      }
+    },
+    test("provisionNative(Rift) with malformed JSON fails with InvalidDefinition") {
+      withAdapter { (control, _) =>
+        for e <- control.provisionNative(NativeSpec.Rift("not json")).either
+        yield assertTrue(e.swap.toOption.exists {
+          case MockError.InvalidDefinition(_) => true
+          case _                              => false
+        })
       }
     },
     test("a raw JSON source is provisioned with our port + recordRequests forced; malformed raw is InvalidDefinition") {
