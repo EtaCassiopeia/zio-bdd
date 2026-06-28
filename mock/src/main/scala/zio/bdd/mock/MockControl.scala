@@ -3,13 +3,6 @@ package zio.bdd.mock
 import zio.IO
 
 /**
- * Where mock definitions come from. A placeholder marker at this stage — the
- * DSL builders and raw/file/resource/dir entry points land in #111. Everything
- * normalises to the canonical model before it reaches [[MockControl]].
- */
-trait MockSource
-
-/**
  * Type-level tag for a concrete backend, used to pin a [[NativeSpec]] to one
  * provider. Concrete backends (Rift, WireMock) define their own marker; the
  * native escape hatch is fleshed out in #119.

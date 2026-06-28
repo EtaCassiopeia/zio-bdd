@@ -1,0 +1,1 @@
+{ "rules": [ { "path": "/ping", "status": 200, "body": "pong" } ] }
