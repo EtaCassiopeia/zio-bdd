@@ -3,10 +3,12 @@ package zio.bdd.core
 import zio.*
 import zio.test.*
 import zio.test.Assertion.*
-import zio.bdd.core.property.{ColumnGenLookup, HasGen}
+import zio.bdd.core.property.{ColumnGenLookup, HasGen, PropertyFailureStore}
 import zio.bdd.core.step.{State, TypedExtractor, ZIOSteps}
 import zio.bdd.gherkin.GherkinParser
 import zio.test.Gen
+
+import java.nio.file.{Files, Path}
 
 /**
  * End-to-end tests for Mode P (property-based testing) execution.
@@ -39,6 +41,27 @@ object PropertyExecutorSpec extends ZIOSpecDefault {
           case _                                 => None
       FeatureExecutor.executeFeatures[Any, S](List(f), steps.getSteps, steps, genLookup = lookup)
     }
+
+  private def deleteRecursively(dir: Path): UIO[Unit] =
+    ZIO.attempt {
+      import scala.jdk.CollectionConverters.*
+      if (Files.exists(dir)) {
+        val walk = Files.walk(dir)
+        try walk.iterator().asScala.toList.sortBy(_.toString).reverse.foreach(Files.deleteIfExists(_))
+        finally walk.close()
+      }
+    }.orDie
+
+  // Redirect the property failure store to a fresh, scoped temp directory so the replay
+  // tests never read, write, or bulk-delete the process-global `.zio-bdd/failures` dir —
+  // which other tests touch concurrently (#138). `use` receives that directory.
+  private def withIsolatedStore[R, E, A](use: Path => ZIO[R, E, A]): ZIO[R & Scope, E, A] =
+    ZIO
+      .acquireRelease(ZIO.attempt(Files.createTempDirectory("zio-bdd-failures-exec")).orDie)(deleteRecursively)
+      .flatMap(dir => PropertyFailureStore.withBaseDir(dir)(use(dir)))
+
+  private def failureFiles(dir: Path): List[java.io.File] =
+    Option(dir.toFile.listFiles()).fold(List.empty[java.io.File])(_.filter(_.getName.endsWith(".json")).toList)
 
   def spec: Spec[TestEnvironment & Scope, Any] = suite("PropertyExecutorSpec")(
     passSuite,
@@ -742,46 +765,40 @@ object PropertyExecutorSpec extends ZIOSpecDefault {
           FeatureExecutor.executeFeatures[Any, S](List(f), stepsFor().getSteps, stepsFor(), genLookup = lookup)
         }
 
-      val failuresDir = java.nio.file.Paths.get(".zio-bdd", "failures").toFile
-      def failureFiles(): List[java.io.File] =
-        Option(failuresDir.listFiles()).fold(List.empty[java.io.File])(_.filter(_.getName.endsWith(".json")).toList)
+      withIsolatedStore { dir =>
+        for {
+          // Run 1: always fails → failure file should be written.
+          firstResults   <- run()
+          firstScenario   = firstResults.head.scenarioResults.head
+          existsAfterRun1 = failureFiles(dir).nonEmpty
 
-      for {
-        _ <- ZIO.attempt(failureFiles().foreach(_.delete())).ignore
+          // Run 2: still fails, but replay should consult the stored seed first
+          // rather than burning a fresh batch of `samples` runs.
+          freshRunsBeforeRun2 = freshRuns.get()
+          secondResults      <- run()
+          secondScenario      = secondResults.head.scenarioResults.head
+          freshRunsDuringRun2 = freshRuns.get() - freshRunsBeforeRun2
 
-        // Run 1: always fails → failure file should be written.
-        firstResults   <- run()
-        firstScenario   = firstResults.head.scenarioResults.head
-        existsAfterRun1 = failureFiles().nonEmpty
-
-        // Run 2: still fails, but replay should consult the stored seed first
-        // rather than burning a fresh batch of `samples` runs.
-        freshRunsBeforeRun2 = freshRuns.get()
-        secondResults      <- run()
-        secondScenario      = secondResults.head.scenarioResults.head
-        freshRunsDuringRun2 = freshRuns.get() - freshRunsBeforeRun2
-
-        // Fix the bug, run again: replay should now pass.
-        _                  <- ZIO.succeed(shouldFail.set(false))
-        freshRunsBeforeRun3 = freshRuns.get()
-        thirdResults       <- run()
-        thirdScenario       = thirdResults.head.scenarioResults.head
-        freshRunsDuringRun3 = freshRuns.get() - freshRunsBeforeRun3
-        existsAfterRun3     = failureFiles().nonEmpty
-
-        _ <- ZIO.attempt(failureFiles().foreach(_.delete())).ignore
-      } yield assertTrue(
-        !firstScenario.isPassed,
-        existsAfterRun1,
-        !secondScenario.isPassed,
-        secondScenario.error.exists(_.getMessage.contains("replayed from failure store")),
-        // Replaying one stored sample should cost far fewer step invocations than a fresh 5-sample batch.
-        freshRunsDuringRun2 < 5,
-        thirdScenario.isPassed,
-        !existsAfterRun3,
-        // Once the replay passes, a full fresh batch of samples should still run.
-        freshRunsDuringRun3 >= 5
-      )
+          // Fix the bug, run again: replay should now pass.
+          _                  <- ZIO.succeed(shouldFail.set(false))
+          freshRunsBeforeRun3 = freshRuns.get()
+          thirdResults       <- run()
+          thirdScenario       = thirdResults.head.scenarioResults.head
+          freshRunsDuringRun3 = freshRuns.get() - freshRunsBeforeRun3
+          existsAfterRun3     = failureFiles(dir).nonEmpty
+        } yield assertTrue(
+          !firstScenario.isPassed,
+          existsAfterRun1,
+          !secondScenario.isPassed,
+          secondScenario.error.exists(_.getMessage.contains("replayed from failure store")),
+          // Replaying one stored sample should cost far fewer step invocations than a fresh 5-sample batch.
+          freshRunsDuringRun2 < 5,
+          thirdScenario.isPassed,
+          !existsAfterRun3,
+          // Once the replay passes, a full fresh batch of samples should still run.
+          freshRunsDuringRun3 >= 5
+        )
+      }
     },
     test("stale failure record (scenario body changed) is discarded, not replayed") {
       val freshRuns = new java.util.concurrent.atomic.AtomicInteger(0)
@@ -822,34 +839,34 @@ object PropertyExecutorSpec extends ZIOSpecDefault {
           case "n" => Some(HasGen[Int])
           case _   => None
 
-      val failuresDir = java.nio.file.Paths.get(".zio-bdd", "failures").toFile
-      def failureFiles(): List[java.io.File] =
-        Option(failuresDir.listFiles()).fold(List.empty[java.io.File])(_.filter(_.getName.endsWith(".json")).toList)
+      withIsolatedStore { dir =>
+        for {
+          // Run 1: fails, writes a failure record keyed to this exact step body.
+          f1 <- GherkinParser.parseFeature(failingFeature, "stale-replay.feature")
+          _ <-
+            FeatureExecutor.executeFeatures[Any, S](List(f1), failingSteps.getSteps, failingSteps, genLookup = lookup)
+          recordedAfterRun1 = failureFiles(dir).nonEmpty
 
-      for {
-        _ <- ZIO.attempt(failureFiles().foreach(_.delete())).ignore
-
-        // Run 1: fails, writes a failure record keyed to this exact step body.
-        f1               <- GherkinParser.parseFeature(failingFeature, "stale-replay.feature")
-        _                <- FeatureExecutor.executeFeatures[Any, S](List(f1), failingSteps.getSteps, failingSteps, genLookup = lookup)
-        recordedAfterRun1 = failureFiles().nonEmpty
-
-        // Run 2: edited step body → bodyHash no longer matches. The stale record must be
-        // discarded (full fresh batch runs), not replayed as a single stored sample.
-        f2 <- GherkinParser.parseFeature(editedPassingFeature, "stale-replay.feature")
-        _ <- FeatureExecutor.executeFeatures[Any, S](
-               List(f2),
-               passingSteps().getSteps,
-               passingSteps(),
-               genLookup = lookup
-             )
-
-        _ <- ZIO.attempt(failureFiles().foreach(_.delete())).ignore
-      } yield assertTrue(
-        recordedAfterRun1,
-        // All 4 fresh samples ran — not a single-sample replay of the stale record.
-        freshRuns.get() == 4
-      )
+          // Run 2: edited step body → bodyHash no longer matches. The stale record must be
+          // discarded (full fresh batch runs), not replayed as a single stored sample.
+          f2 <- GherkinParser.parseFeature(editedPassingFeature, "stale-replay.feature")
+          _ <- FeatureExecutor.executeFeatures[Any, S](
+                 List(f2),
+                 passingSteps().getSteps,
+                 passingSteps(),
+                 genLookup = lookup
+               )
+          // The discard path actively clears the stale record. If the read had instead been
+          // silently swallowed to None, run 1's file would still be here — so this also fails
+          // a "4 fresh runs for the wrong reason" false green.
+          existsAfterRun2 = failureFiles(dir).nonEmpty
+        } yield assertTrue(
+          recordedAfterRun1,
+          !existsAfterRun2,
+          // All 4 fresh samples ran — not a single-sample replay of the stale record.
+          freshRuns.get() == 4
+        )
+      }
     }
   )
 
