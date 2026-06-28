@@ -118,6 +118,17 @@ object MockControlModelSpec extends ZIOSpecDefault:
     test("Isolation enum has both isolation modes") {
       assertTrue(Isolation.values.toSet == Set(Isolation.PerInstance, Isolation.Correlated))
     },
+    test("NativeSpec is backend-tagged and carries its raw payload") {
+      // The type ascriptions are the real assertion: they only compile because
+      // each case is pinned to its backend tag (Rift / WireMock).
+      val rift: NativeSpec[Backend.Rift]     = NativeSpec.Rift("""{"stubs":[]}""")
+      val wire: NativeSpec[Backend.WireMock] = NativeSpec.WireMock("""{"mappings":[]}""")
+      assertTrue(
+        rift.isInstanceOf[NativeSpec.Rift],
+        wire.isInstanceOf[NativeSpec.WireMock],
+        (rift match { case NativeSpec.Rift(j) => j; case _ => "" }) == """{"stubs":[]}"""
+      )
+    },
     test("model types are immutable value types (case-class semantics)") {
       val r1 = ResponseDef(status = 200, body = Body.Json("{}"))
       val r2 = r1.copy(status = 404)

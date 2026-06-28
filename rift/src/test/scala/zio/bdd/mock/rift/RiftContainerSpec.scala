@@ -18,6 +18,10 @@ object RiftContainerSpec extends ZIOSpecDefault:
   )
   private val pingSource = MockSource.Dsl(MockSpec(List(pingRule)))
 
+  // A backend-native Rift imposter document for the escape hatch (#119).
+  private val nativeImposter =
+    """{"port":9999,"protocol":"http","stubs":[{"predicates":[{"equals":{"path":"/native"}}],"responses":[{"is":{"statusCode":200,"body":"native!"}}]}]}"""
+
   // Imposter binds slightly after provision returns; retry the first hit briefly.
   private val upWithin: Schedule[Any, Any, Any] = Schedule.recurs(20) && Schedule.spaced(100.millis)
 
@@ -65,6 +69,22 @@ object RiftContainerSpec extends ZIOSpecDefault:
         gone    <- waitUntilGone(a.baseUri)
         bAfter  <- httpGet(b.baseUri, "/ping") // B must still serve after A is destroyed
       yield assertTrue(gone, bAfter == (200, "pong"))
+    },
+    test("a natively-provisioned space serves, records, and is space-local on destroy") {
+      for
+        control  <- ZIO.service[MockControl]
+        spaces   <- control.provisionNative(NativeSpec.Rift(nativeImposter))
+        space     = spaces.head
+        served   <- httpGet(space.baseUri, "/native").retry(upWithin)
+        recorded <- control.received(space)
+        _        <- control.destroy(space)
+        gone     <- waitUntilGone(space.baseUri)
+      yield assertTrue(
+        spaces.size == 1,
+        served == (200, "native!"),                                         // serves
+        recorded.exists(r => r.method == Method.Get && r.uri == "/native"), // records
+        gone                                                                // space-local destroy
+      )
     }
   ).provideSome[Client](Provisioning.live, riftBackend) @@ TestAspect.sequential @@ TestAspect.withLiveClock
 
