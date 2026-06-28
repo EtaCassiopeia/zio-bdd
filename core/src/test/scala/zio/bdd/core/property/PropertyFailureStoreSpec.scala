@@ -42,7 +42,69 @@ object PropertyFailureStoreSpec extends ZIOSpecDefault {
       .acquireRelease(ZIO.attempt(Files.createTempDirectory("zio-bdd-failures-spec")).orDie)(deleteRecursively)
       .flatMap(dir => PropertyFailureStore.withBaseDir(dir)(use(dir)))
 
+  private def recordFile(dir: Path, sc: Scenario): Path =
+    dir.resolve(PropertyFailureStore.slug(sc) + ".json")
+
+  // A read of `sc` warned that its record is unreadable — bound to the scenario name so a
+  // warning about a different record can't satisfy it.
+  private def warnedUnreadable(logs: Chunk[ZTestLogger.LogEntry], sc: Scenario): Boolean =
+    logs.exists { e =>
+      e.logLevel == LogLevel.Warning &&
+      e.message().contains("Unreadable property-failure record") &&
+      e.message().contains(sc.name)
+    }
+
+  // Install `fixture` (a present-but-unreadable record), read `sc`, and assert the read falls
+  // back to None while warning about the unreadable record. Runs under ZTestLogger so the
+  // warning is captured rather than printed.
+  private def assertReadWarnsUnreadable(sc: Scenario)(fixture: UIO[Any]): UIO[TestResult] =
+    (for {
+      _      <- fixture
+      result <- PropertyFailureStore.read(sc)
+      logs   <- ZTestLogger.logOutput
+    } yield assertTrue(result.isEmpty, warnedUnreadable(logs, sc))).provideLayer(ZTestLogger.default)
+
   def spec: Spec[TestEnvironment & Scope, Any] = suite("PropertyFailureStoreSpec")(
+    test("a present-but-corrupt record is logged as a warning and read falls back to None (#140)") {
+      withIsolatedStore { dir =>
+        val sc = scenario("corrupt content")
+        assertReadWarnsUnreadable(sc) {
+          ZIO.attempt(Files.writeString(recordFile(dir, sc), "this is not valid json {{{")).orDie
+        }
+      }
+    },
+    test("a present-but-empty record is logged as a warning and read falls back to None (#140)") {
+      withIsolatedStore { dir =>
+        // A 0-byte file is the realistic interrupted-write shape: present but unparseable.
+        val sc = scenario("empty file")
+        assertReadWarnsUnreadable(sc) {
+          ZIO.attempt(Files.writeString(recordFile(dir, sc), "")).orDie
+        }
+      }
+    },
+    test("an unreadable record (I/O error) is logged as a warning and read falls back to None (#140)") {
+      withIsolatedStore { dir =>
+        // A directory where a file is expected: it `exists()`, but opening it as a file throws,
+        // exercising the I/O-exception path (the original `.orElse(ZIO.none)` silent swallow).
+        val sc = scenario("io error")
+        assertReadWarnsUnreadable(sc) {
+          ZIO.attempt(Files.createDirectory(recordFile(dir, sc))).orDie
+        }
+      }
+    },
+    test("a genuinely absent record returns None with no warning (#140)") {
+      withIsolatedStore { _ =>
+        // The common path must stay quiet — no file written, no warning of any kind.
+        val sc = scenario("absent record")
+        (for {
+          result <- PropertyFailureStore.read(sc)
+          logs   <- ZTestLogger.logOutput
+        } yield assertTrue(
+          result.isEmpty,
+          !logs.exists(_.logLevel == LogLevel.Warning)
+        )).provideLayer(ZTestLogger.default)
+      }
+    },
     test("the default base directory is the production .zio-bdd/failures layout (#138)") {
       // Every other test overrides the base dir, so this pins the un-overridden default that
       // production (and external tooling reading the files) relies on — a rename would
