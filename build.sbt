@@ -103,7 +103,7 @@ lazy val root = (project in file("."))
   .dependsOn(core, gherkin)
 
 lazy val core = (project in file("core"))
-  .dependsOn(gherkin)
+  .dependsOn(gherkin, mock)
   .settings(
     name := "zio-bdd",
     libraryDependencies ++= commonDependencies,
