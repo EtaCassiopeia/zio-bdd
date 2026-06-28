@@ -43,7 +43,7 @@ object MockControlModelSpec extends ZIOSpecDefault:
         respond = ResponseDef(status = 200, body = Body.Text("pong"))
       )
       for
-        spaces <- control.provision(new MockSource {})
+        spaces <- control.provision(MockSource.Dsl(MockSpec(Nil)))
         space  <- ZIO.fromOption(spaces.headOption).orElseFail(MockError.ProvisionFailed("stub returned no space"))
         id     <- control.addRule(space, rule)
         _      <- control.replaceRules(space, List(rule))
