@@ -93,7 +93,7 @@ lazy val mimaSettings = Seq(
 )
 
 lazy val root = (project in file("."))
-  .aggregate(core, gherkin, mock)
+  .aggregate(core, gherkin, mock, rift)
   .settings(
     name                  := "zio-bdd-root",
     description           := "A ZIO-based BDD testing framework for Scala 3",
@@ -131,6 +131,25 @@ lazy val mock = (project in file("mock"))
   .settings(
     name := "zio-bdd-mock",
     libraryDependencies ++= commonDependencies,
+    testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
+    // Not yet published as a 1.x artifact — no binary-compat baseline to check against.
+    mimaPreviousArtifacts := Set.empty
+  )
+
+// Rift adapter (#113): implements the portable MockControl SPI over the Rift
+// (Mountebank-compatible) backend. Drives the admin API via zio-http and can
+// stand up the published image via testcontainers. Depends on `mock`, never the
+// reverse.
+lazy val rift = (project in file("rift"))
+  .dependsOn(mock)
+  .settings(
+    name := "zio-bdd-rift",
+    libraryDependencies ++= commonDependencies,
+    libraryDependencies ++= Seq(
+      "dev.zio"      %% "zio-http"                   % "3.2.0",
+      "dev.zio"      %% "zio-json"                   % "0.7.3",
+      "com.dimafeng" %% "testcontainers-scala-core"  % "0.41.4"
+    ),
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
     // Not yet published as a 1.x artifact — no binary-compat baseline to check against.
     mimaPreviousArtifacts := Set.empty
