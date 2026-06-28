@@ -3,17 +3,31 @@ package zio.bdd.mock
 import zio.{IO, ZIO}
 
 /**
- * Type-level tag for a concrete backend, used to pin a [[NativeSpec]] to one
- * provider. Concrete backends (Rift, WireMock) define their own marker; the
- * native escape hatch is fleshed out in #119.
+ * Phantom tag pinning a [[NativeSpec]] — and the test that uses it — to one
+ * concrete backend, so the escape hatch is honest about the portability it
+ * trades away. A `NativeSpec[Backend.Rift]` can only be provisioned by a Rift
+ * adapter; a backend that does not recognise the spec rejects it.
  */
-trait Backend
+sealed trait Backend
+object Backend:
+  sealed trait Rift     extends Backend
+  sealed trait WireMock extends Backend
 
 /**
  * A backend-specific provisioning payload — the escape hatch that trades
- * portability for full access to one backend. Fleshed out in #119.
+ * portability for full access to one backend (#119). A natively-provisioned
+ * [[MockSpace]] still participates in destroy/received/overlays/isolation
+ * exactly like a portable one; only its *definition* is backend-pinned.
+ *
+ * The WireMock Java-builder variant lands with the WireMock adapter (M2, #122):
+ * it needs that library's types, which the neutral SPI must not depend on.
  */
-trait NativeSpec[B <: Backend]
+enum NativeSpec[B <: Backend]:
+  /** A raw Rift/Mountebank imposter document; may carry `_rift` extensions. */
+  case Rift(imposterJson: String) extends NativeSpec[Backend.Rift]
+
+  /** A raw WireMock stub-mapping document. */
+  case WireMock(stubMappingJson: String) extends NativeSpec[Backend.WireMock]
 
 /**
  * The total core port every adapter MUST implement. This is the hinge of the

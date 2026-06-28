@@ -49,7 +49,15 @@ private[rift] final case class RiftMockControl(
     yield spaces
 
   def provisionNative[B <: Backend](spec: NativeSpec[B]): IO[MockError, List[MockSpace]] =
-    ZIO.fail(MockError.InvalidDefinition("the Rift adapter does not support native specs yet (#119)"))
+    spec match
+      // A native Rift imposter goes through the same serveSpace machinery as a
+      // portable Raw source (pool port, `_rift`/stub passthrough, tracking), so
+      // the resulting space participates in destroy/received/overlays/isolation
+      // exactly like a portable one.
+      case NativeSpec.Rift(imposterJson) =>
+        serveSpace(NormalizedSource("native", SourcePayload.Raw(imposterJson), None)).map(List(_))
+      case NativeSpec.WireMock(_) =>
+        ZIO.fail(MockError.InvalidDefinition("the Rift adapter cannot provision a WireMock native spec"))
 
   def addRule(space: MockSpace, rule: MockRule, priority: Priority): IO[MockError, RuleId] =
     withImposter(space) { imp =>
