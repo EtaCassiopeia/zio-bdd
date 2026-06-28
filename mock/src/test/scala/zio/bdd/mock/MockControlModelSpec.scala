@@ -9,6 +9,7 @@ object MockControlModelSpec extends ZIOSpecDefault:
   // existence proves `MockControl` is implementable end-to-end with no adapter
   // dependency (AC1); it also exercises the capability fail-fast contract (AC4).
   private final case class StubMockControl(backend: String, caps: Set[Capability]) extends MockControl:
+    def backendName: String           = backend
     def capabilities: Set[Capability] = caps
 
     def provision(source: MockSource): IO[MockError, List[MockSpace]] =

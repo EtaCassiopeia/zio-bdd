@@ -24,6 +24,7 @@ object RawSourceNoDslSpec extends ZIOSpecDefault:
     loaded: Ref[Map[SpaceId, SourcePayload]],
     seq: Ref[Int]
   ) extends MockControl:
+    def backendName: String           = "in-memory"
     def capabilities: Set[Capability] = Set.empty
 
     def provision(source: MockSource): IO[MockError, List[MockSpace]] =
