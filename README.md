@@ -69,6 +69,22 @@ Test / testFrameworks += new TestFramework("zio.bdd.ZIOBDDFramework")
 Requires Scala 3.3.4 and ZIO 2.1.17. `zio-schema` and `zio-schema-derivation` are pulled in
 transitively and are needed to derive `Schema[S]` for your state type.
 
+## IDE support
+
+First-class editor support for `.feature` files — syntax highlighting, go-to-definition,
+diagnostics, step completion, and gutter run actions (including running a single Scenario
+Outline example) — is available for both VS Code and IntelliJ via
+[zio-bdd-tooling](https://github.com/EtaCassiopeia/zio-bdd-tooling):
+
+- **VS Code** — install **zio-bdd** from the
+  [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=etacassiopeia.zio-bdd),
+  or run `ext install etacassiopeia.zio-bdd` from the Quick Open palette.
+- **IntelliJ IDEA** — install **zio-bdd** from the
+  [JetBrains Marketplace](https://plugins.jetbrains.com/plugin/32510-zio-bdd)
+  (Settings → Plugins → Marketplace → search "zio-bdd"). No external plugins required.
+
+Both bundle the language server, so there is no separate setup step.
+
 ## Documentation
 
 | Document | Description |
