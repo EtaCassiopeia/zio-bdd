@@ -3,7 +3,7 @@ package zio.bdd.core.property
 import zio.*
 import zio.bdd.gherkin.Scenario
 
-import java.io.{File, PrintWriter}
+import java.io.{File, IOException, PrintWriter}
 import java.nio.file.{Files, Path, Paths}
 import java.time.Instant
 
@@ -179,27 +179,46 @@ object PropertyFailureStore:
     }
   }
 
+  // The three outcomes of reading a record's file, so a present-but-broken record is
+  // distinguished from a genuinely absent one rather than both collapsing to None.
+  private enum ReadOutcome:
+    case Absent
+    case Parsed(rec: FailureRecord)
+    case Corrupt(reason: String)
+
   def read(scenario: Scenario): UIO[Option[FailureRecord]] =
+    import ReadOutcome.*
     baseDir.get.flatMap { base =>
       ZIO.attemptBlocking {
         val f = fileIn(base, scenario)
-        if (!f.exists()) None
+        if (!f.exists()) Absent
         else {
           val json = scala.util.Using.resource(scala.io.Source.fromFile(f))(_.mkString)
-          decodeJson(json)
+          decodeJson(json) match {
+            case Some(rec) => Parsed(rec)
+            case None      => Corrupt(s"could not parse ${f.getName}")
+          }
         }
       }
-        .orElse(ZIO.none)
+        // Only I/O failures are "corrupt record" — a defect anywhere else (parser bug, etc.)
+        // must die, not be relabelled and swallowed as a warning.
+        .refineToOrDie[IOException]
+        .catchAll(e => ZIO.succeed(Corrupt(Option(e.getMessage).getOrElse(e.toString))))
         .flatMap {
-          case Some(rec) if rec.bodyHash == bodyHash(scenario) => ZIO.some(rec)
-          case Some(_)                                         =>
+          case Absent          => ZIO.none
+          case Corrupt(reason) =>
+            // A record exists but can't be read/parsed (interrupted write, hand-edit, disk
+            // issue). Replay is best-effort so we still fall back to a fresh run — but surface
+            // it, so a broken store isn't silently mistaken for "no failure recorded". See #140.
+            ZIO.logWarning(s"Unreadable property-failure record for '${scenario.name}': $reason").as(None)
+          case Parsed(rec) if rec.bodyHash == bodyHash(scenario) => ZIO.some(rec)
+          case Parsed(_)                                         =>
             // The scenario's step list changed since this failure was recorded — the stored
             // counterexample no longer corresponds to the current scenario body. Discard it
             // rather than replaying a test that no longer exists in this form.
             ZIO.logWarning(
               s"Discarding stale property-failure record for '${scenario.name}' — scenario body changed since it was recorded."
             ) *> clear(scenario).as(None)
-          case None => ZIO.none
         }
     }
 
