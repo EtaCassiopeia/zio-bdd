@@ -17,3 +17,27 @@ jobs:
           cache: sbt
       - uses: sbt/setup-sbt@v1
       - run: sbt scalafmtCheckAll mimaReportBinaryIssues test
+
+  # The Rift adapter's real-container acceptance test (#113) is gated by RIFT_IT
+  # so the hermetic `build` job above stays Docker-free. ubuntu-latest ships a
+  # running Docker daemon at /var/run/docker.sock that testcontainers resolves
+  # natively, so Rift.managed() can stand up the published image here. (Docker
+  # Desktop on macOS is not auto-resolvable, which is why this can't run as part
+  # of the default unit gate.)
+  rift-it:
+    name: Rift integration test (real container)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 11
+          cache: sbt
+      - uses: sbt/setup-sbt@v1
+      - name: RiftContainerSpec against a real Rift container (testcontainers)
+        env:
+          RIFT_IT: "1"
+        run: sbt "rift/testOnly zio.bdd.mock.rift.RiftContainerSpec"
