@@ -15,9 +15,9 @@ import java.net.http.{HttpClient, HttpRequest as JHttpRequest, HttpResponse as J
  * repeatedly (`nonFlaky`) against EVERY isolation mode each adapter advertises:
  * WireMock correlated + perInstance (always, in-process) and Rift perInstance +
  * correlated (gated behind `RIFT_IT`, like
- * [[zio.bdd.mock.rift.RiftContainerSpec]] — the `rift-it` CI job runs the
- * conformance module under `RIFT_IT`, so the Rift backends + the native
- * fixed-port test execute there, not in the default Docker-free lane).
+ * [[zio.bdd.mock.rift.RiftContainerSpec]] — the `rift-it` CI job runs this spec
+ * under `RIFT_IT`, so the Rift backends + the native fixed-port test execute
+ * there, not in the default Docker-free lane).
  *
  * Tests within a backend run sequentially so only one N-space wave is live at a
  * time — Rift PerInstance gives each space its own imposter+port, so a generous
