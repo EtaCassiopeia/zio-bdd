@@ -28,6 +28,31 @@ private[rift] object RiftProtocol:
       "stubs"          -> Json.Arr(rules.map(stub)*)
     )
 
+  /**
+   * The shared imposter for Correlated isolation (#156): empty stubs (added per
+   * space via `POST /imposters/:port/spaces/:flowId/stubs`) and a flow-id
+   * source of `header:<correlationHeader>`, so Rift resolves each request's
+   * flow + gates stubs/recorded requests by that header natively (rift#223).
+   * The flow-state config is a backend-native extension, so it lives under
+   * `_rift.flowState`
+   * (`imposter.config.rift.flowState.mountebankStateMapping.flowIdSource`).
+   */
+  def correlatedImposter(port: Int, name: String, correlationHeader: String): Json =
+    Json.Obj(
+      "port"           -> Json.Num(port),
+      "protocol"       -> Json.Str("http"),
+      "name"           -> Json.Str(name),
+      "recordRequests" -> Json.Bool(true),
+      "stubs"          -> Json.Arr(),
+      "_rift" -> Json.Obj(
+        "flowState" -> Json.Obj(
+          "backend"                -> Json.Str("inmemory"),
+          "ttlSeconds"             -> Json.Num(300),
+          "mountebankStateMapping" -> Json.Obj("flowIdSource" -> Json.Str(s"header:$correlationHeader"))
+        )
+      )
+    )
+
   /** A single Mountebank stub: predicates (ANDed) + one response. */
   def stub(rule: MockRule): Json =
     val idField = rule.id.map(id => "id" -> Json.Str(id.value)).toList
@@ -103,16 +128,18 @@ private[rift] object RiftProtocol:
 
   /** Parse the `requests[]` of a `GET /imposters/:port` view. */
   def parseRecorded(viewJson: String): Either[String, List[RecordedRequest]] =
-    viewJson.fromJson[WireView].map { v =>
-      v.requests.getOrElse(Nil).map { r =>
-        RecordedRequest(
-          method = methodFromWire(r.method),
-          uri = r.path,
-          headers = r.headers.getOrElse(Map.empty),
-          body = r.body
-        )
-      }
-    }
+    viewJson.fromJson[WireView].map(_.requests.getOrElse(Nil).map(toRecorded))
+
+  /**
+   * Parse the bare JSON array returned by `GET
+   * /imposters/:port/requests?match=…` — the header/flow-id-filtered recorded
+   * requests (rift#201), used by Correlated `received`.
+   */
+  def parseRequestsArray(arrayJson: String): Either[String, List[RecordedRequest]] =
+    arrayJson.fromJson[List[WireReq]].map(_.map(toRecorded))
+
+  private def toRecorded(r: WireReq): RecordedRequest =
+    RecordedRequest(methodFromWire(r.method), r.path, r.headers.getOrElse(Map.empty), r.body)
 
   // ---------------------------------------------------------------------------
   // helpers

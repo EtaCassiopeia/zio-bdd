@@ -1,10 +1,45 @@
 package zio.bdd.mock.rift
 
 import zio.*
-import zio.bdd.mock.{MockControl, MockError, Provisioning}
+import zio.bdd.mock.{MockControl, MockError, Provisioning, SpaceId}
 import zio.http.Client
 import com.dimafeng.testcontainers.GenericContainer
 import org.testcontainers.containers.wait.strategy.Wait
+
+/**
+ * How a Correlated space tags its requests on the shared imposter. `header` is
+ * the correlation header (Rift's `flowIdSource = header:<header>` gates stubs +
+ * recorded requests by it natively); `value` is what `MockSpace.inject` stamps
+ * on each request — and the `flowId` the adapter scopes stubs/teardown under.
+ */
+final case class Correlation(header: String, value: SpaceId => String)
+
+object Correlation:
+  /** Default: a dedicated `X-Mock-Space: <spaceId>` header. */
+  val spaceHeader: Correlation = Correlation("X-Mock-Space", id => id.value)
+
+  /**
+   * Correlate by the W3C trace context the SUT already propagates. NOTE: Rift's
+   * flow-id is the whole header value, so `inject` stamps a fixed traceparent
+   * per space — the SUT cannot vary the span-id (unlike the WireMock adapter,
+   * which matches by trace-id).
+   */
+  val traceparent: Correlation =
+    Correlation("traceparent", id => s"00-${traceId(id)}-0000000000000001-01")
+
+  private def traceId(id: SpaceId): String =
+    (0 until 4).map(i => f"${(id.value + ":" + i).hashCode & 0xffffffffL}%08x").mkString
+
+/**
+ * Rift isolation mode (#156). PerInstance (own port per space) is the default.
+ */
+enum RiftMode:
+  case PerInstance
+  case Correlated(correlation: Correlation)
+
+object RiftMode:
+  /** Correlated isolation with the default `X-Mock-Space` correlation. */
+  val correlated: RiftMode = Correlated(Correlation.spaceHeader)
 
 /**
  * Entry points for the Rift adapter — the default, zero-native-artifact
@@ -33,10 +68,11 @@ object Rift:
    */
   def connect(
     adminBase: String,
-    imposterPorts: List[Int]
+    imposterPorts: List[Int],
+    mode: RiftMode = RiftMode.PerInstance
   )(hostFor: Int => String): URLayer[Client & Provisioning, MockControl] =
-    ZLayer {
-      RiftEndpoint.pooled(adminBase, imposterPorts)(hostFor).flatMap(RiftMockControl.make)
+    ZLayer.scoped {
+      RiftEndpoint.pooled(adminBase, imposterPorts)(hostFor).flatMap(RiftMockControl.make(_, mode))
     }
 
   /**
@@ -54,7 +90,8 @@ object Rift:
     image: String = DefaultImage,
     poolSize: Int = DefaultPoolSize,
     adminPort: Int = DefaultAdminPort,
-    imposterBasePort: Int = DefaultImposterBase
+    imposterBasePort: Int = DefaultImposterBase,
+    mode: RiftMode = RiftMode.PerInstance
   ): ZLayer[Client & Provisioning, MockError, MockControl] =
     ZLayer.scoped {
       val imposterPorts = (0 until poolSize).map(imposterBasePort + _).toList
@@ -74,7 +111,7 @@ object Rift:
         host      = container.host
         admin     = s"http://$host:${container.mappedPort(adminPort)}"
         endpoint <- RiftEndpoint.pooled(admin, imposterPorts)(p => s"http://$host:${container.mappedPort(p)}")
-        control  <- RiftMockControl.make(endpoint)
+        control  <- RiftMockControl.make(endpoint, mode)
       yield control
     }
 
