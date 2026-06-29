@@ -36,6 +36,10 @@ private[wiremock] final case class WireMockControl(
   def backendName: String           = "wiremock"
   def capabilities: Set[Capability] = Set.empty
 
+  override def isolation: Isolation = mode match
+    case WireMock.Mode.Correlated(_) => Isolation.Correlated
+    case WireMock.Mode.PerInstance   => Isolation.PerInstance
+
   def provision(source: MockSource): IO[MockError, List[MockSpace]] =
     for
       sources <- provisioning.normalize(source)

@@ -15,8 +15,9 @@ enum Capability:
  *   - Correlated: a shared base URI partitioned by a correlation header (e.g.
  *     WireMock).
  *
- * Marker type only at this stage; the per-adapter behaviour lands with the
- * isolation model in M2 (#123).
+ * The behaviour itself lives in [[MockSpace.inject]] (which hides the mode from
+ * the Gherkin); an adapter reports its mode via [[MockControl.isolation]]
+ * (#123).
  */
 enum Isolation:
   case PerInstance, Correlated

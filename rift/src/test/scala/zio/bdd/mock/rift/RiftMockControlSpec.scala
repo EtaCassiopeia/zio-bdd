@@ -46,6 +46,11 @@ object RiftMockControlSpec extends ZIOSpecDefault:
     withAdapterPool((4545 until 4600).toList)(use)
 
   def spec = suite("RiftMockControl (adapter vs fake admin API)")(
+    test("the Rift adapter's isolation model is PerInstance (own port, identity inject)") {
+      withAdapter { (control, _) =>
+        ZIO.succeed(assertTrue(control.isolation == Isolation.PerInstance))
+      }
+    },
     test("provision creates one recording imposter per space; baseUri reflects its port; inject is identity") {
       withAdapter { (control, fake) =>
         for
