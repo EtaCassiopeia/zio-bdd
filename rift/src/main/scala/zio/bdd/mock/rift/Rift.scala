@@ -52,10 +52,12 @@ object RiftMode:
  */
 object Rift:
 
-  // Pinned to v0.4.0. Floor is v0.2.0: the first release where DELETE
-  // /imposters/:port tears down existing keep-alive connections, so a destroyed
-  // imposter stops serving even a pooled client (EtaCassiopeia/rift#207).
-  val DefaultImage: String     = "zainalpour/rift-proxy:v0.4.0"
+  // Pinned to v0.5.0. Floor is v0.4.0: Correlated isolation (#156) needs the
+  // space-scoped stub + per-space teardown endpoints (EtaCassiopeia/rift#223),
+  // first shipped in v0.4.0 — which also supersedes the older v0.2.0 floor (the
+  // rift#207 release where DELETE /imposters/:port tears down keep-alive
+  // connections so a destroyed imposter stops serving a pooled client).
+  val DefaultImage: String     = "zainalpour/rift-proxy:v0.5.0"
   val DefaultAdminPort: Int    = 2525
   val DefaultImposterBase: Int = 4545
   val DefaultPoolSize: Int     = 16
