@@ -31,8 +31,11 @@ private[rift] object RiftProtocol:
   /**
    * The shared imposter for Correlated isolation (#156): empty stubs (added per
    * space via `POST /imposters/:port/spaces/:flowId/stubs`) and a flow-id
-   * source of `header:<correlationHeader>`, so Rift partitions stubs + recorded
-   * requests by that header natively (rift#223).
+   * source of `header:<correlationHeader>`, so Rift resolves each request's
+   * flow + gates stubs/recorded requests by that header natively (rift#223).
+   * The flow-state config is a backend-native extension, so it lives under
+   * `_rift.flowState`
+   * (`imposter.config.rift.flowState.mountebankStateMapping.flowIdSource`).
    */
   def correlatedImposter(port: Int, name: String, correlationHeader: String): Json =
     Json.Obj(
@@ -41,8 +44,12 @@ private[rift] object RiftProtocol:
       "name"           -> Json.Str(name),
       "recordRequests" -> Json.Bool(true),
       "stubs"          -> Json.Arr(),
-      "flowState" -> Json.Obj(
-        "mountebankStateMapping" -> Json.Obj("flowIdSource" -> Json.Str(s"header:$correlationHeader"))
+      "_rift" -> Json.Obj(
+        "flowState" -> Json.Obj(
+          "backend"                -> Json.Str("inmemory"),
+          "ttlSeconds"             -> Json.Num(300),
+          "mountebankStateMapping" -> Json.Obj("flowIdSource" -> Json.Str(s"header:$correlationHeader"))
+        )
       )
     )
 

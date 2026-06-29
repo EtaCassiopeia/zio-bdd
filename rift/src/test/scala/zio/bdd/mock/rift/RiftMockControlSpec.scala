@@ -363,6 +363,7 @@ object RiftMockControlSpec extends ZIOSpecDefault:
             control.isolation == Isolation.Correlated,
             posted.size == 1,                                                 // ONE shared imposter for both spaces
             posted.head.contains("\"flowIdSource\":\"header:X-Mock-Space\""), // Rift gates by the header natively
+            posted.head.contains("\"_rift\""),                                // flow-state lives under _rift (native ext), not top-level
             a.baseUri == b.baseUri,                                           // shared imposter -> shared baseUri
             stubs.exists(_.contains(s"/${a.id.value} ")),                     // A's stub scoped under A's flowId
             stubs.exists(_.contains(s"/${b.id.value} ")),
