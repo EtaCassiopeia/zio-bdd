@@ -16,16 +16,22 @@ private[rift] object RiftProtocol:
   // Canonical model -> Mountebank wire JSON
   // ---------------------------------------------------------------------------
 
+  // Rift/Mountebank serve 200-empty for an unmatched request unless an imposter
+  // `defaultResponse` is set; pin it to 404 so the portable adapter matches the
+  // cross-adapter contract (WireMock's unmatched default) — #165.
+  private val unmatched404: Json = Json.Obj("statusCode" -> Json.Num(404))
+
   /**
    * A full `POST /imposters` body for one space: one imposter, recording on.
    */
   def imposter(port: Int, name: String, rules: List[MockRule]): Json =
     Json.Obj(
-      "port"           -> Json.Num(port),
-      "protocol"       -> Json.Str("http"),
-      "name"           -> Json.Str(name),
-      "recordRequests" -> Json.Bool(true),
-      "stubs"          -> Json.Arr(rules.map(stub)*)
+      "port"            -> Json.Num(port),
+      "protocol"        -> Json.Str("http"),
+      "name"            -> Json.Str(name),
+      "recordRequests"  -> Json.Bool(true),
+      "defaultResponse" -> unmatched404,
+      "stubs"           -> Json.Arr(rules.map(stub)*)
     )
 
   /**
@@ -39,11 +45,12 @@ private[rift] object RiftProtocol:
    */
   def correlatedImposter(port: Int, name: String, correlationHeader: String): Json =
     Json.Obj(
-      "port"           -> Json.Num(port),
-      "protocol"       -> Json.Str("http"),
-      "name"           -> Json.Str(name),
-      "recordRequests" -> Json.Bool(true),
-      "stubs"          -> Json.Arr(),
+      "port"            -> Json.Num(port),
+      "protocol"        -> Json.Str("http"),
+      "name"            -> Json.Str(name),
+      "recordRequests"  -> Json.Bool(true),
+      "defaultResponse" -> unmatched404,
+      "stubs"           -> Json.Arr(),
       "_rift" -> Json.Obj(
         "flowState" -> Json.Obj(
           "backend"                -> Json.Str("inmemory"),

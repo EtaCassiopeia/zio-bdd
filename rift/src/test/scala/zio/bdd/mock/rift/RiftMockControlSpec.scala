@@ -75,6 +75,7 @@ object RiftMockControlSpec extends ZIOSpecDefault:
             spaces.size == 1,
             posted.size == 1,
             posted.head.contains("\"recordRequests\":true"),
+            posted.head.contains("\"defaultResponse\":{\"statusCode\":404}"), // unmatched -> 404 (#165)
             FakeRift.portOf(posted.head).contains(portOf(space.baseUri)),
             space.baseUri == s"http://localhost:${portOf(space.baseUri)}",
             space.inject(req) == req
@@ -364,6 +365,7 @@ object RiftMockControlSpec extends ZIOSpecDefault:
             posted.size == 1,                                                 // ONE shared imposter for both spaces
             posted.head.contains("\"flowIdSource\":\"header:X-Mock-Space\""), // Rift gates by the header natively
             posted.head.contains("\"_rift\""),                                // flow-state lives under _rift (native ext), not top-level
+            posted.head.contains("\"defaultResponse\":{\"statusCode\":404}"), // unmatched -> 404 (#165)
             a.baseUri == b.baseUri,                                           // shared imposter -> shared baseUri
             stubs.exists(_.contains(s"/${a.id.value} ")),                     // A's stub scoped under A's flowId
             stubs.exists(_.contains(s"/${b.id.value} ")),
