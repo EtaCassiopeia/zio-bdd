@@ -93,7 +93,7 @@ lazy val mimaSettings = Seq(
 )
 
 lazy val root = (project in file("."))
-  .aggregate(core, gherkin, mock, rift)
+  .aggregate(core, gherkin, mock, rift, wiremock, conformance)
   .settings(
     name                  := "zio-bdd-root",
     description           := "A ZIO-based BDD testing framework for Scala 3",
@@ -152,6 +152,35 @@ lazy val rift = (project in file("rift"))
     ),
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
     // Not yet published as a 1.x artifact — no binary-compat baseline to check against.
+    mimaPreviousArtifacts := Set.empty
+  )
+
+// WireMock adapter (#122): the in-process, pure-JVM, zero-Docker provider with
+// Correlated isolation by default. Implements the portable MockControl SPI over
+// an embedded WireMockServer. Depends on `mock`, never the reverse.
+lazy val wiremock = (project in file("wiremock"))
+  .dependsOn(mock)
+  .settings(
+    name := "zio-bdd-wiremock",
+    libraryDependencies ++= commonDependencies,
+    libraryDependencies ++= Seq(
+      "org.wiremock" % "wiremock" % "3.9.2"
+    ),
+    testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
+    // Not yet published as a 1.x artifact — no binary-compat baseline to check against.
+    mimaPreviousArtifacts := Set.empty
+  )
+
+// Conformance harness + matrix runner (#124): the executable definition of
+// "implements MockControl". The only module that depends on BOTH adapters, so it
+// can run one feature set across Rift + WireMock and emit the pass/skip/fail matrix.
+lazy val conformance = (project in file("conformance"))
+  .dependsOn(core, rift, wiremock)
+  .settings(
+    name := "zio-bdd-conformance",
+    libraryDependencies ++= commonDependencies,
+    testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
+    publish / skip        := true, // a test harness, not a published artifact
     mimaPreviousArtifacts := Set.empty
   )
 

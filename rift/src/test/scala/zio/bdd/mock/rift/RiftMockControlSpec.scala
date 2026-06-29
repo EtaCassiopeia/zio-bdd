@@ -27,7 +27,7 @@ object RiftMockControlSpec extends ZIOSpecDefault:
    * Set up a fresh fake admin server + a Rift adapter (with the given imposter
    * port pool) bound to it, in a scope.
    */
-  private def withAdapterPool(ports: List[Int])(
+  private def withAdapterPool(ports: List[Int], mode: RiftMode = RiftMode.PerInstance)(
     use: (MockControl, FakeRift) => UIO[TestResult]
   ): ZIO[Client & Provisioning, Throwable, TestResult] =
     ZIO.scoped {
@@ -35,7 +35,7 @@ object RiftMockControlSpec extends ZIOSpecDefault:
         adminAndFake <- FakeRift.started
         (admin, fake) = adminAndFake
         endpoint     <- RiftEndpoint.pooled(admin, ports)(p => s"http://localhost:$p")
-        control      <- RiftMockControl.make(endpoint)
+        control      <- RiftMockControl.make(endpoint, mode)
         result       <- use(control, fake)
       yield result
     }
@@ -45,7 +45,22 @@ object RiftMockControlSpec extends ZIOSpecDefault:
   ): ZIO[Client & Provisioning, Throwable, TestResult] =
     withAdapterPool((4545 until 4600).toList)(use)
 
+  private def withCorrelated(
+    use: (MockControl, FakeRift) => UIO[TestResult]
+  ): ZIO[Client & Provisioning, Throwable, TestResult] =
+    withAdapterPool((4545 until 4600).toList, RiftMode.correlated)(use)
+
+  private def withCorrelatedTraceparent(
+    use: (MockControl, FakeRift) => UIO[TestResult]
+  ): ZIO[Client & Provisioning, Throwable, TestResult] =
+    withAdapterPool((4545 until 4600).toList, RiftMode.Correlated(Correlation.traceparent))(use)
+
   def spec = suite("RiftMockControl (adapter vs fake admin API)")(
+    test("the Rift adapter's isolation model is PerInstance (own port, identity inject)") {
+      withAdapter { (control, _) =>
+        ZIO.succeed(assertTrue(control.isolation == Isolation.PerInstance))
+      }
+    },
     test("provision creates one recording imposter per space; baseUri reflects its port; inject is identity") {
       withAdapter { (control, fake) =>
         for
@@ -60,6 +75,7 @@ object RiftMockControlSpec extends ZIOSpecDefault:
             spaces.size == 1,
             posted.size == 1,
             posted.head.contains("\"recordRequests\":true"),
+            posted.head.contains("\"defaultResponse\":{\"statusCode\":404}"), // unmatched -> 404 (#165)
             FakeRift.portOf(posted.head).contains(portOf(space.baseUri)),
             space.baseUri == s"http://localhost:${portOf(space.baseUri)}",
             space.inject(req) == req
@@ -328,6 +344,166 @@ object RiftMockControlSpec extends ZIOSpecDefault:
             case _                                 => false
           }
         )
+      }
+    },
+    test(
+      "Correlated: provision uses ONE shared imposter (flowIdSource header) with space-scoped stubs; inject stamps the header"
+    ) {
+      withCorrelated { (control, fake) =>
+        for
+          aE     <- control.provision(pingSource).either
+          bE     <- control.provision(pingSource).either
+          posted <- fake.posted.get
+          stubs  <- fake.spaceStubs.get
+        yield
+          val a   = aE.toOption.get.head
+          val b   = bE.toOption.get.head
+          val req = HttpRequest(Method.Get, "http://sut/x")
+          assertTrue(
+            aE.isRight && bE.isRight,
+            control.isolation == Isolation.Correlated,
+            posted.size == 1,                                                 // ONE shared imposter for both spaces
+            posted.head.contains("\"flowIdSource\":\"header:X-Mock-Space\""), // Rift gates by the header natively
+            posted.head.contains("\"_rift\""),                                // flow-state lives under _rift (native ext), not top-level
+            posted.head.contains("\"defaultResponse\":{\"statusCode\":404}"), // unmatched -> 404 (#165)
+            a.baseUri == b.baseUri,                                           // shared imposter -> shared baseUri
+            stubs.exists(_.contains(s"/${a.id.value} ")),                     // A's stub scoped under A's flowId
+            stubs.exists(_.contains(s"/${b.id.value} ")),
+            a.inject(req).headers.get("X-Mock-Space").contains(a.id.value), // inject routes the request to A
+            a.inject(req).headers.get("X-Mock-Space") != b.inject(req).headers.get("X-Mock-Space")
+          )
+      }
+    },
+    test(
+      "Correlated: destroy(A) tears down only A's space (DELETE /spaces/:flowId) — never the imposter or a global reset"
+    ) {
+      withCorrelated { (control, fake) =>
+        for
+          aE       <- control.provision(pingSource).either
+          bE       <- control.provision(pingSource).either
+          a         = aE.toOption.get.head
+          b         = bE.toOption.get.head
+          destroyE <- control.destroy(a).either
+          spaceDel <- fake.spaceDeletes.get
+          ports    <- fake.deletedPorts.get
+          globals  <- fake.globalDeletes.get
+          recvB    <- control.received(b).either
+          recvA    <- control.received(a).either
+        yield assertTrue(
+          destroyE.isRight,
+          spaceDel.exists(_.endsWith(s"/${a.id.value}")),  // A's space torn down
+          !spaceDel.exists(_.endsWith(s"/${b.id.value}")), // B's untouched
+          ports.isEmpty,                                   // the shared imposter is NOT deleted
+          globals == 0,                                    // never DELETE /imposters
+          recvB.isRight,
+          recvA == Left(MockError.SpaceNotFound(a.id)) // A is gone from the adapter
+        )
+      }
+    },
+    test("Correlated: received(A) reads the header-filtered requests endpoint (rift#201) and parses the array") {
+      withCorrelated { (control, fake) =>
+        for
+          sE      <- control.provision(pingSource).either
+          s        = sE.toOption.get.head
+          _       <- fake.setFiltered("""[{"method":"GET","path":"/ping","headers":{},"body":null}]""")
+          recvE   <- control.received(s).either
+          matches <- fake.requestMatches.get
+        yield assertTrue(
+          recvE == Right(List(RecordedRequest(Method.Get, "/ping", Map.empty, None))),
+          matches.exists(_.contains(s"header:X-Mock-Space=${s.id.value}")) // filtered by THIS space's flowId
+        )
+      }
+    },
+    test("Correlated: addRule(Base) appends a space-scoped stub") {
+      withCorrelated { (control, fake) =>
+        for
+          sE     <- control.provision(pingSource).either
+          s       = sE.toOption.get.head
+          before <- fake.spaceStubs.get
+          addE   <- control.addRule(s, pingRule, Priority.Base).either
+          after  <- fake.spaceStubs.get
+        yield assertTrue(addE.isRight, after.size == before.size + 1, after.exists(_.contains(s"/${s.id.value} ")))
+      }
+    },
+    test("Correlated: replaceRules rebuilds the space (DELETE /spaces/:flowId then re-POSTs the new set)") {
+      withCorrelated { (control, fake) =>
+        for
+          sE         <- control.provision(pingSource).either // posts 1 stub under the flowId
+          s           = sE.toOption.get.head
+          delsBefore <- fake.spaceDeletes.get
+          replE      <- control.replaceRules(s, List(pingRule, pingRule)).either
+          dels       <- fake.spaceDeletes.get
+          stubs      <- fake.spaceStubs.get
+        yield assertTrue(
+          replE.isRight,
+          delsBefore.isEmpty,
+          dels.exists(_.endsWith(s"/${s.id.value}")),      // rebuilt via space teardown
+          stubs.count(_.contains(s"/${s.id.value} ")) == 3 // 1 (provision) + 2 (re-POST after delete)
+        )
+      }
+    },
+    test("Correlated: addRule(Overlay) rebuilds the space so the overlay is first-match") {
+      withCorrelated { (control, fake) =>
+        for
+          sE    <- control.provision(pingSource).either // 1 base stub
+          s      = sE.toOption.get.head
+          ovE   <- control.addRule(s, pingRule, Priority.Overlay).either
+          dels  <- fake.spaceDeletes.get
+          stubs <- fake.spaceStubs.get
+        yield assertTrue(
+          ovE.isRight,
+          dels.exists(_.endsWith(s"/${s.id.value}")),      // overlay triggers a rebuild
+          stubs.count(_.contains(s"/${s.id.value} ")) == 3 // 1 (provision) + 2 (rebuild: overlay + base)
+        )
+      }
+    },
+    test("Correlated: removeRule rebuilds; an unknown id fails RuleNotFound without touching the server") {
+      withCorrelated { (control, fake) =>
+        for
+          sE      <- control.provision(pingSource).either
+          s        = sE.toOption.get.head
+          addE    <- control.addRule(s, pingRule, Priority.Base).either
+          rmE     <- ZIO.fromEither(addE).flatMap(id => control.removeRule(s, id)).either // rebuild
+          dels    <- fake.spaceDeletes.get
+          ghostE  <- control.removeRule(s, RuleId("ghost")).either
+          delsEnd <- fake.spaceDeletes.get
+        yield assertTrue(
+          addE.isRight,
+          rmE.isRight,
+          dels.exists(_.endsWith(s"/${s.id.value}")), // removeRule rebuilt the space
+          ghostE == Left(MockError.RuleNotFound(s.id, RuleId("ghost"))),
+          delsEnd.size == dels.size // a failed removeRule never hit the server
+        )
+      }
+    },
+    test(
+      "Correlated(traceparent): shared imposter uses flowIdSource header:traceparent; inject stamps a distinct traceparent per space"
+    ) {
+      withCorrelatedTraceparent { (control, fake) =>
+        for
+          aE     <- control.provision(pingSource).either
+          bE     <- control.provision(pingSource).either
+          posted <- fake.posted.get
+        yield
+          val a   = aE.toOption.get.head
+          val b   = bE.toOption.get.head
+          val req = HttpRequest(Method.Get, "http://sut/")
+          val ta  = a.inject(req).headers.get("traceparent")
+          assertTrue(
+            aE.isRight && bE.isRight,
+            posted.head.contains("\"flowIdSource\":\"header:traceparent\""),
+            ta.exists(_.matches("00-[0-9a-f]{32}-[0-9a-f]{16}-01")), // W3C traceparent shape
+            ta != b.inject(req).headers.get("traceparent")           // distinct per space
+          )
+      }
+    },
+    test("Correlated: a raw (non-portable) source is rejected with InvalidDefinition (use provisionNative)") {
+      withCorrelated { (control, _) =>
+        for e <- control.provision(MockSource.Json("""{"port":1,"protocol":"http","stubs":[]}""")).either
+        yield assertTrue(e.swap.toOption.exists {
+          case MockError.InvalidDefinition(_) => true
+          case _                              => false
+        })
       }
     }
   ).provide(Client.default, Provisioning.live) @@ TestAspect.withLiveClock

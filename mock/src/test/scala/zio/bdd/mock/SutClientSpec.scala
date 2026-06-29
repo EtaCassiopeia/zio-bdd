@@ -119,6 +119,22 @@ object SutClientSpec extends ZIOSpecDefault:
         }
       }
     },
+    test("the Caller is isolation-agnostic: one send path reaches a PerInstance AND a Correlated space") {
+      ZIO.scoped {
+        dependency.flatMap { dep =>
+          // PerInstance: own baseUri, inject == identity. Correlated: shared baseUri, inject adds the
+          // header. The SutClient call is identical for both — it never branches on the mode.
+          val perInstance = dep.perInstanceSpace("pi")
+          val correlated  = dep.correlatedSpace("co")
+          for
+            _     <- SutClient.make(perInstance).send(Method.Get, "/x")
+            _     <- SutClient.make(correlated).send(Method.Get, "/y")
+            recPi <- dep.received("pi")
+            recCo <- dep.received("co")
+          yield assertTrue(recPi == List(("GET", "/x")), recCo == List(("GET", "/y")))
+        }
+      }
+    },
     test("concurrent SUT calls via per-space clients don't cross-talk (PerInstance)") {
       ZIO.scoped {
         dependency.flatMap { dep =>

@@ -17,6 +17,11 @@ final case class SutResponse(status: Int, body: String, headers: Map[String, Str
  *
  * Provide it per scenario via [[SutClient.layer]] — never a process-wide env
  * var — so parallel scenarios each target their own space with no cross-talk.
+ *
+ * This is the canonical *Caller* of the isolation model (#123): it always sends
+ * `space.inject(req)` to `space.baseUri` and never branches on PerInstance vs
+ * Correlated — the whole difference lives in `space.inject`, so steps stay
+ * isolation-agnostic. See [[MockControl.isolation]] for an adapter's mode.
  */
 trait SutClient:
   /**

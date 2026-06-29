@@ -6,123 +6,101 @@ import zio.json.*
 import zio.json.ast.Json
 import zio.http.{Body, Client, Header, MediaType, Request, URL, Method as HttpMethod}
 
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets.UTF_8
+
 /**
  * The Rift adapter: implements the portable [[MockControl]] core port by
  * driving Rift's Mountebank-compatible admin API over zio-http.
  *
- * PerInstance isolation: each [[MockSpace]] is one imposter on its own port and
- * `inject == identity`. `destroy` deletes exactly that imposter (`DELETE
- * /imposters/:port`) — never the global `DELETE /imposters` reset, so tearing
- * down one space never touches another (#113 AC2).
+ * Two isolation modes ([[RiftMode]]):
  *
- * Rule identity: Mountebank addresses stubs by positional index, which shifts
- * as stubs are inserted/removed. The adapter therefore hands out stable opaque
- * [[RuleId]]s and tracks their current order per imposter, translating an id to
- * its live index on removal — so a [[RuleId]] never silently points at the
- * wrong stub after an overlay insert.
+ *   - PerInstance (default): each [[MockSpace]] is one imposter on its own
+ *     port, `inject == identity`. `destroy` deletes exactly that imposter —
+ *     never the global reset, so tearing down one space never touches another
+ *     (#113 AC2).
  *
- * Capabilities are intentionally empty here: the optional capability
- * *interfaces* (faults, scenarios, …) are fleshed out in M3, so this adapter
- * advertises none and every accessor fails fast with [[Unsupported]].
+ *   - Correlated (#156): all spaces share ONE imposter whose `flowIdSource` is
+ *     `header:<correlation>`; each space's stubs are registered under its
+ *     flowId (`POST /imposters/:port/spaces/:flowId/stubs`, rift#223), `inject`
+ *     stamps the correlation header, `received` filters by it (rift#201), and
+ *     `destroy` tears down exactly that space (`DELETE
+ *     /imposters/:port/spaces/:flowId`). Trades a port-per-space for one shared
+ *     imposter — for heavy parallelism.
+ *
+ * A native imposter ([[provisionNative]]) always gets its own port regardless
+ * of mode (full-fidelity), so the two space kinds coexist; per-space operations
+ * dispatch by which space a [[MockSpace]] belongs to, not by the active mode.
+ *
+ * rift#223 exposes only whole-space teardown (no per-stub-in-space delete), so
+ * a Correlated `removeRule`/`replaceRules` (and an `Overlay` `addRule`, which
+ * must be first-match) rebuilds the space: it re-registers the tracked stubs
+ * after a space teardown — which also clears that space's recorded requests +
+ * flow state. Benign because mutations happen at scenario boundaries (overlay
+ * release after `received` is read; `replaceRules` at setup before any
+ * requests).
  */
 private[rift] final case class RiftMockControl(
   endpoint: RiftEndpoint,
   client: Client,
   provisioning: Provisioning,
+  mode: RiftMode,
   spaces: Ref[Map[SpaceId, RiftMockControl.Imposter]],
+  correlated: Ref[Map[SpaceId, RiftMockControl.CorrSpace]],
+  sharedPort: Ref.Synchronized[Option[Int]],
   ids: Ref[Int]
 ) extends MockControl:
 
+  import RiftMockControl.{CorrSpace, Imposter}
+
   def backendName: String           = "rift"
   def capabilities: Set[Capability] = Set.empty
+
+  override def isolation: Isolation = mode match
+    case RiftMode.Correlated(_) => Isolation.Correlated
+    case RiftMode.PerInstance   => Isolation.PerInstance
 
   def provision(source: MockSource): IO[MockError, List[MockSpace]] =
     for
       sources <- provisioning.normalize(source)
       created <- Ref.make(List.empty[MockSpace])
-      // Provision atomically: tear down any spaces already stood up if a later
-      // space in the same source fails, so a partial batch never orphans
-      // imposters/ports the caller can't reach.
+      // Provision atomically: if a later source fails, best-effort tear down the
+      // spaces already stood up. The original failure propagates; a cleanup
+      // failure is logged (not surfaced) rather than masking it.
       spaces <- ZIO
                   .foreach(sources)(src => serveSpace(src).tap(s => created.update(s :: _)))
-                  .onError(_ => created.get.flatMap(ZIO.foreachDiscard(_)(s => destroy(s).ignore)))
+                  .onError(_ =>
+                    created.get.flatMap(
+                      ZIO.foreachDiscard(_)(s =>
+                        destroy(s).catchAllCause(c => ZIO.logWarningCause(s"rollback: destroy ${s.id} failed", c))
+                      )
+                    )
+                  )
     yield spaces
 
   def provisionNative[B <: Backend](spec: NativeSpec[B]): IO[MockError, List[MockSpace]] =
     spec match
-      // A native Rift imposter goes through the same serveSpace machinery as a
-      // portable Raw source (pool port, `_rift`/stub passthrough, tracking), so
-      // the resulting space participates in destroy/received/overlays/isolation
-      // exactly like a portable one.
+      // A native imposter always gets its own port (PerInstance), full-fidelity,
+      // regardless of the active isolation mode.
       case NativeSpec.Rift(imposterJson) =>
-        serveSpace(NormalizedSource("native", SourcePayload.Raw(imposterJson), None)).map(List(_))
+        serveImposter(NormalizedSource("native", SourcePayload.Raw(imposterJson), None)).map(List(_))
       case NativeSpec.WireMock(_) =>
         ZIO.fail(MockError.InvalidDefinition("the Rift adapter cannot provision a WireMock native spec"))
 
   def addRule(space: MockSpace, rule: MockRule, priority: Priority): IO[MockError, RuleId] =
-    withImposter(space) { imp =>
-      for
-        ruleId <- freshId
-        // First match wins in Mountebank, so an overlay rule goes on top
-        // (index 0) and a base rule is appended after the existing stubs.
-        index <- priority match
-                   case Priority.Overlay => ZIO.succeed(0)
-                   case Priority.Base    => imp.stubs.get.map(_.size)
-        u   <- url(s"/imposters/${imp.port}/stubs")
-        res <- send(jsonRequest(HttpMethod.POST, u, RiftProtocol.addStubBody(index, rule)))
-        _   <- expectSuccess(s"add rule to imposter ${imp.port}", res)
-        _   <- imp.stubs.update(v => if priority == Priority.Overlay then ruleId +: v else v :+ ruleId)
-      yield ruleId
-    }
+    dispatch(space)(cs => corrAddRule(cs, rule, priority))(imp => piAddRule(imp, rule, priority))
 
   def removeRule(space: MockSpace, id: RuleId): IO[MockError, Unit] =
-    withImposter(space) { imp =>
-      imp.stubs.get.flatMap { ordered =>
-        ordered.indexOf(id) match
-          case -1 => ZIO.fail(MockError.RuleNotFound(space.id, id))
-          case idx =>
-            for
-              u   <- url(s"/imposters/${imp.port}/stubs/$idx")
-              res <- send(Request(method = HttpMethod.DELETE, url = u))
-              _   <- expectSuccess(s"remove rule from imposter ${imp.port}", res)
-              _   <- imp.stubs.update(_.patch(idx, Nil, 1))
-            yield ()
-      }
-    }
+    dispatch(space)(cs => corrRemoveRule(cs, space.id, id))(imp => piRemoveRule(imp, space.id, id))
 
   def replaceRules(space: MockSpace, rules: List[MockRule]): IO[MockError, Unit] =
-    withImposter(space) { imp =>
-      for
-        ruleIds <- freshIds(rules.size)
-        u       <- url(s"/imposters/${imp.port}/stubs")
-        res     <- send(jsonRequest(HttpMethod.PUT, u, RiftProtocol.replaceStubsBody(rules)))
-        _       <- expectSuccess(s"replace rules on imposter ${imp.port}", res)
-        _       <- imp.stubs.set(ruleIds)
-      yield ()
-    }
+    dispatch(space)(cs => corrReplaceRules(cs, rules))(imp => piReplaceRules(imp, rules))
 
   def destroy(space: MockSpace): IO[MockError, Unit] =
-    withImposter(space) { imp =>
-      for
-        u   <- url(s"/imposters/${imp.port}")
-        res <- send(Request(method = HttpMethod.DELETE, url = u))
-        // A 404 means the imposter is already gone — destroy is idempotent.
-        _ <- ZIO.unless(res._1 == 404)(expectSuccess(s"destroy imposter ${imp.port}", res))
-        _ <- endpoint.releasePort(imp.port)
-        _ <- spaces.update(_ - space.id)
-      yield ()
-    }
+    dispatch(space)(cs => corrDestroy(space.id, cs))(imp => piDestroy(space, imp))
 
   def received(space: MockSpace): IO[MockError, List[RecordedRequest]] =
-    withImposter(space) { imp =>
-      for
-        u    <- url(s"/imposters/${imp.port}")
-        res  <- send(Request(method = HttpMethod.GET, url = u))
-        body <- expectSuccess(s"read imposter ${imp.port}", res)
-        // A malformed view is a backend/protocol fault, not a bad user definition.
-        recs <- ZIO.fromEither(RiftProtocol.parseRecorded(body)).mapError(MockError.CommunicationError(_))
-      yield recs
-    }
+    dispatch(space)(corrReceived)(piReceived)
 
   def faults: IO[Unsupported, Faults]                   = unsupported(Capability.Faults)
   def scenarios: IO[Unsupported, StatefulScenarios]     = unsupported(Capability.StatefulScenarios)
@@ -134,6 +112,27 @@ private[rift] final case class RiftMockControl(
   // ---------------------------------------------------------------------------
 
   private def serveSpace(src: NormalizedSource): IO[MockError, MockSpace] =
+    mode match
+      case RiftMode.Correlated(corr) => serveCorrelatedSpace(src, corr)
+      case RiftMode.PerInstance      => serveImposter(src)
+
+  // A space's operations follow the space, not the mode: a Correlated portable
+  // space, or a PerInstance/native imposter space.
+  private def dispatch[A](space: MockSpace)(onCorr: CorrSpace => IO[MockError, A])(
+    onImp: Imposter => IO[MockError, A]
+  ): IO[MockError, A] =
+    correlated.get.flatMap(_.get(space.id) match
+      case Some(cs) => onCorr(cs)
+      case None =>
+        spaces.get.flatMap(_.get(space.id) match
+          case Some(imp) => onImp(imp)
+          case None      => ZIO.fail(MockError.SpaceNotFound(space.id))
+        )
+    )
+
+  // ===== PerInstance — one imposter per space =====================================
+
+  private def serveImposter(src: NormalizedSource): IO[MockError, MockSpace] =
     endpoint.acquirePort.flatMap { port =>
       val stand =
         for
@@ -144,12 +143,62 @@ private[rift] final case class RiftMockControl(
           stubs        <- Ref.make(ruleIds)
           id            = SpaceId(s"${src.name}-$port")
           space         = MockSpace(endpoint.baseUriFor(port), identity, id)
-          _            <- spaces.update(_.updated(id, RiftMockControl.Imposter(port, stubs)))
+          _            <- spaces.update(_.updated(id, Imposter(port, stubs)))
         yield space
-      // Release the port back to the pool on *any* failure after acquiring it
-      // (malformed source, POST rejected, …) so a bad provision can't leak slots.
       stand.onError(_ => endpoint.releasePort(port))
     }
+
+  private def piAddRule(imp: Imposter, rule: MockRule, priority: Priority): IO[MockError, RuleId] =
+    for
+      ruleId <- freshId
+      // First match wins in Mountebank: overlay on top (index 0), base appended.
+      index <- priority match
+                 case Priority.Overlay => ZIO.succeed(0)
+                 case Priority.Base    => imp.stubs.get.map(_.size)
+      u   <- url(s"/imposters/${imp.port}/stubs")
+      res <- send(jsonRequest(HttpMethod.POST, u, RiftProtocol.addStubBody(index, rule)))
+      _   <- expectSuccess(s"add rule to imposter ${imp.port}", res)
+      _   <- imp.stubs.update(v => if priority == Priority.Overlay then ruleId +: v else v :+ ruleId)
+    yield ruleId
+
+  private def piRemoveRule(imp: Imposter, spaceId: SpaceId, id: RuleId): IO[MockError, Unit] =
+    imp.stubs.get.flatMap { ordered =>
+      ordered.indexOf(id) match
+        case -1 => ZIO.fail(MockError.RuleNotFound(spaceId, id))
+        case idx =>
+          for
+            u   <- url(s"/imposters/${imp.port}/stubs/$idx")
+            res <- send(Request(method = HttpMethod.DELETE, url = u))
+            _   <- expectSuccess(s"remove rule from imposter ${imp.port}", res)
+            _   <- imp.stubs.update(_.patch(idx, Nil, 1))
+          yield ()
+    }
+
+  private def piReplaceRules(imp: Imposter, rules: List[MockRule]): IO[MockError, Unit] =
+    for
+      ruleIds <- freshIds(rules.size)
+      u       <- url(s"/imposters/${imp.port}/stubs")
+      res     <- send(jsonRequest(HttpMethod.PUT, u, RiftProtocol.replaceStubsBody(rules)))
+      _       <- expectSuccess(s"replace rules on imposter ${imp.port}", res)
+      _       <- imp.stubs.set(ruleIds)
+    yield ()
+
+  private def piDestroy(space: MockSpace, imp: Imposter): IO[MockError, Unit] =
+    for
+      u   <- url(s"/imposters/${imp.port}")
+      res <- send(Request(method = HttpMethod.DELETE, url = u))
+      _   <- ZIO.unless(res._1 == 404)(expectSuccess(s"destroy imposter ${imp.port}", res))
+      _   <- endpoint.releasePort(imp.port)
+      _   <- spaces.update(_ - space.id)
+    yield ()
+
+  private def piReceived(imp: Imposter): IO[MockError, List[RecordedRequest]] =
+    for
+      u    <- url(s"/imposters/${imp.port}")
+      res  <- send(Request(method = HttpMethod.GET, url = u))
+      body <- expectSuccess(s"read imposter ${imp.port}", res)
+      recs <- ZIO.fromEither(RiftProtocol.parseRecorded(body)).mapError(MockError.CommunicationError(_))
+    yield recs
 
   private def imposterBody(port: Int, src: NormalizedSource): IO[MockError, (Json, Int)] =
     src.payload match
@@ -158,6 +207,114 @@ private[rift] final case class RiftMockControl(
       case SourcePayload.Raw(text) =>
         ZIO.fromEither(RiftProtocol.imposterFromRaw(port, src.name, text)).mapError(MockError.InvalidDefinition(_))
 
+  // ===== Correlated — one shared imposter, spaces by flowId =======================
+
+  private def serveCorrelatedSpace(src: NormalizedSource, corr: Correlation): IO[MockError, MockSpace] =
+    for
+      rules  <- rulesOf(src)
+      port   <- ensureSharedImposter(corr)
+      id     <- freshSpaceId(src.name)
+      flowId  = corr.value(id)
+      tagged <- tagRules(rules)
+      // Mirror serveImposter's release-on-error: if a stub POST fails partway, tear
+      // the half-built flow down so it can't orphan stubs on the shared imposter.
+      _        <- registerStubs(port, flowId, tagged).onError(_ => deleteSpace(port, flowId).ignore)
+      rulesRef <- Ref.make(tagged)
+      _        <- correlated.update(_.updated(id, CorrSpace(port, flowId, corr.header, rulesRef)))
+    yield MockSpace(endpoint.baseUriFor(port), req => req.copy(headers = req.headers + (corr.header -> flowId)), id)
+
+  // Create the one shared imposter on first Correlated provision (race-safe).
+  private def ensureSharedImposter(corr: Correlation): IO[MockError, Int] =
+    sharedPort.modifyZIO {
+      case existing @ Some(p) => ZIO.succeed((p, existing))
+      case None =>
+        endpoint.acquirePort.flatMap { p =>
+          postImposter(p, RiftProtocol.correlatedImposter(p, "correlated", corr.header))
+            .as((p, Some(p)))
+            .onError(_ => endpoint.releasePort(p))
+        }
+    }
+
+  private def corrAddRule(cs: CorrSpace, rule: MockRule, priority: Priority): IO[MockError, RuleId] =
+    freshId.flatMap { ruleId =>
+      val tagged = (ruleId, rule)
+      // Server-first, then commit tracking — so a failed admin call never leaves
+      // `cs.rules` claiming a stub the server didn't accept (mirrors PerInstance).
+      val act = priority match
+        // Base appends (Rift's space POST appends).
+        case Priority.Base =>
+          postSpaceStub(cs.port, cs.flowId, rule.copy(id = Some(ruleId))) *> cs.rules.update(_ :+ tagged)
+        // Overlay must be first-match — rebuild with the prepended set.
+        case Priority.Overlay =>
+          cs.rules.get.flatMap(cur => rebuildSpaceWith(cs, tagged +: cur) *> cs.rules.set(tagged +: cur))
+      act.as(ruleId)
+    }
+
+  private def corrRemoveRule(cs: CorrSpace, spaceId: SpaceId, id: RuleId): IO[MockError, Unit] =
+    cs.rules.get.flatMap { v =>
+      if !v.exists(_._1 == id) then ZIO.fail(MockError.RuleNotFound(spaceId, id))
+      else
+        val next = v.filterNot(_._1 == id)
+        rebuildSpaceWith(cs, next) *> cs.rules.set(next) // commit tracking only on success
+    }
+
+  private def corrReplaceRules(cs: CorrSpace, rules: List[MockRule]): IO[MockError, Unit] =
+    tagRules(rules).flatMap(next => rebuildSpaceWith(cs, next) *> cs.rules.set(next))
+
+  private def corrDestroy(spaceId: SpaceId, cs: CorrSpace): IO[MockError, Unit] =
+    deleteSpace(cs.port, cs.flowId) *> correlated.update(_ - spaceId)
+
+  private def corrReceived(cs: CorrSpace): IO[MockError, List[RecordedRequest]] =
+    for
+      u    <- url(s"/imposters/${cs.port}/requests?match=${enc(s"header:${cs.header}=${cs.flowId}")}")
+      res  <- send(Request(method = HttpMethod.GET, url = u))
+      body <- expectSuccess(s"read filtered requests for space ${cs.flowId}", res)
+      recs <- ZIO.fromEither(RiftProtocol.parseRequestsArray(body)).mapError(MockError.CommunicationError(_))
+    yield recs
+
+  // rift#223 has no per-stub-in-space delete: re-register `rules` as the space's
+  // stubs after a whole-space teardown. Server-first — the caller commits
+  // tracking only on success. A mid-rebuild failure leaves the space's *server*
+  // stubs partial (surfaced as a CommunicationError); tracking is left unchanged.
+  // (A successful rebuild also clears the space's recorded requests + flow state
+  // — benign at scenario boundaries; see the class doc.)
+  private def rebuildSpaceWith(cs: CorrSpace, rules: Vector[(RuleId, MockRule)]): IO[MockError, Unit] =
+    deleteSpace(cs.port, cs.flowId) *> registerStubs(cs.port, cs.flowId, rules)
+
+  // Assign each rule a fresh id, keyed for tracking + re-registration under a space.
+  private def tagRules(rules: List[MockRule]): UIO[Vector[(RuleId, MockRule)]] =
+    freshIds(rules.size).map(ids => rules.zip(ids).map((r, rid) => (rid, r)).toVector)
+
+  private def registerStubs(port: Int, flowId: String, rules: Vector[(RuleId, MockRule)]): IO[MockError, Unit] =
+    ZIO.foreachDiscard(rules)((rid, rule) => postSpaceStub(port, flowId, rule.copy(id = Some(rid))))
+
+  private def postSpaceStub(port: Int, flowId: String, rule: MockRule): IO[MockError, Unit] =
+    for
+      u   <- url(s"/imposters/$port/spaces/${enc(flowId)}/stubs")
+      res <- send(jsonRequest(HttpMethod.POST, u, RiftProtocol.stub(rule)))
+      _   <- expectSuccess(s"add space stub to $flowId", res)
+    yield ()
+
+  private def deleteSpace(port: Int, flowId: String): IO[MockError, Unit] =
+    for
+      u   <- url(s"/imposters/$port/spaces/${enc(flowId)}")
+      res <- send(Request(method = HttpMethod.DELETE, url = u))
+      // A 404 means the space is already gone — teardown is idempotent.
+      _ <- ZIO.unless(res._1 == 404)(expectSuccess(s"teardown space $flowId", res))
+    yield ()
+
+  private def rulesOf(src: NormalizedSource): IO[MockError, List[MockRule]] =
+    src.payload match
+      case SourcePayload.Rules(rules) => ZIO.succeed(rules)
+      case SourcePayload.Raw(_) =>
+        ZIO.fail(
+          MockError.InvalidDefinition(
+            "Correlated mode needs portable rule sources; provision a raw Rift imposter via provisionNative"
+          )
+        )
+
+  // ===== shared admin plumbing =====================================================
+
   private def postImposter(port: Int, body: Json): IO[MockError, Unit] =
     for
       u   <- url("/imposters")
@@ -165,17 +322,34 @@ private[rift] final case class RiftMockControl(
       _   <- expectSuccess(s"create imposter on port $port", res)
     yield ()
 
+  // Best-effort teardown of the shared Correlated imposter — the one imposter no
+  // single space owns (PerInstance leaves `sharedPort` empty, so this is a no-op).
+  // Registered as a scope finalizer in `make` so it is reclaimed in `connect`
+  // mode too, not only when `managed` stops the container.
+  private[rift] def teardownShared: UIO[Unit] =
+    sharedPort.get.flatMap {
+      case Some(p) =>
+        (deleteImposter(p) *> endpoint.releasePort(p))
+          .catchAllCause(c => ZIO.logWarningCause("shared Correlated imposter teardown failed", c))
+      case None => ZIO.unit
+    }
+
+  private def deleteImposter(port: Int): IO[MockError, Unit] =
+    for
+      u   <- url(s"/imposters/$port")
+      res <- send(Request(method = HttpMethod.DELETE, url = u))
+      _   <- ZIO.unless(res._1 == 404)(expectSuccess(s"delete shared imposter $port", res))
+    yield ()
+
   private def freshId: UIO[RuleId] = ids.updateAndGet(_ + 1).map(n => RuleId(s"r$n"))
 
   private def freshIds(n: Int): UIO[Vector[RuleId]] = ZIO.foreach(0 until n)(_ => freshId).map(_.toVector)
 
-  private def withImposter[A](space: MockSpace)(f: RiftMockControl.Imposter => IO[MockError, A]): IO[MockError, A] =
-    spaces.get.flatMap(_.get(space.id) match
-      case Some(imp) => f(imp)
-      case None      => ZIO.fail(MockError.SpaceNotFound(space.id))
-    )
+  private def freshSpaceId(name: String): UIO[SpaceId] = ids.updateAndGet(_ + 1).map(n => SpaceId(s"$name-s$n"))
 
   private def unsupported[A](c: Capability): IO[Unsupported, A] = ZIO.fail(Unsupported(c, backendName))
+
+  private def enc(s: String): String = URLEncoder.encode(s, UTF_8)
 
   private def url(path: String): IO[MockError, URL] =
     ZIO
@@ -203,15 +377,21 @@ private[rift] final case class RiftMockControl(
 
 private[rift] object RiftMockControl:
   final case class Imposter(port: Int, stubs: Ref[Vector[RuleId]])
+  final case class CorrSpace(port: Int, flowId: String, header: String, rules: Ref[Vector[(RuleId, MockRule)]])
 
   /**
-   * Build an adapter against an endpoint, taking the zio-http [[Client]] and
-   * [[Provisioning]] from the environment.
+   * Build an adapter against an endpoint in the given isolation `mode`, taking
+   * the zio-http [[Client]] and [[Provisioning]] from the environment. Scoped:
+   * the shared Correlated imposter is torn down when the scope closes.
    */
-  def make(endpoint: RiftEndpoint): URIO[Client & Provisioning, MockControl] =
+  def make(endpoint: RiftEndpoint, mode: RiftMode): URIO[Client & Provisioning & Scope, MockControl] =
     for
-      client <- ZIO.service[Client]
-      prov   <- ZIO.service[Provisioning]
-      spaces <- Ref.make(Map.empty[SpaceId, Imposter])
-      ids    <- Ref.make(0)
-    yield RiftMockControl(endpoint, client, prov, spaces, ids)
+      client     <- ZIO.service[Client]
+      prov       <- ZIO.service[Provisioning]
+      spaces     <- Ref.make(Map.empty[SpaceId, Imposter])
+      correlated <- Ref.make(Map.empty[SpaceId, CorrSpace])
+      sharedPort <- Ref.Synchronized.make(Option.empty[Int])
+      ids        <- Ref.make(0)
+      control     = RiftMockControl(endpoint, client, prov, mode, spaces, correlated, sharedPort, ids)
+      _          <- ZIO.addFinalizer(control.teardownShared)
+    yield control

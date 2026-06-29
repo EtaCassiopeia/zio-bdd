@@ -52,6 +52,16 @@ trait MockControl:
   def capabilities: Set[Capability]
 
   /**
+   * The isolation model this control operates in (#123).
+   * [[Isolation.PerInstance]] is the default — a unique `baseUri` per space
+   * with `inject == identity`; a Correlated adapter (one shared `baseUri`,
+   * `inject` stamps a correlation header) overrides it. Steps never read this:
+   * [[MockSpace.inject]] already hides the mode from the Gherkin. It is exposed
+   * for diagnostics and the suite-override path where an adapter supports both.
+   */
+  def isolation: Isolation = Isolation.PerInstance
+
+  /**
    * Fail-fast capability negotiation: declare what a suite needs up front.
    * Succeeds when every required capability is advertised; otherwise fails with
    * the first missing one (in argument order), naming it and the backend.
