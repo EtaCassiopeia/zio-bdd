@@ -9,14 +9,20 @@ import zio.json.ast.Json
  * adapter makes and serves canned imposter views, so the adapter's protocol and
  * isolation behaviour can be unit-tested with no Docker and no real backend.
  *
- * It deliberately does NOT serve imposter traffic — "serving" is the real
- * container's job, proven by the tagged [[RiftContainerSpec]].
+ * It deliberately does NOT serve imposter traffic, nor does it actually filter
+ * recorded requests — "serving" and the real header/flow-id filter are the real
+ * container's job, proven by the tagged [[RiftContainerSpec]]. Here we assert
+ * the adapter *issues* the right space-scoped calls.
  */
 final case class FakeRift(
   posted: Ref[Chunk[String]],
   deletedPorts: Ref[Chunk[Int]],
   globalDeletes: Ref[Int],
   stubCalls: Ref[Chunk[String]],
+  spaceStubs: Ref[Chunk[String]],
+  spaceDeletes: Ref[Chunk[String]],
+  requestMatches: Ref[Chunk[String]],
+  filtered: Ref[String],
   views: Ref[Map[Int, String]],
   failProvision: Ref[Boolean]
 ):
@@ -24,6 +30,11 @@ final case class FakeRift(
    * Preset the `GET /imposters/:port` view (e.g. to inject recorded requests).
    */
   def setView(port: Int, json: String): UIO[Unit] = views.update(_.updated(port, json))
+
+  /**
+   * Preset the body returned by `GET /imposters/:port/requests?match=…` (#201).
+   */
+  def setFiltered(json: String): UIO[Unit] = filtered.set(json)
 
   val routes: Routes[Any, Response] =
     Routes(
@@ -41,6 +52,23 @@ final case class FakeRift(
                 ZIO.succeed(Response(status = Status.Created, body = Body.fromString(s"""{"port":$port}""")))
           }
         }
+      },
+      // Space-scoped stubs (rift#223): POST /imposters/:port/spaces/:flowId/stubs
+      Method.POST / "imposters" / int("port") / "spaces" / string("flowId") / "stubs" -> handler {
+        (port: Int, flowId: String, req: Request) =>
+          req.body.asString.orDie
+            .flatMap(b => spaceStubs.update(_ :+ s"$port/$flowId $b"))
+            .as(Response(status = Status.Created, body = Body.fromString(s"""{"space":"$flowId","stubs":[]}""")))
+      },
+      // Per-space teardown (rift#223): DELETE /imposters/:port/spaces/:flowId
+      Method.DELETE / "imposters" / int("port") / "spaces" / string("flowId") -> handler {
+        (port: Int, flowId: String, _: Request) =>
+          spaceDeletes.update(_ :+ s"$port/$flowId").as(Response.ok)
+      },
+      // Header/flow-id-filtered recorded requests (rift#201): GET /imposters/:port/requests?match=…
+      Method.GET / "imposters" / int("port") / "requests" -> handler { (_: Int, req: Request) =>
+        val m = req.url.queryParams.queryParam("match").getOrElse("")
+        (requestMatches.update(_ :+ m) *> filtered.get).map(f => Response(body = Body.fromString(f)))
       },
       Method.GET / "imposters" / int("port") -> handler { (port: Int, _: Request) =>
         views.get.map(m => Response(body = Body.fromString(m.getOrElse(port, FakeRift.emptyView(port)))))
@@ -68,13 +96,17 @@ object FakeRift:
 
   def make: UIO[FakeRift] =
     for
-      a <- Ref.make(Chunk.empty[String])
-      b <- Ref.make(Chunk.empty[Int])
-      c <- Ref.make(0)
-      d <- Ref.make(Chunk.empty[String])
-      e <- Ref.make(Map.empty[Int, String])
-      f <- Ref.make(false)
-    yield FakeRift(a, b, c, d, e, f)
+      a  <- Ref.make(Chunk.empty[String])
+      b  <- Ref.make(Chunk.empty[Int])
+      c  <- Ref.make(0)
+      d  <- Ref.make(Chunk.empty[String])
+      ss <- Ref.make(Chunk.empty[String])
+      sd <- Ref.make(Chunk.empty[String])
+      rm <- Ref.make(Chunk.empty[String])
+      fl <- Ref.make("[]")
+      e  <- Ref.make(Map.empty[Int, String])
+      f  <- Ref.make(false)
+    yield FakeRift(a, b, c, d, ss, sd, rm, fl, e, f)
 
   def portOf(body: String): Option[Int] =
     import zio.json.*

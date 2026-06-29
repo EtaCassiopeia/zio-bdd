@@ -88,6 +88,41 @@ object RiftContainerSpec extends ZIOSpecDefault:
     }
   ).provideSome[Client](Provisioning.live, riftBackend) @@ TestAspect.sequential @@ TestAspect.withLiveClock
 
+  // Correlated isolation (#156): one shared imposter, spaces told apart by the
+  // X-Mock-Space header. The SAME checks pass with a one-line layer swap (AC1),
+  // and received(A) returns only A's traffic on the shared imposter (AC2).
+  private val correlatedSuite = suite("RiftContainerSpec — Correlated (shared imposter)")(
+    test("provision/serve/record/destroy pass on correlated() too (the one-line swap)") {
+      for
+        control <- ZIO.service[MockControl]
+        space   <- control.provision(pingSource).map(_.head)
+        resp    <- SutClient.make(space).send(Method.Get, "/ping").retry(upWithin) // inject stamps X-Mock-Space
+        recv    <- control.received(space)
+        _       <- control.destroy(space)
+      yield assertTrue(
+        control.isolation == Isolation.Correlated,
+        resp.status == 200 && resp.body == "pong",                   // serves via inject
+        recv.exists(r => r.method == Method.Get && r.uri == "/ping") // records (header-filtered)
+      )
+    },
+    test("received(A) returns only A's traffic on the shared imposter (rift#201 filter)") {
+      for
+        control <- ZIO.service[MockControl]
+        a       <- control.provision(pingSource).map(_.head)
+        b       <- control.provision(pingSource).map(_.head)
+        _       <- SutClient.make(a).send(Method.Get, "/ping").retry(upWithin)
+        _       <- SutClient.make(b).send(Method.Get, "/ping").retry(upWithin)
+        _       <- SutClient.make(b).send(Method.Get, "/ping")
+        ra      <- control.received(a)
+        rb      <- control.received(b)
+      yield assertTrue(
+        a.baseUri == b.baseUri, // one shared imposter
+        ra.size == 1,           // only A's request
+        rb.size == 2            // only B's
+      )
+    }
+  ).provideSome[Client](Provisioning.live, correlatedBackend) @@ TestAspect.sequential @@ TestAspect.withLiveClock
+
   // Two ways to reach a real Rift: testcontainers spins one up (default), or —
   // when RIFT_ADMIN points at an already-running Rift admin URL whose imposter
   // ports are mapped 1:1 to localhost — connect to it directly. The latter
@@ -98,6 +133,13 @@ object RiftContainerSpec extends ZIOSpecDefault:
       case Some(admin) => Rift.connect(admin, (4545 until 4561).toList)(p => s"http://localhost:$p")
       case None        => Rift.managed()
 
+  private def correlatedBackend: ZLayer[Client & Provisioning, MockError, MockControl] =
+    sys.env.get("RIFT_ADMIN") match
+      case Some(admin) =>
+        Rift.connect(admin, (4545 until 4561).toList, RiftMode.correlated)(p => s"http://localhost:$p")
+      case None => Rift.managed(mode = RiftMode.correlated)
+
   def spec =
-    if sys.env.contains("RIFT_IT") then realSuite.provideShared(Client.default)
+    if sys.env.contains("RIFT_IT") then
+      suite("Rift container ITs")(realSuite, correlatedSuite).provideShared(Client.default)
     else suite("RiftContainerSpec (skipped — set RIFT_IT=1 to run against a real Rift container)")()
