@@ -110,6 +110,36 @@ final case class MockRule(
 )
 
 /**
+ * A scenario FSM state token. The default initial state is
+ * [[ScenarioState.Started]].
+ */
+opaque type ScenarioState = String
+object ScenarioState:
+  val Started: ScenarioState                     = "Started"
+  def apply(value: String): ScenarioState        = value
+  extension (s: ScenarioState) def value: String = s
+
+/**
+ * One edge of a single-token scenario FSM (#129): while the scenario is in
+ * `whenState` and a request matches `request`, serve `respond` and transition
+ * to `thenState` — `None` stays in `whenState`. The portable subset both
+ * adapters (#130 WireMock, #131 Rift) honour.
+ */
+final case class StatefulRule(
+  whenState: ScenarioState,
+  request: RequestMatch,
+  respond: ResponseDef,
+  thenState: Option[ScenarioState] = None
+)
+
+/** A named single-token FSM: starts in `initial`, advances via its `rules`. */
+final case class ScenarioDef(
+  name: String,
+  rules: List[StatefulRule],
+  initial: ScenarioState = ScenarioState.Started
+)
+
+/**
  * The unit of isolation. Hides *how* isolation is achieved:
  *   - PerInstance: a unique `baseUri` per space; `inject = identity`.
  *   - Correlated: a shared `baseUri`; `inject` stamps a correlation header.
