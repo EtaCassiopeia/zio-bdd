@@ -17,10 +17,10 @@ import org.testcontainers.containers.wait.strategy.Wait
  */
 object Rift:
 
-  // Pinned to v0.3.0. Floor is v0.2.0: the first release where DELETE
+  // Pinned to v0.4.0. Floor is v0.2.0: the first release where DELETE
   // /imposters/:port tears down existing keep-alive connections, so a destroyed
   // imposter stops serving even a pooled client (EtaCassiopeia/rift#207).
-  val DefaultImage: String     = "zainalpour/rift-proxy:v0.3.0"
+  val DefaultImage: String     = "zainalpour/rift-proxy:v0.4.0"
   val DefaultAdminPort: Int    = 2525
   val DefaultImposterBase: Int = 4545
   val DefaultPoolSize: Int     = 16
