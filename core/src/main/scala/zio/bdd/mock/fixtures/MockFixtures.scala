@@ -51,6 +51,39 @@ object MockFixtures:
       resolve(MockTag.extract(meta.tags), catalog).flatMap(provisionScoped).mapError(asThrowable)
     }
 
+  /**
+   * Flag-driven scenario fixtures: deploy the single catalog entry named by the
+   * value of `flag`, read through `reader` (e.g. [[FlagReader.fromMetadata]]
+   * over the scenario's `@flags(k=v)` matrix). Composes with the @flags
+   * expansion so one tagged scenario exercises each branch against its matching
+   * mock. Fresh per scenario and reverting; fails the scenario at setup if the
+   * flag is unset or its value names no catalog entry.
+   */
+  def byFlag(
+    reader: FlagReader,
+    flag: String,
+    catalog: Map[String, MockSource]
+  ): ZLayer[MockControl, Throwable, MockFixture] =
+    ZLayer.scoped {
+      resolveByFlag(reader, flag, catalog).flatMap(source => provisionScoped(List(source))).mapError(asThrowable)
+    }
+
+  private def resolveByFlag(
+    reader: FlagReader,
+    flag: String,
+    catalog: Map[String, MockSource]
+  ): IO[MockError, MockSource] =
+    reader.getString(flag).flatMap {
+      case None =>
+        // The reader returned no value — for FlagReader.fromMetadata that means no
+        // @flags($flag=...) tag; an external reader may have its own reason.
+        ZIO.fail(MockError.InvalidDefinition(s"flag '$flag' resolved to no value (e.g. no @flags($flag=...) tag)"))
+      case Some(value) =>
+        ZIO
+          .fromOption(catalog.get(value))
+          .orElseFail(MockError.InvalidDefinition(s"flag $flag=$value: no catalog entry named '$value'"))
+    }
+
   // Provision each source as its own scoped acquisition, so a failure partway
   // through still tears down the spaces already created (each registers its own
   // finalizer in the scope). The scope destroys ONLY these spaces — never a
