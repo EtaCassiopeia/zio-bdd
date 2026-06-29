@@ -85,6 +85,15 @@ object RiftContainerSpec extends ZIOSpecDefault:
         recorded.exists(r => r.method == Method.Get && r.uri == "/native"), // records
         gone                                                                // space-local destroy
       )
+    },
+    test("an unmatched request returns 404, not Mountebank's 200-empty default (#165)") {
+      for
+        control <- ZIO.service[MockControl]
+        space   <- control.provision(pingSource).map(_.head)
+        _       <- httpGet(space.baseUri, "/ping").retry(upWithin) // ensure the imposter is up
+        miss    <- httpGet(space.baseUri, "/no-such-path")
+        _       <- control.destroy(space)
+      yield assertTrue(miss._1 == 404)
     }
   ).provideSome[Client](Provisioning.live, riftBackend) @@ TestAspect.sequential @@ TestAspect.withLiveClock
 
@@ -120,6 +129,15 @@ object RiftContainerSpec extends ZIOSpecDefault:
         ra.size == 1,           // only A's request
         rb.size == 2            // only B's
       )
+    },
+    test("an unmatched request returns 404 on the shared imposter (#165)") {
+      for
+        control <- ZIO.service[MockControl]
+        space   <- control.provision(pingSource).map(_.head)
+        _       <- SutClient.make(space).send(Method.Get, "/ping").retry(upWithin)
+        miss    <- SutClient.make(space).send(Method.Get, "/no-such-path") // injected, but no stub matches
+        _       <- control.destroy(space)
+      yield assertTrue(miss.status == 404)
     }
   ).provideSome[Client](Provisioning.live, correlatedBackend) @@ TestAspect.sequential @@ TestAspect.withLiveClock
 
