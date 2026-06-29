@@ -116,5 +116,36 @@ object ConformanceMatrixSpec extends ZIOSpecDefault:
         else matrix.cell(provisionServeRecord, "rift").map(_.outcome).contains(Outcome.Skip),
         matrix.render.contains("wiremock")
       )
+    } @@ TestAspect.withLiveClock,
+    test("core conformance features pass on every adapter (#125)") {
+      val all = CoreConformanceScenarios.all
+      for
+        matrix <- ConformanceHarness.run(List(wiremock, rift), all)
+        _      <- ZIO.logInfo(s"core conformance matrix:\n${matrix.render}")
+        // Surface any non-Pass cell's detail so a failure is debuggable from the log.
+        wmFails   = nonPass(matrix, "wiremock")
+        _        <- ZIO.logInfo(s"wiremock non-pass: $wmFails").when(wmFails.nonEmpty)
+        riftCells = all.flatMap(s => matrix.cell(s.name, "rift").map(_.outcome))
+      yield assertTrue(
+        all.nonEmpty, // the catalog actually ran
+        all.forall(s =>
+          matrix.cell(s.name, "wiremock").exists(_.outcome == Outcome.Pass)
+        ), // every scenario PASSed (presence, not absence-of-Fail)
+        matrix.cells.count(
+          _.backend == "wiremock"
+        ) == all.size, // every scenario produced exactly one cell (no missing/aliased name)
+        // Rift: every scenario PASSes in CI (RIFT_IT); else the whole column is SKIPPED-unavailable.
+        if riftEnabled then all.forall(s => matrix.cell(s.name, "rift").exists(_.outcome == Outcome.Pass))
+        else riftCells.size == all.size && riftCells.forall(_ == Outcome.Skip),
+        matrix.conformant(wiremock)
+      )
     } @@ TestAspect.withLiveClock
   )
+
+  private def nonPass(matrix: Matrix, backend: String): List[String] =
+    CoreConformanceScenarios.all.flatMap { s =>
+      matrix
+        .cell(s.name, backend)
+        .filter(_.outcome != Outcome.Pass)
+        .map(c => s"${c.scenario} -> ${c.outcome}: ${c.detail.getOrElse("")}")
+    }
