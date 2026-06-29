@@ -301,6 +301,10 @@ object CoreConformanceScenarios:
       // Measure a no-delay sibling on the same space as the baseline, so the
       // delta cancels connection/JIT latency — a backend that ignored the delay
       // directive yields delta ~0 and fails, not a spurious pass on a slow box.
+      // SutClient opens a fresh connection per send, so setup cost is noisy: use
+      // a 1s delay with a 500ms floor (signal >> noise) and the MIN of two
+      // baselines (discount the occasional slow cold connection), so connection
+      // jitter can't flip a genuinely-applied delay to a false failure.
       def elapsedOf(s: MockSpace, path: String): ZIO[Any, Throwable, (SutResponse, Duration)] =
         for
           t0 <- Clock.nanoTime
@@ -316,15 +320,17 @@ object CoreConformanceScenarios:
                ),
                MockRule(
                  RequestMatch(path = PathMatch.Exact("/delay")),
-                 ResponseDef(status = 200, body = Body.Text("ok"), delay = Some(300.millis))
+                 ResponseDef(status = 200, body = Body.Text("ok"), delay = Some(1.second))
                )
              )
-        baseline <- elapsedOf(s, "/nodelay")
-        delayed  <- elapsedOf(s, "/delay")
-        delta     = Duration.fromNanos(delayed._2.toNanos - baseline._2.toNanos)
+        base1   <- elapsedOf(s, "/nodelay")
+        base2   <- elapsedOf(s, "/nodelay")
+        delayed <- elapsedOf(s, "/delay")
+        baseline = math.min(base1._2.toNanos, base2._2.toNanos)
+        delta    = Duration.fromNanos(delayed._2.toNanos - baseline)
         _ <- ensure(
-               delayed._1.status == 200 && delta >= 200.millis,
-               s"delay: status=${delayed._1.status} delayed=${delayed._2.toMillis}ms baseline=${baseline._2.toMillis}ms delta=${delta.toMillis}ms"
+               delayed._1.status == 200 && delta >= 500.millis,
+               s"delay: status=${delayed._1.status} delayed=${delayed._2.toMillis}ms baseline=${baseline / 1000000}ms delta=${delta.toMillis}ms"
              )
       yield ()
     }
