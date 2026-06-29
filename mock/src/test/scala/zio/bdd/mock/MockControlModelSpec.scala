@@ -118,6 +118,9 @@ object MockControlModelSpec extends ZIOSpecDefault:
     test("Isolation enum has both isolation modes") {
       assertTrue(Isolation.values.toSet == Set(Isolation.PerInstance, Isolation.Correlated))
     },
+    test("MockControl.isolation defaults to PerInstance for an adapter that does not override it") {
+      assertTrue(StubMockControl("stub", Set.empty).isolation == Isolation.PerInstance)
+    },
     test("NativeSpec is backend-tagged and carries its raw payload") {
       // The type ascriptions are the real assertion: they only compile because
       // each case is pinned to its backend tag (Rift / WireMock).

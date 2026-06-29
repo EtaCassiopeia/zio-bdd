@@ -152,8 +152,26 @@ object WireMockControlSpec extends ZIOSpecDefault:
           resp    <- rawGet(a.baseUri + "/native").orDie // its own server, no space header needed
           rift    <- control.provisionNative(NativeSpec.Rift("{}")).either
         yield assertTrue(resp == 201, rift.isLeft)
+      },
+      test("the Correlated adapter reports Correlated isolation") {
+        ZIO.serviceWith[MockControl](c => assertTrue(c.isolation == Isolation.Correlated))
+      },
+      test("received(A) returns only A's traffic when A and B share one server") {
+        for
+          control <- ZIO.service[MockControl]
+          a       <- die(control.provision(pingSource)).map(_.head)
+          b       <- die(control.provision(pingSource)).map(_.head)
+          _       <- SutClient.make(a).send(Method.Get, "/ping").orDie
+          _       <- SutClient.make(b).send(Method.Get, "/ping").orDie
+          _       <- SutClient.make(b).send(Method.Get, "/ping").orDie
+          ra      <- die(control.received(a))
+          rb      <- die(control.received(b))
+        yield assertTrue(ra.size == 1, rb.size == 2) // received filters by space header on the shared server
       }
     ).provide(correlated),
+    test("the PerInstance-mode adapter reports PerInstance isolation") {
+      ZIO.serviceWith[MockControl](c => assertTrue(c.isolation == Isolation.PerInstance))
+    }.provide(perInstance),
     test("PerInstance gives each space its own server (distinct ports, inject identity), destroy stops only that one") {
       for
         control <- ZIO.service[MockControl]
