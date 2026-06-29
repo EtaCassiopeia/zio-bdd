@@ -155,6 +155,19 @@ object ConformanceMatrixSpec extends ZIOSpecDefault:
         if riftEnabled then all.forall(s => matrix.cell(s.name, "rift").exists(_.outcome == Outcome.Pass))
         else riftCells.size == all.size && riftCells.forall(_ == Outcome.Skip)
       )
+    } @@ TestAspect.withLiveClock,
+    test("cap-stateful feature is defined + capability-gated; SKIPs until an adapter advertises it (#129)") {
+      val all = CapStatefulScenarios.all
+      for
+        matrix <- ConformanceHarness.run(List(wiremock, rift), all)
+        _      <- ZIO.logInfo(s"cap-stateful matrix:\n${matrix.render}")
+      yield assertTrue(
+        all.nonEmpty,
+        // Neither adapter advertises StatefulScenarios/StateInspection yet -> every cell is a justified SKIP.
+        all.forall(s => matrix.cell(s.name, "wiremock").exists(_.outcome == Outcome.Skip)),
+        all.forall(s => matrix.cell(s.name, "rift").exists(_.outcome == Outcome.Skip)),
+        matrix.conformant(wiremock) // justified (capability-gated) skips keep the column conformant
+      )
     } @@ TestAspect.withLiveClock
   )
 

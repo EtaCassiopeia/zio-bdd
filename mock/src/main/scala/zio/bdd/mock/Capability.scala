@@ -1,5 +1,7 @@
 package zio.bdd.mock
 
+import zio.IO
+
 /**
  * Optional capabilities an adapter MAY implement beyond the total core port. An
  * adapter advertises a capability via [[MockControl.capabilities]]; for each
@@ -23,7 +25,7 @@ enum Isolation:
   case PerInstance, Correlated
 
 // Capability interfaces returned by the typed accessors on [[MockControl]].
-// Empty markers here — their operations are fleshed out in M3 (#128/#129/#132).
+// Faults/Scripting/ProxyRecord/Templating remain markers until their M3 issues.
 
 /**
  * Fault injection (latency, errors, connection resets). Capability:
@@ -32,16 +34,31 @@ enum Isolation:
 trait Faults
 
 /**
- * Single-state-token FSM per scenario. Capability:
- * [[Capability.StatefulScenarios]].
+ * Single-token FSM per scenario (#129): a request eligible in the scenario's
+ * current state serves its response and (optionally) transitions the state.
+ * Capability: [[Capability.StatefulScenarios]].
  */
-trait StatefulScenarios
+trait StatefulScenarios:
+  /**
+   * Install (replacing any existing) the named scenario on `space`, in its
+   * initial state.
+   */
+  def define(space: MockSpace, scenario: ScenarioDef): IO[MockError, Unit]
+
+  /** Return the named scenario on `space` to its initial state. */
+  def reset(space: MockSpace, name: String): IO[MockError, Unit]
 
 /**
- * Arrange/assert scenario state without driving requests. Capability:
- * [[Capability.StateInspection]].
+ * Arrange/assert scenario state without driving requests — split from
+ * [[StatefulScenarios]] because not every backend exposes direct state poking.
+ * Capability: [[Capability.StateInspection]].
  */
-trait StateInspection
+trait StateInspection:
+  /** The scenario's current state on `space`. */
+  def currentState(space: MockSpace, name: String): IO[MockError, ScenarioState]
+
+  /** Force the scenario on `space` to state `to`. */
+  def setState(space: MockSpace, name: String, to: ScenarioState): IO[MockError, Unit]
 
 /** Backend scripting hooks. Capability: [[Capability.Scripting]]. */
 trait Scripting
