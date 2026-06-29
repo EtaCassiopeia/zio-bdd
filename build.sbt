@@ -93,7 +93,7 @@ lazy val mimaSettings = Seq(
 )
 
 lazy val root = (project in file("."))
-  .aggregate(core, gherkin, mock, rift)
+  .aggregate(core, gherkin, mock, rift, wiremock)
   .settings(
     name                  := "zio-bdd-root",
     description           := "A ZIO-based BDD testing framework for Scala 3",
@@ -149,6 +149,22 @@ lazy val rift = (project in file("rift"))
       "dev.zio"      %% "zio-http"                   % "3.2.0",
       "dev.zio"      %% "zio-json"                   % "0.7.3",
       "com.dimafeng" %% "testcontainers-scala-core"  % "0.41.4"
+    ),
+    testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
+    // Not yet published as a 1.x artifact — no binary-compat baseline to check against.
+    mimaPreviousArtifacts := Set.empty
+  )
+
+// WireMock adapter (#122): the in-process, pure-JVM, zero-Docker provider with
+// Correlated isolation by default. Implements the portable MockControl SPI over
+// an embedded WireMockServer. Depends on `mock`, never the reverse.
+lazy val wiremock = (project in file("wiremock"))
+  .dependsOn(mock)
+  .settings(
+    name := "zio-bdd-wiremock",
+    libraryDependencies ++= commonDependencies,
+    libraryDependencies ++= Seq(
+      "org.wiremock" % "wiremock" % "3.9.2"
     ),
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
     // Not yet published as a 1.x artifact — no binary-compat baseline to check against.
