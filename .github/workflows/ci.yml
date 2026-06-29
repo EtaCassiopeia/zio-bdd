@@ -37,7 +37,11 @@ jobs:
           java-version: 11
           cache: sbt
       - uses: sbt/setup-sbt@v1
-      - name: RiftContainerSpec against a real Rift container (testcontainers)
+      # Run every RIFT_IT-gated suite against a real container: the Rift adapter
+      # acceptance (#113) plus the conformance module's Rift column — the matrix
+      # (#124/#125) and the parallel-isolation contract (#126) only exercise Rift
+      # when RIFT_IT is set, so they are dead in the hermetic `build` job above.
+      - name: Real-container suites (RiftContainerSpec + conformance Rift column)
         env:
           RIFT_IT: "1"
-        run: sbt "rift/testOnly zio.bdd.mock.rift.RiftContainerSpec"
+        run: sbt "rift/testOnly zio.bdd.mock.rift.RiftContainerSpec" "conformance/test"
