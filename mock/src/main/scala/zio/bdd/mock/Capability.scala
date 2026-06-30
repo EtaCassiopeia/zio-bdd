@@ -31,7 +31,15 @@ enum Isolation:
  * Fault injection (latency, errors, connection resets). Capability:
  * [[Capability.Faults]].
  */
-trait Faults
+trait Faults:
+  /**
+   * Inject `fault` for requests matching `m` in `space`, returning the id of
+   * the fault rule (removable via [[MockControl.removeRule]]). The four
+   * connection kinds make the SUT's client observe a transport-level failure;
+   * [[FaultKind.LatencySpike]] delays an otherwise normal 200 response. The
+   * fault takes precedence over a normal rule on the same match.
+   */
+  def inject(space: MockSpace, m: RequestMatch, fault: FaultKind): IO[MockError, RuleId]
 
 /**
  * Single-token FSM per scenario (#129): a request eligible in the scenario's

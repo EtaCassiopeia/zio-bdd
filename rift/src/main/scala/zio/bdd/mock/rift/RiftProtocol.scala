@@ -78,6 +78,46 @@ private[rift] object RiftProtocol:
   def addStubBody(index: Int, rule: MockRule): Json =
     Json.Obj("index" -> Json.Num(index), "stub" -> stub(rule))
 
+  // ---------------------------------------------------------------------------
+  // Fault injection (#128) — the `_rift.fault` response extension (rift#239)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * A stub response carrying a `_rift.fault` extension. The connection kinds
+   * set `_rift.fault.tcp` (Rift aborts the connection at the transport layer,
+   * so the SUT observes a real reset/empty/malformed/random failure — the `is`
+   * below is never sent); [[FaultKind.LatencySpike]] sets `_rift.fault.latency`
+   * (Rift sleeps, then serves this `is` 200). `probability` is pinned to 1 so
+   * the fault always fires.
+   */
+  def faultResponse(fault: FaultKind): Json =
+    val cfg = fault match
+      case FaultKind.LatencySpike(d) =>
+        Json.Obj("latency" -> Json.Obj("probability" -> Json.Num(1), "ms" -> Json.Num(d.toMillis.toInt)))
+      case FaultKind.ConnectionReset => tcpFault("CONNECTION_RESET_BY_PEER")
+      case FaultKind.EmptyResponse   => tcpFault("EMPTY_RESPONSE")
+      case FaultKind.MalformedChunk  => tcpFault("MALFORMED_RESPONSE_CHUNK")
+      case FaultKind.RandomThenClose => tcpFault("RANDOM_DATA_THEN_CLOSE")
+    Json.Obj("is" -> Json.Obj("statusCode" -> Json.Num(200)), "_rift" -> Json.Obj("fault" -> cfg))
+
+  private def tcpFault(token: String): Json = Json.Obj("tcp" -> Json.Str(token))
+
+  /**
+   * A Mountebank stub whose response injects `fault` for requests matching `m`.
+   */
+  def faultStub(m: RequestMatch, fault: FaultKind, id: RuleId): Json =
+    Json.Obj(
+      "id"         -> Json.Str(id.value),
+      "predicates" -> Json.Arr(predicates(m)*),
+      "responses"  -> Json.Arr(faultResponse(fault))
+    )
+
+  /**
+   * The `{index, stub}` body for `POST /imposters/:port/stubs` of a fault stub.
+   */
+  def addFaultStubBody(index: Int, m: RequestMatch, fault: FaultKind, id: RuleId): Json =
+    Json.Obj("index" -> Json.Num(index), "stub" -> faultStub(m, fault, id))
+
   def predicates(m: RequestMatch): List[Json] =
     val methodPred = m.method.map(meth => equalsObj("method" -> Json.Str(methodName(meth))))
     val pathPred = m.path match

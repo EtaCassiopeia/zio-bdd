@@ -182,6 +182,20 @@ final case class ScenarioDef(
 )
 
 /**
+ * A client-observable fault the [[Faults]] capability injects for matching
+ * requests (#128). The four connection kinds produce a transport-level failure
+ * (the SUT's HTTP client throws); [[LatencySpike]] instead delays an otherwise
+ * normal response. The names mirror WireMock's `Fault` enum so both adapters
+ * (WireMock natively, Rift via `_rift.fault.tcp`) realise the same behaviour.
+ */
+enum FaultKind:
+  case ConnectionReset
+  case EmptyResponse
+  case MalformedChunk
+  case RandomThenClose
+  case LatencySpike(delay: Duration)
+
+/**
  * The unit of isolation. Hides *how* isolation is achieved:
  *   - PerInstance: a unique `baseUri` per space; `inject = identity`.
  *   - Correlated: a shared `baseUri`; `inject` stamps a correlation header.

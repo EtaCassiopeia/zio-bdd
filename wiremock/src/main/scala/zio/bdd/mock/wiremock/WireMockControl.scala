@@ -33,8 +33,9 @@ private[wiremock] final case class WireMockControl(
 
   import WireMockControl.{ScenarioRecord, SpaceState}
 
-  def backendName: String           = "wiremock"
-  def capabilities: Set[Capability] = Set(Capability.StatefulScenarios, Capability.StateInspection)
+  def backendName: String = "wiremock"
+  def capabilities: Set[Capability] =
+    Set(Capability.Faults, Capability.StatefulScenarios, Capability.StateInspection)
 
   override def isolation: Isolation = mode match
     case WireMock.Mode.Correlated(_) => Isolation.Correlated
@@ -145,7 +146,7 @@ private[wiremock] final case class WireMockControl(
         })
     }
 
-  def faults: IO[Unsupported, Faults]                   = unsupported(Capability.Faults)
+  def faults: IO[Unsupported, Faults]                   = ZIO.succeed(wmFaults)
   def scenarios: IO[Unsupported, StatefulScenarios]     = ZIO.succeed(statefulScenarios)
   def stateInspection: IO[Unsupported, StateInspection] = ZIO.succeed(stateInspector)
   def scripting: IO[Unsupported, Scripting]             = unsupported(Capability.Scripting)
@@ -222,6 +223,20 @@ private[wiremock] final case class WireMockControl(
               .mapError(e => MockError.CommunicationError(msg(e)))
           case None => ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${space.id.value}"))
         )
+      }
+
+  // Faults (#128): a fault stub is a first-match (Overlay) stub carrying WireMock's
+  // native `Fault` (or a fixed delay), tracked in `st.rules` like any other — so
+  // correlation filtering, `removeRule` and `destroy` all apply to it unchanged.
+  private val wmFaults: Faults = new Faults:
+    def inject(space: MockSpace, m: RequestMatch, fault: FaultKind): IO[MockError, RuleId] =
+      withSpace(space) { st =>
+        for
+          ruleId <- freshRuleId
+          stub    = WireMockTranslation.faultStub(space.id, m, fault, Priority.Overlay, st.correlation)
+          _      <- ZIO.attempt(st.server.addStubMapping(stub)).mapError(e => MockError.CommunicationError(msg(e)))
+          _      <- st.rules.update((ruleId, stub) +: _)
+        yield ruleId
       }
 
   // Stop every server this adapter still owns — the layer's scope finalizer.

@@ -193,12 +193,55 @@ object RiftMockControlSpec extends ZIOSpecDefault:
         )
       }
     },
-    test("advertises no capabilities; every accessor fails fast") {
+    test("advertises Faults; its accessor succeeds and the other accessors fail fast") {
       withAdapter { (control, _) =>
-        for faultsE <- control.faults.either
+        for
+          faultsE    <- control.faults.either
+          scenariosE <- control.scenarios.either
         yield assertTrue(
-          control.capabilities.isEmpty,
-          faultsE == Left(Unsupported(Capability.Faults, "rift"))
+          control.capabilities == Set(Capability.Faults),
+          faultsE.isRight,
+          scenariosE == Left(Unsupported(Capability.StatefulScenarios, "rift"))
+        )
+      }
+    },
+    test("faults.inject posts a first-match stub carrying _rift.fault.tcp to the space's imposter") {
+      withAdapter { (control, fake) =>
+        for
+          space  <- control.provision(pingSource).orDieWith(e => new RuntimeException(e.toString)).map(_.head)
+          faults <- control.faults.orDieWith(u => new RuntimeException(u.toString))
+          ruleId <- faults
+                      .inject(space, RequestMatch(path = PathMatch.Exact("/boom")), FaultKind.ConnectionReset)
+                      .orDieWith(e => new RuntimeException(e.toString))
+          calls <- fake.stubCalls.get
+          post   = calls.find(c => c.startsWith(s"POST ${portOf(space.baseUri)} "))
+        yield assertTrue(
+          ruleId.value.nonEmpty,
+          post.exists(_.contains("\"index\":0")), // first-match — wins over a normal rule
+          post.exists(_.contains("CONNECTION_RESET_BY_PEER")),
+          post.exists(_.contains("/boom"))
+        )
+      }
+    },
+    test("Correlated faults.inject registers a fault space stub ahead of the rules (first-match) and is removable") {
+      withCorrelated { (control, fake) =>
+        for
+          space  <- control.provision(pingSource).orDieWith(e => new RuntimeException(e.toString)).map(_.head)
+          faults <- control.faults.orDieWith(u => new RuntimeException(u.toString))
+          ruleId <- faults
+                      .inject(space, RequestMatch(path = PathMatch.Exact("/boom")), FaultKind.ConnectionReset)
+                      .orDieWith(e => new RuntimeException(e.toString))
+          stubs <- fake.spaceStubs.get // "$port/$flowId $body" per POST .../spaces/:flow/stubs
+          faultIx =
+            stubs.indexWhere(s => s.contains("_rift") && s.contains("CONNECTION_RESET_BY_PEER") && s.contains("/boom"))
+          // the rebuild re-registers the space's /ping rule AFTER the fault → fault wins first-match
+          rulePast = stubs.zipWithIndex.exists((s, i) => i > faultIx && s.contains("/ping"))
+          rmE     <- control.removeRule(space, ruleId).either // tracked in cs.faults → removable, not RuleNotFound
+        yield assertTrue(
+          ruleId.value.nonEmpty,
+          faultIx >= 0,
+          rulePast,
+          rmE.isRight
         )
       }
     },

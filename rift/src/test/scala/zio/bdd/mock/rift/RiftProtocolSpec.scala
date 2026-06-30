@@ -76,6 +76,37 @@ object RiftProtocolSpec extends ZIOSpecDefault:
         withDelay / "_behaviors" / "wait" == Json.Num(50)
       )
     },
+    test("a connection FaultKind becomes a stub response with _rift.fault.tcp and a 200 carrier `is`") {
+      def tcp(fault: FaultKind): Json = RiftProtocol.faultResponse(fault) / "_rift" / "fault" / "tcp"
+      assertTrue(
+        tcp(FaultKind.ConnectionReset) == Json.Str("CONNECTION_RESET_BY_PEER"),
+        tcp(FaultKind.EmptyResponse) == Json.Str("EMPTY_RESPONSE"),
+        tcp(FaultKind.MalformedChunk) == Json.Str("MALFORMED_RESPONSE_CHUNK"),
+        tcp(FaultKind.RandomThenClose) == Json.Str("RANDOM_DATA_THEN_CLOSE"),
+        RiftProtocol.faultResponse(FaultKind.ConnectionReset) / "is" / "statusCode" == Json.Num(200)
+      )
+    },
+    test("a LatencySpike becomes _rift.fault.latency with probability 1 and ms; no tcp") {
+      import zio.*
+      val resp    = RiftProtocol.faultResponse(FaultKind.LatencySpike(1.second))
+      val latency = resp / "_rift" / "fault" / "latency"
+      assertTrue(
+        latency / "ms" == Json.Num(1000),
+        latency / "probability" == Json.Num(1),
+        field(resp / "_rift" / "fault", "tcp").isEmpty,
+        resp / "is" / "statusCode" == Json.Num(200)
+      )
+    },
+    test("faultStub carries the request predicates and the fault response under the given id") {
+      val m     = RequestMatch(method = Some(Method.Get), path = PathMatch.Exact("/boom"))
+      val stub  = RiftProtocol.faultStub(m, FaultKind.ConnectionReset, RuleId("f1"))
+      val preds = arr(stub / "predicates")
+      assertTrue(
+        stub / "id" == Json.Str("f1"),
+        preds.exists(p => p / "equals" / "path" == Json.Str("/boom")),
+        arr(stub / "responses").head / "_rift" / "fault" / "tcp" == Json.Str("CONNECTION_RESET_BY_PEER")
+      )
+    },
     test("PathMatch.Any emits no path predicate") {
       val stub = RiftProtocol.stub(pingRule.copy(`match` = RequestMatch(method = Some(Method.Post))))
       val keys =
