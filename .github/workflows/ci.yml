@@ -69,10 +69,12 @@ jobs:
       # be dlopen'd without it present — matches the Rift project's own FFI CI.
       - name: Install LuaJIT
         run: sudo apt-get update && sudo apt-get install -y libluajit-5.1-dev
-      # downloadRiftFfi fetches + checksum-verifies the per-host-triple native library; the forked
-      # test JVMs run with --enable-preview + --enable-native-access (set in embeddedNativeSettings).
+      # The librift_ffi cdylibs are bundled by the zio-bdd-rift-embedded-natives jar (a test dep of
+      # the embedded suites), downloaded + checksum-verified by its resourceGenerator; the loader
+      # extracts + loads the host's lib from the classpath out-of-the-box — no -Drift.ffi.lib. The
+      # forked test JVMs run with --enable-preview + --enable-native-access (embeddedNativeSettings).
       - name: Embedded smoke + portable conformance against MockControl.embedded
         run: >-
-          sbt rift/downloadRiftFfi conformance/downloadRiftFfi
-          "rift/testOnly zio.bdd.mock.rift.embedded.EmbeddedRiftFfiSpec"
+          sbt
+          "rift/testOnly zio.bdd.mock.rift.embedded.EmbeddedRiftFfiSpec zio.bdd.mock.rift.embedded.NativeLibrarySpec"
           "conformance/testOnly zio.bdd.mock.conformance.EmbeddedConformanceSpec"
