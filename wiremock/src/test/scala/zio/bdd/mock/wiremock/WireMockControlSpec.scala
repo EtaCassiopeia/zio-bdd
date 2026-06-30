@@ -2,6 +2,7 @@ package zio.bdd.mock.wiremock
 
 import zio.*
 import zio.bdd.mock.*
+import zio.bdd.mock.dsl.*
 import zio.test.*
 
 import java.net.{URI, http as jhttp}
@@ -46,7 +47,10 @@ object WireMockControlSpec extends ZIOSpecDefault:
   private val perInstance = PortAllocator.layer >>> Provisioning.layer >>> WireMock.perInstance
   private val traceparent = PortAllocator.layer >>> Provisioning.layer >>> WireMock.correlated(Correlation.traceparent)
 
-  private def die[A](z: IO[MockError, A]): UIO[A] = z.orDieWith(e => new RuntimeException(e.toString))
+  private def die[A](z: IO[MockError, A]): UIO[A]    = z.orDieWith(e => new RuntimeException(e.toString))
+  private def dieU[A](z: IO[Unsupported, A]): UIO[A] = z.orDieWith(u => new RuntimeException(u.toString))
+
+  private val emptySource = MockSource.Dsl(MockSpec(Nil))
 
   // Send straight to a base URI with no inject (and an optional raw header), to
   // model a SUT that did NOT carry the space tag.
@@ -167,7 +171,75 @@ object WireMockControlSpec extends ZIOSpecDefault:
           ra      <- die(control.received(a))
           rb      <- die(control.received(b))
         yield assertTrue(ra.size == 1, rb.size == 2) // received filters by space header on the shared server
-      }
+      },
+      // --- stateful scenarios (#130): edges the portable cap-stateful catalog can't express ---
+      suite("stateful scenarios")(
+        test("define replaces an existing scenario of the same name (replacing any existing)") {
+          for
+            control <- ZIO.service[MockControl]
+            ss      <- dieU(control.scenarios)
+            a       <- die(control.provision(emptySource)).map(_.head)
+            _       <- die(ss.define(a, scenario("sc").when("Started", get("/x")).respond(ok.text("v1")).stay.build))
+            r1      <- SutClient.make(a).send(Method.Get, "/x").orDie
+            _       <- die(ss.define(a, scenario("sc").when("Started", get("/x")).respond(ok.text("v2")).stay.build))
+            r2      <- SutClient.make(a).send(Method.Get, "/x").orDie
+          yield assertTrue(r1.body == "v1", r2.body == "v2") // the old edge is gone, not shadowed
+        },
+        test("a non-Started initial state is honoured by define and restored by reset") {
+          val oc =
+            scenario("oc")
+              .startingAt("Open")
+              .when("Open", get("/o"))
+              .respond(ok.text("open"))
+              .goTo("Closed")
+              .when("Closed", get("/o"))
+              .respond(ok.text("closed"))
+              .stay
+              .build
+          for
+            control <- ZIO.service[MockControl]
+            ss      <- dieU(control.scenarios)
+            si      <- dieU(control.stateInspection)
+            a       <- die(control.provision(emptySource)).map(_.head)
+            _       <- die(ss.define(a, oc))
+            s0      <- die(si.currentState(a, "oc"))
+            r1      <- SutClient.make(a).send(Method.Get, "/o").orDie // Open -> "open", -> Closed
+            r2      <- SutClient.make(a).send(Method.Get, "/o").orDie // Closed -> "closed"
+            _       <- die(ss.reset(a, "oc"))
+            s1      <- die(si.currentState(a, "oc"))
+            r3      <- SutClient.make(a).send(Method.Get, "/o").orDie // back in Open -> "open"
+          yield assertTrue(
+            s0 == ScenarioState("Open"),
+            r1.body == "open",
+            r2.body == "closed",
+            s1 == ScenarioState("Open"),
+            r3.body == "open"
+          )
+        },
+        test("reset / currentState / setState of an unknown scenario fail with InvalidDefinition") {
+          for
+            control <- ZIO.service[MockControl]
+            ss      <- dieU(control.scenarios)
+            si      <- dieU(control.stateInspection)
+            a       <- die(control.provision(emptySource)).map(_.head)
+            e1      <- ss.reset(a, "ghost").either
+            e2      <- si.currentState(a, "ghost").either
+            e3      <- si.setState(a, "ghost", ScenarioState("X")).either
+            expected = MockError.InvalidDefinition(s"no scenario 'ghost' on space ${a.id.value}")
+          yield assertTrue(e1 == Left(expected), e2 == Left(expected), e3 == Left(expected))
+        },
+        test("destroy removes the scenario's stubs from the shared server") {
+          for
+            control <- ZIO.service[MockControl]
+            ss      <- dieU(control.scenarios)
+            a       <- die(control.provision(emptySource)).map(_.head)
+            _       <- die(ss.define(a, scenario("sc").when("Started", get("/x")).respond(ok.text("v1")).stay.build))
+            before  <- SutClient.make(a).send(Method.Get, "/x").orDie
+            _       <- die(control.destroy(a))
+            after   <- SutClient.make(a).send(Method.Get, "/x").orDie
+          yield assertTrue(before.status == 200, before.body == "v1", after.status == 404)
+        }
+      )
     ).provide(correlated),
     test("the PerInstance-mode adapter reports PerInstance isolation") {
       ZIO.serviceWith[MockControl](c => assertTrue(c.isolation == Isolation.PerInstance))

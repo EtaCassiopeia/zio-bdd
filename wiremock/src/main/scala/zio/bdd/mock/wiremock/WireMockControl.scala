@@ -31,10 +31,10 @@ private[wiremock] final case class WireMockControl(
   ids: Ref[Int]
 ) extends MockControl:
 
-  import WireMockControl.SpaceState
+  import WireMockControl.{ScenarioRecord, SpaceState}
 
   def backendName: String           = "wiremock"
-  def capabilities: Set[Capability] = Set.empty
+  def capabilities: Set[Capability] = Set(Capability.StatefulScenarios, Capability.StateInspection)
 
   override def isolation: Isolation = mode match
     case WireMock.Mode.Correlated(_) => Isolation.Correlated
@@ -68,16 +68,18 @@ private[wiremock] final case class WireMockControl(
           stub     <- ZIO.attempt(StubMapping.buildFrom(stubMappingJson)).mapError(e => MockError.InvalidDefinition(msg(e)))
           server   <- WireMockControl.startServer.mapError(e => MockError.ProvisionFailed(msg(e)))
           rulesRef <- Ref.make(Vector.empty[(RuleId, StubMapping)])
+          scenRef  <- Ref.make(Map.empty[String, ScenarioRecord])
           ruleId   <- freshRuleId
           // Stop the server we just started if registration/tracking fails or is
           // interrupted before it lands in `spaces` — otherwise it leaks.
-          space <- (ZIO
-                     .attempt(server.addStubMapping(stub))
-                     .zipRight(rulesRef.set(Vector(ruleId -> stub)))
-                     .mapError(e => MockError.CommunicationError(msg(e)))
-                     .zipRight(spaces.update(_.updated(id, SpaceState(server, ownsServer = true, None, rulesRef))))
-                     .as(MockSpace(server.baseUrl(), identity, id)))
-                     .onError(_ => stop(server))
+          space <-
+            (ZIO
+              .attempt(server.addStubMapping(stub))
+              .zipRight(rulesRef.set(Vector(ruleId -> stub)))
+              .mapError(e => MockError.CommunicationError(msg(e)))
+              .zipRight(spaces.update(_.updated(id, SpaceState(server, ownsServer = true, None, rulesRef, scenRef))))
+              .as(MockSpace(server.baseUrl(), identity, id)))
+              .onError(_ => stop(server))
         yield List(space)
       case NativeSpec.Rift(_) =>
         ZIO.fail(MockError.InvalidDefinition("the WireMock adapter cannot provision a Rift native spec"))
@@ -110,7 +112,8 @@ private[wiremock] final case class WireMockControl(
     withSpace(space) { st =>
       for
         current <- st.rules.get
-        _       <- removeStubs(st.server, current.map(_._2))
+        scen    <- st.scenarios.get
+        _       <- removeStubs(st.server, current.map(_._2) ++ scen.values.flatMap(_.stubs))
         _       <- ZIO.when(st.ownsServer)(stop(st.server))
         _       <- spaces.update(_ - space.id)
       yield ()
@@ -140,11 +143,83 @@ private[wiremock] final case class WireMockControl(
     }
 
   def faults: IO[Unsupported, Faults]                   = unsupported(Capability.Faults)
-  def scenarios: IO[Unsupported, StatefulScenarios]     = unsupported(Capability.StatefulScenarios)
-  def stateInspection: IO[Unsupported, StateInspection] = unsupported(Capability.StateInspection)
+  def scenarios: IO[Unsupported, StatefulScenarios]     = ZIO.succeed(statefulScenarios)
+  def stateInspection: IO[Unsupported, StateInspection] = ZIO.succeed(stateInspector)
   def scripting: IO[Unsupported, Scripting]             = unsupported(Capability.Scripting)
   def proxyRecord: IO[Unsupported, ProxyRecord]         = unsupported(Capability.ProxyRecord)
   def templating: IO[Unsupported, Templating]           = unsupported(Capability.Templating)
+
+  // Native scenarios on the shared server are namespaced by space so two spaces
+  // declaring the same scenario name keep independent FSM state (the correlation
+  // header alone would still share one WireMock scenario, hence one state token).
+  private def scenarioName(id: SpaceId, name: String): String = s"${id.value}::$name"
+
+  private val statefulScenarios: StatefulScenarios = new StatefulScenarios:
+    def define(space: MockSpace, scenarioDef: ScenarioDef): IO[MockError, Unit] =
+      withSpace(space) { st =>
+        val nsName = scenarioName(space.id, scenarioDef.name)
+        val stubs = scenarioDef.rules.zipWithIndex.map { (r, i) =>
+          WireMockTranslation.statefulStub(
+            space.id,
+            nsName,
+            r.whenState,
+            r.thenState,
+            MockRule(r.request, r.respond),
+            i + 1,
+            st.correlation
+          )
+        }
+        for
+          existing <- st.scenarios.get
+          // Register the new edges and set the initial state, rolling back exactly the stubs we
+          // added if any step fails or is interrupted — a partial define must never orphan stubs
+          // on the shared server. The previous scenario (on re-define) is left intact until this
+          // succeeds, so a failed redefine never destroys known-good state.
+          _ <- (ZIO.attempt(stubs.foreach(st.server.addStubMapping)) *>
+                 // A scenario only exists once a stub references it, so only pin the initial
+                 // state when there are rules (an empty ScenarioDef installs nothing).
+                 ZIO.when(stubs.nonEmpty)(ZIO.attempt(st.server.setScenarioState(nsName, scenarioDef.initial.value))))
+                 .mapError(e => MockError.CommunicationError(msg(e)))
+                 .onError(_ => removeStubs(st.server, stubs.toVector).ignore)
+          _ <- existing.get(scenarioDef.name).fold(ZIO.unit)(rec => removeStubs(st.server, rec.stubs))
+          _ <- st.scenarios.update(_ + (scenarioDef.name -> ScenarioRecord(scenarioDef.initial, stubs.toVector)))
+        yield ()
+      }
+
+    def reset(space: MockSpace, name: String): IO[MockError, Unit] =
+      withSpace(space) { st =>
+        st.scenarios.get.flatMap(_.get(name) match
+          case Some(rec) =>
+            ZIO
+              .attempt(st.server.setScenarioState(scenarioName(space.id, name), rec.initial.value))
+              .mapError(e => MockError.CommunicationError(msg(e)))
+          case None => ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${space.id.value}"))
+        )
+      }
+
+  private val stateInspector: StateInspection = new StateInspection:
+    def currentState(space: MockSpace, name: String): IO[MockError, ScenarioState] =
+      withSpace(space) { st =>
+        val nsName = scenarioName(space.id, name)
+        ZIO
+          .attempt(st.server.getAllScenarios.getScenarios.asScala.find(_.getName == nsName).map(_.getState))
+          .mapError(e => MockError.CommunicationError(msg(e)))
+          .flatMap {
+            case Some(s) => ZIO.succeed(ScenarioState(s))
+            case None    => ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${space.id.value}"))
+          }
+      }
+
+    def setState(space: MockSpace, name: String, to: ScenarioState): IO[MockError, Unit] =
+      withSpace(space) { st =>
+        st.scenarios.get.flatMap(_.get(name) match
+          case Some(_) =>
+            ZIO
+              .attempt(st.server.setScenarioState(scenarioName(space.id, name), to.value))
+              .mapError(e => MockError.CommunicationError(msg(e)))
+          case None => ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${space.id.value}"))
+        )
+      }
 
   // Stop every server this adapter still owns — the layer's scope finalizer.
   private[wiremock] def stopAll: UIO[Unit] =
@@ -161,9 +236,10 @@ private[wiremock] final case class WireMockControl(
       rules    <- rulesOf(src)
       id       <- freshSpaceId(src.name)
       rulesRef <- Ref.make(Vector.empty[(RuleId, StubMapping)])
+      scenRef  <- Ref.make(Map.empty[String, ScenarioRecord])
       corr      = correlationOf
       server   <- serverFor(id)
-      st        = SpaceState(server, ownsServer = corr.isEmpty, corr, rulesRef)
+      st        = SpaceState(server, ownsServer = corr.isEmpty, corr, rulesRef, scenRef)
       // If a rule fails mid-batch the space is never tracked, so destroy can
       // never reach it: undo its stubs (and stop its own server) here, or they
       // orphan on the shared server.
@@ -248,8 +324,13 @@ private[wiremock] object WireMockControl:
     server: WireMockServer,
     ownsServer: Boolean,
     correlation: Option[Correlation],
-    rules: Ref[Vector[(RuleId, StubMapping)]]
+    rules: Ref[Vector[(RuleId, StubMapping)]],
+    scenarios: Ref[Map[String, ScenarioRecord]]
   )
+
+  // A defined scenario's initial state (for `reset`) plus the stubs it installed
+  // (so `destroy` removes them from the shared server — they are not in `rules`).
+  final case class ScenarioRecord(initial: ScenarioState, stubs: Vector[StubMapping])
 
   /**
    * Build the adapter for `mode`, starting the shared server in Correlated mode
