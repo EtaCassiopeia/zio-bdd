@@ -93,7 +93,14 @@ private[rift] object RiftProtocol:
   def response(r: ResponseDef): Json =
     val headers =
       if r.headers.isEmpty then Nil
-      else List("headers" -> Json.Obj(r.headers.toList.map((k, v) => k -> Json.Str(v))*))
+      else
+        // Rift's wire accepts a string for a single value and an array for many (rift#241).
+        List("headers" -> Json.Obj(r.headers.entries.map { (k, vs) =>
+          k -> (vs match
+            case v :: Nil => Json.Str(v)
+            case many     => Json.Arr(many.map(Json.Str(_))*)
+          )
+        }*))
     val body = r.body match
       case Body.Empty     => Nil
       case Body.Text(v)   => List("body" -> Json.Str(v))
@@ -125,10 +132,12 @@ private[rift] object RiftProtocol:
   // Mountebank wire JSON -> canonical model (recorded requests)
   // ---------------------------------------------------------------------------
 
+  // headers decode as the raw AST per key so we accept both Rift's single-value
+  // string form (`"k": "v"`) and the multi-value array form (`"k": ["a", "b"]`, rift#241).
   private case class WireReq(
     method: String,
     path: String,
-    headers: Option[Map[String, String]] = None,
+    headers: Option[Map[String, Json]] = None,
     body: Option[String] = None
   ) derives JsonDecoder
   private case class WireView(requests: Option[List[WireReq]] = None) derives JsonDecoder
@@ -146,7 +155,14 @@ private[rift] object RiftProtocol:
     arrayJson.fromJson[List[WireReq]].map(_.map(toRecorded))
 
   private def toRecorded(r: WireReq): RecordedRequest =
-    RecordedRequest(methodFromWire(r.method), r.path, r.headers.getOrElse(Map.empty), r.body)
+    val headers = r.headers.getOrElse(Map.empty).foldLeft(Headers.empty) { case (h, (k, json)) =>
+      json match
+        case Json.Str(v) => h.add(k, v)
+        case Json.Arr(elems) =>
+          elems.foldLeft(h)((acc, j) => j match { case Json.Str(v) => acc.add(k, v); case _ => acc })
+        case _ => h
+    }
+    RecordedRequest(methodFromWire(r.method), r.path, headers, r.body)
 
   // ---------------------------------------------------------------------------
   // helpers

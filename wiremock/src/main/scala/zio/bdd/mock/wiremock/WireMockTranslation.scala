@@ -88,7 +88,7 @@ private[wiremock] object WireMockTranslation:
 
   private def response(r: ResponseDef): ResponseDefinitionBuilder =
     val rb = WM.aResponse().withStatus(r.status)
-    r.headers.foreach((k, v) => rb.withHeader(k, v))
+    r.headers.entries.foreach((k, vs) => rb.withHeader(k, vs*)) // one header line per value (#162)
     r.body match
       case Body.Empty     => ()
       case Body.Text(v)   => rb.withBody(v)
@@ -98,7 +98,7 @@ private[wiremock] object WireMockTranslation:
     rb
 
   /** A [[RecordedRequest]] from a WireMock logged request. */
-  def recorded(method: String, url: String, headers: Map[String, String], body: Option[String]): RecordedRequest =
+  def recorded(method: String, url: String, headers: Headers, body: Option[String]): RecordedRequest =
     RecordedRequest(parseMethod(method), url, headers, body)
 
   private def parseMethod(name: String): Method = name.toUpperCase match

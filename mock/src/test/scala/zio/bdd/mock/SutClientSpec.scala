@@ -26,7 +26,7 @@ object SutClientSpec extends ZIOSpecDefault:
     def correlatedSpace(id: String): MockSpace =
       MockSpace(
         s"http://localhost:$port",
-        req => req.copy(headers = req.headers + ("x-correlation-id" -> id)),
+        req => req.copy(headers = req.headers.add("x-correlation-id", id)),
         SpaceId(id)
       )
 
@@ -179,9 +179,9 @@ object SutClientSpec extends ZIOSpecDefault:
             down <- client.send(Method.Get, "/down")
           yield assertTrue(
             ok.status == 200,
-            ok.body == "hello",                            // request body sent + response body decoded
-            ok.headers.get("x-served-by").contains("dep"), // header normalised to lower-case
-            down.status == 503                             // non-2xx surfaced as a SutResponse, not a failure
+            ok.body == "hello",                              // request body sent + response body decoded
+            ok.headers.first("x-served-by").contains("dep"), // header normalised to lower-case
+            down.status == 503                               // non-2xx surfaced as a SutResponse, not a failure
           )
         }
       }

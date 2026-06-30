@@ -279,7 +279,7 @@ object WireMockControlSpec extends ZIOSpecDefault:
           a       <- die(control.provision(pingSource)).map(_.head)
           _       <- SutClient.make(a).send(Method.Get, "/ping").orDie // records the space's traceparent
           recv    <- die(control.received(a))
-          tp       = recv.head.headers("traceparent")                  // 00-<traceId>-<span>-01
+          tp       = recv.head.headers.first("traceparent").get        // 00-<traceId>-<span>-01
           traceId  = tp.split("-")(1)
           // same trace-id, a span-id the space never injected
           varied <- rawGet(a.baseUri + "/ping", Some("traceparent" -> s"00-$traceId-ffffffffffffffff-01")).orDie

@@ -61,6 +61,48 @@ object SpaceId:
   extension (id: SpaceId) def value: String = id
 
 /**
+ * HTTP headers with multi-value support (#162). Keys are canonicalised to
+ * lower-case so cross-adapter assertions are well-defined — WireMock
+ * lower-cases recorded keys, Rift preserves them, and this normalises both.
+ * Values keep their insertion order per key.
+ */
+opaque type Headers = Map[String, List[String]]
+object Headers:
+  val empty: Headers = Map.empty
+
+  /** One value per key — the common case (`Headers("Accept" -> "json")`). */
+  def apply(pairs: (String, String)*): Headers =
+    pairs.foldLeft(empty)((h, kv) => h.add(kv._1, kv._2))
+
+  /**
+   * Several values per key (`Headers.multi("Set-Cookie" -> List("a", "b"))`).
+   */
+  def multi(entries: (String, List[String])*): Headers =
+    entries.foldLeft(empty)((h, kv) => kv._2.foldLeft(h)((acc, v) => acc.add(kv._1, v)))
+
+  /** Lift a single-valued map (keys canonicalised). */
+  def fromSingle(m: Map[String, String]): Headers =
+    m.foldLeft(empty)((h, kv) => h.add(kv._1, kv._2))
+
+  extension (h: Headers)
+    /**
+     * Append `value` under `key` (key lower-cased), preserving existing values.
+     */
+    def add(key: String, value: String): Headers =
+      val k = key.toLowerCase
+      h.updated(k, h.getOrElse(k, Nil) :+ value)
+    def values(key: String): List[String]  = h.getOrElse(key.toLowerCase, Nil)
+    def first(key: String): Option[String] = values(key).headOption
+    def contains(key: String): Boolean     = h.contains(key.toLowerCase)
+    def keys: Set[String]                  = h.keySet
+    def isEmpty: Boolean                   = h.isEmpty
+    def nonEmpty: Boolean                  = h.nonEmpty
+
+    /** The underlying multimap (lower-cased keys, ordered values). */
+    def toMultiMap: Map[String, List[String]] = h
+    def entries: List[(String, List[String])] = h.toList
+
+/**
  * Portable HTTP request the SUT issues. [[MockSpace.inject]] decorates it (e.g.
  * rewriting the base URI or adding a correlation header) so a mock space can be
  * reached under share-nothing isolation. SUT-side wiring lands in #117.
@@ -68,7 +110,7 @@ object SpaceId:
 final case class HttpRequest(
   method: Method,
   uri: String,
-  headers: Map[String, String] = Map.empty,
+  headers: Headers = Headers.empty,
   body: Option[String] = None
 )
 
@@ -78,7 +120,7 @@ final case class HttpRequest(
 final case class RecordedRequest(
   method: Method,
   uri: String,
-  headers: Map[String, String] = Map.empty,
+  headers: Headers = Headers.empty,
   body: Option[String] = None
 )
 
@@ -97,7 +139,7 @@ final case class RequestMatch(
 /** The response a matched rule serves. */
 final case class ResponseDef(
   status: Int = 200,
-  headers: Map[String, String] = Map.empty,
+  headers: Headers = Headers.empty,
   body: Body = Body.Empty,
   delay: Option[Duration] = None
 )

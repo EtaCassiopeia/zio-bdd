@@ -221,7 +221,7 @@ private[rift] final case class RiftMockControl(
       _        <- registerStubs(port, flowId, tagged).onError(_ => deleteSpace(port, flowId).ignore)
       rulesRef <- Ref.make(tagged)
       _        <- correlated.update(_.updated(id, CorrSpace(port, flowId, corr.header, rulesRef)))
-    yield MockSpace(endpoint.baseUriFor(port), req => req.copy(headers = req.headers + (corr.header -> flowId)), id)
+    yield MockSpace(endpoint.baseUriFor(port), req => req.copy(headers = req.headers.add(corr.header, flowId)), id)
 
   // Create the one shared imposter on first Correlated provision (race-safe).
   private def ensureSharedImposter(corr: Correlation): IO[MockError, Int] =

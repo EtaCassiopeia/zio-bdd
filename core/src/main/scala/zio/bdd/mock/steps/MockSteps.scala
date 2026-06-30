@@ -13,7 +13,7 @@ import scala.jdk.CollectionConverters.*
  * The last response from sending a request through a mock space — staged per
  * scenario so the response-assertion steps can read it.
  */
-final case class MockResponse(status: Int, body: String, headers: Map[String, String])
+final case class MockResponse(status: Int, body: String, headers: Headers)
 
 /**
  * Mixin providing ready-made Gherkin steps for the portable mocking SPI,
@@ -81,7 +81,7 @@ trait MockSteps[R, S] { self: ZIOSteps[R & MockControl, S] =>
 
   Then("the space response header " / string / " is " / string) { (name: String, expected: String) =>
     stagedResponse.flatMap { r =>
-      r.headers.get(name.toLowerCase) match
+      r.headers.first(name) match
         case Some(actual) => Assertions.assertEquals(actual, expected, s"response header '$name' mismatch")
         case None =>
           ZIO.fail(
@@ -162,20 +162,17 @@ trait MockSteps[R, S] { self: ZIOSteps[R & MockControl, S] =>
     methodOf(method).flatMap { m =>
       val injected = space.inject(HttpRequest(m, space.baseUri + path))
       ZIO.attemptBlocking {
-        val builder = injected.headers.foldLeft(JHttpRequest.newBuilder(URI.create(injected.uri))) { case (b, (k, v)) =>
-          b.header(k, v)
+        val builder = injected.headers.entries.foldLeft(JHttpRequest.newBuilder(URI.create(injected.uri))) {
+          case (b, (k, vs)) => vs.foldLeft(b)((bb, v) => bb.header(k, v))
         }
         val publisher = injected.body match
           case Some(body) => JHttpRequest.BodyPublishers.ofString(body)
           case None       => JHttpRequest.BodyPublishers.noBody()
         val request  = builder.method(injected.method.toString.toUpperCase, publisher).build()
         val response = HttpClient.newHttpClient().send(request, JHttpResponse.BodyHandlers.ofString())
-        val headers = response
-          .headers()
-          .map()
-          .asScala
-          .collect { case (k, vs) if !vs.isEmpty => k.toLowerCase -> vs.asScala.mkString(", ") }
-          .toMap
+        val headers = response.headers().map().asScala.foldLeft(Headers.empty) { case (h, (k, vs)) =>
+          vs.asScala.foldLeft(h)((acc, v) => acc.add(k, v))
+        }
         MockResponse(response.statusCode, response.body, headers)
       }
     }

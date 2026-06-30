@@ -105,7 +105,7 @@ object MockStepsSpec extends ZIOSpecDefault:
                     RecordedRequest(
                       methodOf(exchange.getRequestMethod),
                       path,
-                      Map.empty,
+                      Headers.empty,
                       Option(body).filter(_.nonEmpty)
                     )
                   )

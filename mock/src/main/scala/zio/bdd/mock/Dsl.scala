@@ -97,8 +97,9 @@ object dsl:
     def base64(value: String): ResponseDef = r.copy(body = Body.Base64(value))
     def withBody(b: Body): ResponseDef     = r.copy(body = b)
     def withStatus(code: Int): ResponseDef = r.copy(status = code)
+    // Appends, so calling it twice for one key emits a multi-value response header (#162).
     def withHeader(name: String, value: String): ResponseDef =
-      r.copy(headers = r.headers.updated(name, value))
+      r.copy(headers = r.headers.add(name, value))
     def withLatency(d: Duration): ResponseDef = r.copy(delay = Some(d))
 
   // --- rule + spec assembly -------------------------------------------------
