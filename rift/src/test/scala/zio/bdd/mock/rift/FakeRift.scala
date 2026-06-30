@@ -24,7 +24,10 @@ final case class FakeRift(
   requestMatches: Ref[Chunk[String]],
   filtered: Ref[String],
   views: Ref[Map[Int, String]],
-  failProvision: Ref[Boolean]
+  failProvision: Ref[Boolean],
+  scenarioPuts: Ref[Chunk[String]],
+  scenarioGets: Ref[Chunk[String]],
+  scenariosView: Ref[String]
 ):
   /**
    * Preset the `GET /imposters/:port` view (e.g. to inject recorded requests).
@@ -35,6 +38,11 @@ final case class FakeRift(
    * Preset the body returned by `GET /imposters/:port/requests?match=…` (#201).
    */
   def setFiltered(json: String): UIO[Unit] = filtered.set(json)
+
+  /**
+   * Preset the body returned by `GET /imposters/:port/scenarios` (rift#190).
+   */
+  def setScenarios(json: String): UIO[Unit] = scenariosView.set(json)
 
   val routes: Routes[Any, Response] =
     Routes(
@@ -88,6 +96,16 @@ final case class FakeRift(
       Method.DELETE / "imposters" / int("port") / "stubs" / int("index") -> handler {
         (port: Int, index: Int, _: Request) =>
           stubCalls.update(_ :+ s"DELETE $port/$index").as(Response.ok)
+      },
+      // Scenario state set (rift#190): PUT /imposters/:port/scenarios/:name/state
+      Method.PUT / "imposters" / int("port") / "scenarios" / string("name") / "state" -> handler {
+        (port: Int, name: String, req: Request) =>
+          req.body.asString.orDie.flatMap(b => scenarioPuts.update(_ :+ s"$port/$name $b")).as(Response.ok)
+      },
+      // Scenario list + state (rift#190): GET /imposters/:port/scenarios[?flowId=]
+      Method.GET / "imposters" / int("port") / "scenarios" -> handler { (port: Int, req: Request) =>
+        val flow = req.url.queryParams.queryParam("flowId").getOrElse("")
+        (scenarioGets.update(_ :+ s"$port?$flow") *> scenariosView.get).map(v => Response(body = Body.fromString(v)))
       }
     )
 
@@ -106,7 +124,10 @@ object FakeRift:
       fl <- Ref.make("[]")
       e  <- Ref.make(Map.empty[Int, String])
       f  <- Ref.make(false)
-    yield FakeRift(a, b, c, d, ss, sd, rm, fl, e, f)
+      sp <- Ref.make(Chunk.empty[String])
+      sg <- Ref.make(Chunk.empty[String])
+      sv <- Ref.make("""{"flowId":"","scenarios":[]}""")
+    yield FakeRift(a, b, c, d, ss, sd, rm, fl, e, f, sp, sg, sv)
 
   def portOf(body: String): Option[Int] =
     import zio.json.*

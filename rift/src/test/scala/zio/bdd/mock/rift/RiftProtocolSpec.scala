@@ -21,13 +21,44 @@ object RiftProtocolSpec extends ZIOSpecDefault:
   )
 
   def spec = suite("RiftProtocol (canonical <-> Mountebank)")(
-    test("imposter carries port, http protocol, recordRequests, and one stub per rule") {
+    test("statefulStub carries the scenario FSM fields; stay omits newScenarioState (#131)") {
+      val invRule = (path: String, body: String) =>
+        MockRule(RequestMatch(path = PathMatch.Exact(path)), ResponseDef(status = 200, body = Body.Text(body)))
+      val advance = RiftProtocol.statefulStub(
+        "invoice",
+        ScenarioState("Started"),
+        Some(ScenarioState("Paid")),
+        invRule("/inv", "created")
+      )
+      val stay = RiftProtocol.statefulStub("invoice", ScenarioState("Paid"), None, invRule("/inv", "paid"))
+      assertTrue(
+        advance / "scenarioName" == Json.Str("invoice"),
+        advance / "requiredScenarioState" == Json.Str("Started"),
+        advance / "newScenarioState" == Json.Str("Paid"),
+        arr(advance / "responses").head / "is" / "body" == Json.Str("created"),
+        stay / "requiredScenarioState" == Json.Str("Paid"),
+        stay / "newScenarioState" == Json.Null // stay -> no transition field
+      )
+    },
+    test("parseScenarioState reads a scenario's state from the admin view; None when absent (#131)") {
+      val view =
+        """{"flowId":"4545","scenarios":[{"name":"invoice","state":"Paid"},{"name":"other","state":"Started"}]}"""
+      assertTrue(
+        RiftProtocol.parseScenarioState(view, "invoice") == Right(Some("Paid")),
+        RiftProtocol.parseScenarioState(view, "missing") == Right(None),
+        RiftProtocol.parseScenarioState("not json", "invoice").isLeft // malformed -> Left (becomes CommunicationError)
+      )
+    },
+    test("imposter carries port, http protocol, recordRequests, a stub per rule, and a flow store (#131)") {
       val j = RiftProtocol.imposter(4545, "ping", List(pingRule))
       assertTrue(
         j / "port" == Json.Num(4545),
         j / "protocol" == Json.Str("http"),
         j / "recordRequests" == Json.Bool(true),
-        arr(j / "stubs").size == 1
+        arr(j / "stubs").size == 1,
+        // an in-memory flow store keyed by port, so scenario stubs added later actually advance
+        j / "_rift" / "flowState" / "backend" == Json.Str("inmemory"),
+        j / "_rift" / "flowState" / "mountebankStateMapping" / "flowIdSource" == Json.Str("imposter_port")
       )
     },
     test("an exact path + method rule becomes equals predicates and an `is` response") {

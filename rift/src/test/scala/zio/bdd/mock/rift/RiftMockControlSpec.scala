@@ -2,6 +2,7 @@ package zio.bdd.mock.rift
 
 import zio.*
 import zio.bdd.mock.*
+import zio.bdd.mock.dsl.*
 import zio.http.Client
 import zio.test.*
 
@@ -193,15 +194,17 @@ object RiftMockControlSpec extends ZIOSpecDefault:
         )
       }
     },
-    test("advertises Faults; its accessor succeeds and the other accessors fail fast") {
+    test("advertises Faults + StatefulScenarios + StateInspection; the other accessors fail fast (#131)") {
       withAdapter { (control, _) =>
         for
-          faultsE    <- control.faults.either
-          scenariosE <- control.scenarios.either
+          faultsE <- control.faults.either
+          scenE   <- control.scenarios.either
+          siE     <- control.stateInspection.either
         yield assertTrue(
-          control.capabilities == Set(Capability.Faults),
+          control.capabilities == Set(Capability.Faults, Capability.StatefulScenarios, Capability.StateInspection),
           faultsE.isRight,
-          scenariosE == Left(Unsupported(Capability.StatefulScenarios, "rift"))
+          scenE.isRight,
+          siE.isRight
         )
       }
     },
@@ -242,6 +245,57 @@ object RiftMockControlSpec extends ZIOSpecDefault:
           faultIx >= 0,
           rulePast,
           rmE.isRight
+        )
+      }
+    },
+    // The container proves end-to-end stateful behaviour (RiftContainerSpec / cap-stateful under RIFT_IT);
+    // here we assert the adapter issues the right scenario admin calls — no Docker, no wrong-path regression.
+    test("define/setState/currentState/reset issue the right Rift scenario admin calls (#131)") {
+      val invoice =
+        scenario("invoice")
+          .when("Started", get("/inv"))
+          .respond(ok.text("created"))
+          .goTo("Paid")
+          .when("Paid", get("/inv"))
+          .respond(ok.text("paid"))
+          .stay
+          .build
+      withAdapter { (control, fake) =>
+        for
+          space <-
+            control.provision(MockSource.Dsl(MockSpec(Nil))).orDieWith(e => RuntimeException(e.toString)).map(_.head)
+          port    = portOf(space.baseUri)
+          ss     <- control.scenarios.orDieWith(u => RuntimeException(u.toString))
+          si     <- control.stateInspection.orDieWith(u => RuntimeException(u.toString))
+          _      <- ss.define(space, invoice).orDieWith(e => RuntimeException(e.toString))
+          stubs  <- fake.stubCalls.get
+          _      <- fake.setScenarios(s"""{"flowId":"$port","scenarios":[{"name":"invoice","state":"Paid"}]}""")
+          cur    <- si.currentState(space, "invoice").orDieWith(e => RuntimeException(e.toString))
+          gets   <- fake.scenarioGets.get
+          _      <- si.setState(space, "invoice", ScenarioState("Paid")).orDieWith(e => RuntimeException(e.toString))
+          _      <- ss.reset(space, "invoice").orDieWith(e => RuntimeException(e.toString))
+          puts   <- fake.scenarioPuts.get
+          ghost  <- si.currentState(space, "ghost").either
+          ghostR <- ss.reset(space, "ghost").either
+        yield assertTrue(
+          // define posts both FSM edges with the scenario fields; rule 0 is at index 0 (first-match order)
+          stubs.count(_.contains("\"scenarioName\":\"invoice\"")) == 2,
+          stubs.exists(s => s.contains("\"index\":0") && s.contains("\"requiredScenarioState\":\"Started\"")),
+          stubs.exists(_.contains("\"newScenarioState\":\"Paid\"")), // the advance edge
+          // define pins the initial state via PUT /scenarios/invoice/state {state, flowId=port}
+          puts.exists(p =>
+            p.startsWith(s"$port/invoice ") && p.contains("\"state\":\"Started\"") && p.contains(
+              s"\"flowId\":\"$port\""
+            )
+          ),
+          // currentState reads GET /scenarios?flowId=port and parses the view
+          cur == ScenarioState("Paid"),
+          gets.exists(_ == s"$port?$port"),
+          // setState PUTs the new state
+          puts.exists(_.contains("\"state\":\"Paid\"")),
+          // an unknown scenario fails with InvalidDefinition (Ref guard + absent in the view)
+          ghost == Left(MockError.InvalidDefinition(s"no scenario 'ghost' on space ${space.id.value}")),
+          ghostR == Left(MockError.InvalidDefinition(s"no scenario 'ghost' on space ${space.id.value}"))
         )
       }
     },

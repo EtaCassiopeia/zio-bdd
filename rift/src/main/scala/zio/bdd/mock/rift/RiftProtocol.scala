@@ -22,6 +22,24 @@ private[rift] object RiftProtocol:
   private val unmatched404: Json = Json.Obj("statusCode" -> Json.Num(404))
 
   /**
+   * The `_rift.flowState` extension that backs declarative scenarios
+   * (rift#190). Rift only attaches a real (in-memory) flow store at
+   * imposter-creation when either scenario stubs are present OR this config is
+   * — otherwise stubs added later via `POST /stubs` hit a NoOp store and their
+   * state never advances. We provision empty then add scenario stubs in
+   * `define`, so every imposter carries it. `flowIdSource` partitions state:
+   * the imposter port (PerInstance) or a correlation header (Correlated).
+   */
+  private def flowStateExt(flowIdSource: String): (String, Json) =
+    "_rift" -> Json.Obj(
+      "flowState" -> Json.Obj(
+        "backend"                -> Json.Str("inmemory"),
+        "ttlSeconds"             -> Json.Num(300),
+        "mountebankStateMapping" -> Json.Obj("flowIdSource" -> Json.Str(flowIdSource))
+      )
+    )
+
+  /**
    * A full `POST /imposters` body for one space: one imposter, recording on.
    */
   def imposter(port: Int, name: String, rules: List[MockRule]): Json =
@@ -31,7 +49,8 @@ private[rift] object RiftProtocol:
       "name"            -> Json.Str(name),
       "recordRequests"  -> Json.Bool(true),
       "defaultResponse" -> unmatched404,
-      "stubs"           -> Json.Arr(rules.map(stub)*)
+      "stubs"           -> Json.Arr(rules.map(stub)*),
+      flowStateExt("imposter_port")
     )
 
   /**
@@ -51,13 +70,7 @@ private[rift] object RiftProtocol:
       "recordRequests"  -> Json.Bool(true),
       "defaultResponse" -> unmatched404,
       "stubs"           -> Json.Arr(),
-      "_rift" -> Json.Obj(
-        "flowState" -> Json.Obj(
-          "backend"                -> Json.Str("inmemory"),
-          "ttlSeconds"             -> Json.Num(300),
-          "mountebankStateMapping" -> Json.Obj("flowIdSource" -> Json.Str(s"header:$correlationHeader"))
-        )
-      )
+      flowStateExt(s"header:$correlationHeader")
     )
 
   /** A single Mountebank stub: predicates (ANDed) + one response. */
@@ -65,6 +78,31 @@ private[rift] object RiftProtocol:
     val idField = rule.id.map(id => "id" -> Json.Str(id.value)).toList
     Json.Obj(
       (idField ++ List(
+        "predicates" -> Json.Arr(predicates(rule.`match`)*),
+        "responses"  -> Json.Arr(response(rule.respond))
+      ))*
+    )
+
+  /**
+   * One edge of a scenario FSM (#131): a normal stub carrying Rift's
+   * declarative scenario fields (rift#190). The stub is eligible only while
+   * `(flow_id, scenarioName)` state equals `whenState`, and serves `respond`
+   * then transitions to `thenState` (`None` = stay — `newScenarioState` is
+   * omitted). State is partitioned by `flow_id`, so two spaces sharing a
+   * scenario name keep independent state natively (no name-namespacing needed).
+   */
+  def statefulStub(
+    scenarioName: String,
+    whenState: ScenarioState,
+    thenState: Option[ScenarioState],
+    rule: MockRule
+  ): Json =
+    val transition = thenState.map(s => "newScenarioState" -> Json.Str(s.value)).toList
+    Json.Obj(
+      (List(
+        "scenarioName"          -> Json.Str(scenarioName),
+        "requiredScenarioState" -> Json.Str(whenState.value)
+      ) ++ transition ++ List(
         "predicates" -> Json.Arr(predicates(rule.`match`)*),
         "responses"  -> Json.Arr(response(rule.respond))
       ))*
@@ -117,6 +155,13 @@ private[rift] object RiftProtocol:
    */
   def addFaultStubBody(index: Int, m: RequestMatch, fault: FaultKind, id: RuleId): Json =
     Json.Obj("index" -> Json.Num(index), "stub" -> faultStub(m, fault, id))
+
+  /**
+   * The `{index, stub}` body for a pre-built stub JSON (e.g. a
+   * [[statefulStub]]).
+   */
+  def addStubBodyOf(index: Int, stub: Json): Json =
+    Json.Obj("index" -> Json.Num(index), "stub" -> stub)
 
   def predicates(m: RequestMatch): List[Json] =
     val methodPred = m.method.map(meth => equalsObj("method" -> Json.Str(methodName(meth))))
@@ -181,6 +226,17 @@ private[rift] object RiftProtocol:
     body: Option[String] = None
   ) derives JsonDecoder
   private case class WireView(requests: Option[List[WireReq]] = None) derives JsonDecoder
+
+  private case class WireScenario(name: String, state: String) derives JsonDecoder
+  private case class WireScenarios(scenarios: List[WireScenario] = Nil) derives JsonDecoder
+
+  /**
+   * The current state of scenario `name` from a `GET
+   * /imposters/:port/scenarios` body (rift#190); `None` if the scenario isn't
+   * declared on the imposter.
+   */
+  def parseScenarioState(viewJson: String, name: String): Either[String, Option[String]] =
+    viewJson.fromJson[WireScenarios].map(_.scenarios.find(_.name == name).map(_.state))
 
   /** Parse the `requests[]` of a `GET /imposters/:port` view. */
   def parseRecorded(viewJson: String): Either[String, List[RecordedRequest]] =
