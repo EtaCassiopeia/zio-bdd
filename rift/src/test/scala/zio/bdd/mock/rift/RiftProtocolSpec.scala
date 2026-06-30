@@ -138,6 +138,60 @@ object RiftProtocolSpec extends ZIOSpecDefault:
         arr(stub / "responses").head / "_rift" / "fault" / "tcp" == Json.Str("CONNECTION_RESET_BY_PEER")
       )
     },
+    test("scriptStub carries predicates and a _rift.script response (engine + code) (#132)") {
+      val m = RequestMatch(path = PathMatch.Exact("/s"))
+      val stub =
+        RiftProtocol.scriptStub(m, Script(ScriptEngine.Rhai, "fn should_inject(r,f){#{inject:false}}"), RuleId("s1"))
+      val resp = arr(stub / "responses").head
+      assertTrue(
+        stub / "id" == Json.Str("s1"),
+        arr(stub / "predicates").exists(p => p / "equals" / "path" == Json.Str("/s")),
+        resp / "_rift" / "script" / "engine" == Json.Str("rhai"),
+        resp / "_rift" / "script" / "code" == Json.Str("fn should_inject(r,f){#{inject:false}}")
+      )
+    },
+    test("script engine tokens map to rhai/lua/javascript (#132)") {
+      assertTrue(
+        RiftProtocol.scriptEngineName(ScriptEngine.Rhai) == "rhai",
+        RiftProtocol.scriptEngineName(ScriptEngine.Lua) == "lua",
+        RiftProtocol.scriptEngineName(ScriptEngine.JavaScript) == "javascript"
+      )
+    },
+    test(
+      "proxyStub emits a proxy response to the upstream in proxyOnce mode with method+path predicate generators (#132)"
+    ) {
+      val stub = RiftProtocol.proxyStub(RequestMatch(path = PathMatch.Exact("/p")), "http://up:8080", RuleId("p1"))
+      val resp = arr(stub / "responses").head
+      val gen  = arr(resp / "proxy" / "predicateGenerators").head
+      assertTrue(
+        stub / "id" == Json.Str("p1"),
+        resp / "proxy" / "to" == Json.Str("http://up:8080"),
+        resp / "proxy" / "mode" == Json.Str("proxyOnce"),
+        gen / "matches" / "method" == Json.Bool(true),
+        gen / "matches" / "path" == Json.Bool(true)
+      )
+    },
+    test("templateStub emits an `is` body plus a _behaviors.copy per capture; path/body sources map (#132)") {
+      val template = ResponseTemplate(
+        body = "Hello ${NAME} ${WHO}",
+        captures = List(
+          TemplateCapture("${NAME}", TemplateSource.Path, "[^/]+$"),
+          TemplateCapture("${WHO}", TemplateSource.Body, "\\w+")
+        )
+      )
+      val stub     = RiftProtocol.templateStub(RequestMatch(path = PathMatch.Exact("/greet")), template, RuleId("t1"))
+      val resp     = arr(stub / "responses").head
+      val copies   = arr(resp / "_behaviors" / "copy")
+      val pathCopy = copies.find(_ / "into" == Json.Str("${NAME}")).getOrElse(Json.Null)
+      val bodyCopy = copies.find(_ / "into" == Json.Str("${WHO}")).getOrElse(Json.Null)
+      assertTrue(
+        resp / "is" / "body" == Json.Str("Hello ${NAME} ${WHO}"),
+        pathCopy / "from" == Json.Str("path"),
+        pathCopy / "using" / "method" == Json.Str("regex"),
+        pathCopy / "using" / "selector" == Json.Str("[^/]+$"),
+        bodyCopy / "from" == Json.Str("body") // TemplateSource.Body -> "body"
+      )
+    },
     test("PathMatch.Any emits no path predicate") {
       val stub = RiftProtocol.stub(pingRule.copy(`match` = RequestMatch(method = Some(Method.Post))))
       val keys =

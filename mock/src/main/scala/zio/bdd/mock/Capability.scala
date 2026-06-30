@@ -69,13 +69,39 @@ trait StateInspection:
   def setState(space: MockSpace, name: String, to: ScenarioState): IO[MockError, Unit]
 
 /** Backend scripting hooks. Capability: [[Capability.Scripting]]. */
-trait Scripting
+trait Scripting:
+  /**
+   * Install `script` to compute the response for requests matching `m`,
+   * returning the rule id. The script runs on the backend's engine and may read
+   * the matched request; a backend without a scripting engine does not
+   * advertise this capability.
+   */
+  def inject(space: MockSpace, m: RequestMatch, script: Script): IO[MockError, RuleId]
 
 /**
  * Proxy/record passthrough to a real upstream. Capability:
  * [[Capability.ProxyRecord]].
  */
-trait ProxyRecord
+trait ProxyRecord:
+  /**
+   * Proxy requests matching `m` to `upstream`, recording the first response and
+   * replaying it on subsequent calls — so the SUT keeps getting the recorded
+   * response even after the upstream goes down. Returns the rule id.
+   *
+   * The recording is owned by the backend, not this port: once a request has
+   * recorded a response, removing the proxy rule via [[MockControl.removeRule]]
+   * is unreliable (the backend may have inserted a recorded stub this port does
+   * not track), and on a `Correlated` space any rule mutation rebuilds the
+   * space and discards the recording. Inject a proxy on its own space and don't
+   * mutate rules after the first recorded call.
+   */
+  def proxy(space: MockSpace, m: RequestMatch, upstream: String): IO[MockError, RuleId]
 
 /** Response templating. Capability: [[Capability.Templating]]. */
-trait Templating
+trait Templating:
+  /**
+   * Install a templated response for requests matching `m`: each capture in
+   * `template` pulls a value from the request and substitutes its token into
+   * the response body. Returns the rule id.
+   */
+  def inject(space: MockSpace, m: RequestMatch, template: ResponseTemplate): IO[MockError, RuleId]

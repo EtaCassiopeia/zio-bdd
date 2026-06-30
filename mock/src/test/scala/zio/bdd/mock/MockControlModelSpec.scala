@@ -34,9 +34,9 @@ object MockControlModelSpec extends ZIOSpecDefault:
     def faults: IO[Unsupported, Faults]                   = cap(Capability.Faults)(anyFault)
     def scenarios: IO[Unsupported, StatefulScenarios]     = cap(Capability.StatefulScenarios)(StubCaps.scenarios)
     def stateInspection: IO[Unsupported, StateInspection] = cap(Capability.StateInspection)(StubCaps.stateInspection)
-    def scripting: IO[Unsupported, Scripting]             = cap(Capability.Scripting)(new Scripting {})
-    def proxyRecord: IO[Unsupported, ProxyRecord]         = cap(Capability.ProxyRecord)(new ProxyRecord {})
-    def templating: IO[Unsupported, Templating]           = cap(Capability.Templating)(new Templating {})
+    def scripting: IO[Unsupported, Scripting]             = cap(Capability.Scripting)(StubCaps.scripting)
+    def proxyRecord: IO[Unsupported, ProxyRecord]         = cap(Capability.ProxyRecord)(StubCaps.proxyRecord)
+    def templating: IO[Unsupported, Templating]           = cap(Capability.Templating)(StubCaps.templating)
 
   def spec = suite("MockControl port + canonical model")(
     test("the total port is implementable by a stub adapter") {

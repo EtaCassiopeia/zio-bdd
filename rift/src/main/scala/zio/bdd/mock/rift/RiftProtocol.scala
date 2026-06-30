@@ -163,6 +163,88 @@ private[rift] object RiftProtocol:
   def addStubBodyOf(index: Int, stub: Json): Json =
     Json.Obj("index" -> Json.Num(index), "stub" -> stub)
 
+  // ===== Optional capabilities (#132): script / proxy / templating ===============
+
+  /** A Mountebank stub for `m` carrying a single pre-built response object. */
+  private def capStub(m: RequestMatch, id: RuleId, response: Json): Json =
+    Json.Obj(
+      "id"         -> Json.Str(id.value),
+      "predicates" -> Json.Arr(predicates(m)*),
+      "responses"  -> Json.Arr(response)
+    )
+
+  /** The Rift script-engine token. */
+  def scriptEngineName(engine: ScriptEngine): String = engine match
+    case ScriptEngine.Rhai       => "rhai"
+    case ScriptEngine.Lua        => "lua"
+    case ScriptEngine.JavaScript => "javascript"
+
+  /**
+   * A stub whose response is computed by `script` via the `_rift.script`
+   * extension — the script's `should_inject` decides the response.
+   */
+  def scriptStub(m: RequestMatch, script: Script, id: RuleId): Json =
+    capStub(
+      m,
+      id,
+      Json.Obj(
+        "_rift" -> Json.Obj(
+          "script" -> Json.Obj(
+            "engine" -> Json.Str(scriptEngineName(script.engine)),
+            "code"   -> Json.Str(script.code)
+          )
+        )
+      )
+    )
+
+  /**
+   * A stub that proxies `m` to `upstream` in `proxyOnce` mode — Rift records
+   * the first upstream response as a new stub and replays it thereafter (so it
+   * keeps serving when the upstream is down). `predicateGenerators` keys the
+   * recorded stub on the request method + path, so a later identical request
+   * matches the recording instead of re-proxying.
+   */
+  def proxyStub(m: RequestMatch, upstream: String, id: RuleId): Json =
+    capStub(
+      m,
+      id,
+      Json.Obj(
+        "proxy" -> Json.Obj(
+          "to"   -> Json.Str(upstream),
+          "mode" -> Json.Str("proxyOnce"),
+          "predicateGenerators" -> Json.Arr(
+            Json.Obj("matches" -> Json.Obj("method" -> Json.Bool(true), "path" -> Json.Bool(true)))
+          )
+        )
+      )
+    )
+
+  private def templateSourceName(source: TemplateSource): String = source match
+    case TemplateSource.Path => "path"
+    case TemplateSource.Body => "body"
+
+  /**
+   * A templated `is` response: the body carries each capture's `token` literal,
+   * and a Mountebank `copy` behavior per capture substitutes it with the value
+   * extracted (by regex) from the request.
+   */
+  def templateStub(m: RequestMatch, template: ResponseTemplate, id: RuleId): Json =
+    val copies = template.captures.map(c =>
+      Json.Obj(
+        "from"  -> Json.Str(templateSourceName(c.source)),
+        "into"  -> Json.Str(c.token),
+        "using" -> Json.Obj("method" -> Json.Str("regex"), "selector" -> Json.Str(c.regex))
+      )
+    )
+    capStub(
+      m,
+      id,
+      Json.Obj(
+        "is"         -> Json.Obj("statusCode" -> Json.Num(template.status), "body" -> Json.Str(template.body)),
+        "_behaviors" -> Json.Obj("copy" -> Json.Arr(copies*))
+      )
+    )
+
   def predicates(m: RequestMatch): List[Json] =
     val methodPred = m.method.map(meth => equalsObj("method" -> Json.Str(methodName(meth))))
     val pathPred = m.path match
