@@ -11,18 +11,17 @@ import zio.bdd.mock.*
  * adapter.
  *
  * Scope is deliberately the cross-adapter intersection both Rift and WireMock
- * translate faithfully. Two model limits keep multi-value-header scenarios out:
- * `ResponseDef.headers`/`RecordedRequest.headers` are `Map[String, String]`
- * (single value per key), and WireMock records only the first value +
- * lowercases recorded header keys — so scenarios use single-value headers and
- * never assert a recorded request-header by exact case. (Multi-value headers
- * need a model change — a follow-up, not #125.)
+ * translate faithfully. Multi-value headers are in scope as of #162 (the
+ * `Headers` model): the `multiValueHeaders` group asserts both values survive a
+ * response and a recorded request on both adapters. Recorded header keys are
+ * canonicalised to lower-case (see [[Headers]]), so assertions key by the
+ * lower-case name rather than the exact sent case.
  */
 object CoreConformanceScenarios:
 
   // lazy: the group vals below initialise after this declaration in source order.
   lazy val all: List[ConformanceScenario] =
-    matching ++ responseFidelity ++ precedence ++ lifecycle ++ verification
+    matching ++ responseFidelity ++ precedence ++ lifecycle ++ verification ++ multiValueHeaders
 
   // ---- helpers ------------------------------------------------------------------
 
@@ -120,7 +119,7 @@ object CoreConformanceScenarios:
                  text(200, "ok")
                )
              )
-        hit  <- SutClient.make(s).send(Method.Get, "/h", headers = Map("X-Tok" -> "bearer-123"))
+        hit  <- SutClient.make(s).send(Method.Get, "/h", headers = Headers("X-Tok" -> "bearer-123"))
         miss <- SutClient.make(s).send(Method.Get, "/h")
         _    <- ensure(hit.status == 200 && miss.status == 404, s"header: hit=${hit.status} miss=${miss.status}")
       yield ()
@@ -188,9 +187,9 @@ object CoreConformanceScenarios:
       )
       for
         s         <- space(control, MockRule(rm, text(200, "ok")))
-        hit       <- SutClient.make(s).send(Method.Post, "/c", headers = Map("X-K" -> "v"), body = Some("zzz"))
+        hit       <- SutClient.make(s).send(Method.Post, "/c", headers = Headers("X-K" -> "v"), body = Some("zzz"))
         noHeader  <- SutClient.make(s).send(Method.Post, "/c", body = Some("zzz"))
-        wrongBody <- SutClient.make(s).send(Method.Post, "/c", headers = Map("X-K" -> "v"), body = Some("qqq"))
+        wrongBody <- SutClient.make(s).send(Method.Post, "/c", headers = Headers("X-K" -> "v"), body = Some("qqq"))
         _ <- ensure(
                hit.status == 200 && noHeader.status == 404 && wrongBody.status == 404,
                s"composite: hit=${hit.status} noHeader=${noHeader.status} wrongBody=${wrongBody.status}"
@@ -207,8 +206,8 @@ object CoreConformanceScenarios:
               text(200, "ok")
             )
           )
-        hit  <- SutClient.make(s).send(Method.Get, "/hm", headers = Map("X-Tok" -> "Bearer abc"))
-        miss <- SutClient.make(s).send(Method.Get, "/hm", headers = Map("X-Tok" -> "Basic abc"))
+        hit  <- SutClient.make(s).send(Method.Get, "/hm", headers = Headers("X-Tok" -> "Bearer abc"))
+        miss <- SutClient.make(s).send(Method.Get, "/hm", headers = Headers("X-Tok" -> "Basic abc"))
         _    <- ensure(hit.status == 200 && miss.status == 404, s"header-matches: hit=${hit.status} miss=${miss.status}")
       yield ()
     },
@@ -259,12 +258,12 @@ object CoreConformanceScenarios:
                control,
                MockRule(
                  RequestMatch(path = PathMatch.Exact("/resp")),
-                 ResponseDef(status = 418, headers = Map("X-R" -> "rv"), body = Body.Text("teapot"))
+                 ResponseDef(status = 418, headers = Headers("X-R" -> "rv"), body = Body.Text("teapot"))
                )
              )
         r <- SutClient.make(s).send(Method.Get, "/resp")
         _ <- ensure(
-               r.status == 418 && r.body == "teapot" && r.headers.get("x-r").contains("rv"),
+               r.status == 418 && r.body == "teapot" && r.headers.first("x-r").contains("rv"),
                s"resp: status=${r.status} body=${r.body} headers=${r.headers}"
              )
       yield ()
@@ -435,6 +434,34 @@ object CoreConformanceScenarios:
                reqs.exists(r => r.method == Method.Get && r.uri == "/e") && !reqs.exists(_.uri == "/never"),
                s"set: reqs=$reqs"
              )
+      yield ()
+    }
+  )
+
+  // ---- multi-value headers: both values survive in each direction (#162) --------
+
+  private val multiValueHeaders = List(
+    scen("response-fidelity: a multi-value response header reaches the SUT intact (#162)") { control =>
+      for
+        s <- space(
+               control,
+               MockRule(
+                 RequestMatch(path = PathMatch.Exact("/mvh")),
+                 ResponseDef(status = 200, headers = Headers.multi("X-Multi" -> List("a", "b")), body = Body.Text("ok"))
+               )
+             )
+        r <- SutClient.make(s).send(Method.Get, "/mvh")
+        vs = r.headers.values("x-multi")
+        _ <- ensure(r.status == 200 && vs.size == 2 && vs.toSet == Set("a", "b"), s"multi response: ${r.headers}")
+      yield ()
+    },
+    scen("record-fidelity: a multi-value request header is surfaced by received (#162)") { control =>
+      for
+        s    <- space(control, rule("/mvr", "ok"))
+        _    <- SutClient.make(s).send(Method.Get, "/mvr", headers = Headers.multi("X-Multi" -> List("a", "b")))
+        reqs <- control.received(s).mapError(asT)
+        vs    = reqs.find(_.uri == "/mvr").map(_.headers.values("x-multi")).getOrElse(Nil)
+        _    <- ensure(vs.size == 2 && vs.toSet == Set("a", "b"), s"multi recorded: ${reqs.map(_.headers)}")
       yield ()
     }
   )

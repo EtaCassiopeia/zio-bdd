@@ -7,7 +7,7 @@ import java.net.http.{HttpClient, HttpRequest as JHttpRequest, HttpResponse as J
 import scala.jdk.CollectionConverters.*
 
 /** A response the SUT received from its (mocked) dependency. */
-final case class SutResponse(status: Int, body: String, headers: Map[String, String])
+final case class SutResponse(status: Int, body: String, headers: Headers)
 
 /**
  * The SUT's dependency client, bound to one [[MockSpace]]. It derives the
@@ -37,7 +37,7 @@ trait SutClient:
   def send(
     method: Method,
     path: String,
-    headers: Map[String, String] = Map.empty,
+    headers: Headers = Headers.empty,
     body: Option[String] = None
   ): IO[Throwable, SutResponse]
 
@@ -53,24 +53,23 @@ object SutClient:
     def send(
       method: Method,
       path: String,
-      headers: Map[String, String],
+      headers: Headers,
       body: Option[String]
     ): IO[Throwable, SutResponse] =
       val injected = space.inject(HttpRequest(method, space.baseUri + path, headers, body))
       ZIO.attemptBlocking {
-        val builder = injected.headers.foldLeft(JHttpRequest.newBuilder(URI.create(injected.uri))) { case (b, (k, v)) =>
-          b.header(k, v)
+        // One builder.header(k, v) per value so multi-value request headers go on the wire intact.
+        val builder = injected.headers.entries.foldLeft(JHttpRequest.newBuilder(URI.create(injected.uri))) {
+          case (b, (k, vs)) => vs.foldLeft(b)((bb, v) => bb.header(k, v))
         }
         val publisher = injected.body match
           case Some(content) => JHttpRequest.BodyPublishers.ofString(content)
           case None          => JHttpRequest.BodyPublishers.noBody()
         val request  = builder.method(injected.method.toString.toUpperCase, publisher).build()
         val response = HttpClient.newHttpClient().send(request, JHttpResponse.BodyHandlers.ofString())
-        val respHeaders = response
-          .headers()
-          .map()
-          .asScala
-          .collect { case (k, vs) if !vs.isEmpty => k.toLowerCase -> vs.asScala.mkString(", ") }
-          .toMap
+        // Preserve every value per response header key (Headers canonicalises keys to lower-case).
+        val respHeaders = response.headers().map().asScala.foldLeft(Headers.empty) { case (h, (k, vs)) =>
+          vs.asScala.foldLeft(h)((acc, v) => acc.add(k, v))
+        }
         SutResponse(response.statusCode, response.body, respHeaders)
       }

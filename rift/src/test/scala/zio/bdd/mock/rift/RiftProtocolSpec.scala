@@ -17,7 +17,7 @@ object RiftProtocolSpec extends ZIOSpecDefault:
 
   private val pingRule = MockRule(
     `match` = RequestMatch(method = Some(Method.Get), path = PathMatch.Exact("/ping")),
-    respond = ResponseDef(status = 200, headers = Map("Content-Type" -> "text/plain"), body = Body.Text("pong"))
+    respond = ResponseDef(status = 200, headers = Headers("Content-Type" -> "text/plain"), body = Body.Text("pong"))
   )
 
   def spec = suite("RiftProtocol (canonical <-> Mountebank)")(
@@ -41,7 +41,23 @@ object RiftProtocolSpec extends ZIOSpecDefault:
         pathPred.exists(_ / "equals" / "path" == Json.Str("/ping")),
         isResp / "statusCode" == Json.Num(200),
         isResp / "body" == Json.Str("pong"),
-        isResp / "headers" / "Content-Type" == Json.Str("text/plain")
+        isResp / "headers" / "content-type" == Json.Str("text/plain")
+      )
+    },
+    test("a multi-value response header emits a JSON array; a single value stays a bare string (rift#241)") {
+      val multi  = RiftProtocol.response(ResponseDef(status = 200, headers = Headers.multi("X-Multi" -> List("a", "b"))))
+      val single = RiftProtocol.response(ResponseDef(status = 200, headers = Headers("X-One" -> "v")))
+      assertTrue(
+        arr(multi / "is" / "headers" / "x-multi") == List(Json.Str("a"), Json.Str("b")),
+        single / "is" / "headers" / "x-one" == Json.Str("v") // single value is not wrapped in an array
+      )
+    },
+    test("parseRecorded decodes a multi-value header array into multiple values; keys lower-case (rift#241)") {
+      val view   = """{"requests":[{"method":"GET","path":"/p","headers":{"X-Multi":["a","b"],"Host":"x"}}]}"""
+      val parsed = RiftProtocol.parseRecorded(view)
+      assertTrue(
+        parsed.map(_.head.headers.values("x-multi")) == Right(List("a", "b")),
+        parsed.map(_.head.headers.first("host")) == Right(Some("x")) // mixed-case wire key surfaces lower-cased
       )
     },
     test("a regex path becomes a matches predicate; a template path is anchored regex") {
@@ -76,8 +92,8 @@ object RiftProtocolSpec extends ZIOSpecDefault:
       assertTrue(
         parsed == Right(
           List(
-            RecordedRequest(Method.Get, "/ping", Map("Host" -> "x"), None),
-            RecordedRequest(Method.Post, "/echo", Map.empty, Some("hi"))
+            RecordedRequest(Method.Get, "/ping", Headers("Host" -> "x"), None),
+            RecordedRequest(Method.Post, "/echo", Headers.empty, Some("hi"))
           )
         )
       )
