@@ -53,8 +53,9 @@ private[rift] final case class RiftMockControl(
 
   import RiftMockControl.{CorrSpace, Imposter}
 
-  def backendName: String           = "rift"
-  def capabilities: Set[Capability] = Set(Capability.Faults)
+  def backendName: String = "rift"
+  def capabilities: Set[Capability] =
+    Set(Capability.Faults, Capability.StatefulScenarios, Capability.StateInspection)
 
   override def isolation: Isolation = mode match
     case RiftMode.Correlated(_) => Isolation.Correlated
@@ -103,8 +104,8 @@ private[rift] final case class RiftMockControl(
     dispatch(space)(corrReceived)(piReceived)
 
   def faults: IO[Unsupported, Faults]                   = ZIO.succeed(riftFaults)
-  def scenarios: IO[Unsupported, StatefulScenarios]     = unsupported(Capability.StatefulScenarios)
-  def stateInspection: IO[Unsupported, StateInspection] = unsupported(Capability.StateInspection)
+  def scenarios: IO[Unsupported, StatefulScenarios]     = ZIO.succeed(statefulScenarios)
+  def stateInspection: IO[Unsupported, StateInspection] = ZIO.succeed(stateInspector)
   def scripting: IO[Unsupported, Scripting]             = unsupported(Capability.Scripting)
   def proxyRecord: IO[Unsupported, ProxyRecord]         = unsupported(Capability.ProxyRecord)
   def templating: IO[Unsupported, Templating]           = unsupported(Capability.Templating)
@@ -142,6 +143,110 @@ private[rift] final case class RiftMockControl(
       _      <- cs.faults.set(next)
     yield ruleId
 
+  // ===== StatefulScenarios + StateInspection (#131) ===============================
+  // Rift partitions scenario state by (flow_id, scenarioName), so locality is native
+  // (no name-namespacing). flow_id = the imposter port (PerInstance) / the X-Mock-Space
+  // value (Correlated), so admin calls pass that flowId to address the same slice the
+  // requests resolve to. `define` installs the stubs in declaration order (Rift is
+  // first-match-by-order) and pins the initial state.
+  //
+  // Limitations (untested edges — the conformance gate is PerInstance, one define per
+  // space): re-`define` of an existing name APPENDS stubs rather than replacing the
+  // prior ones (provision a fresh space per scenario, as the conformance does); and on
+  // a Correlated space a plain-rule mutation (addRule/removeRule/replaceRules) rebuilds
+  // the space — dropping its scenario stubs too. Don't mix rule mutation with scenarios
+  // on one Correlated space.
+
+  private val statefulScenarios: StatefulScenarios = new StatefulScenarios:
+    def define(space: MockSpace, scenarioDef: ScenarioDef): IO[MockError, Unit] =
+      dispatch(space)(cs => corrDefine(cs, scenarioDef))(imp => piDefine(imp, scenarioDef))
+    def reset(space: MockSpace, name: String): IO[MockError, Unit] =
+      dispatch(space)(cs => corrReset(cs, space.id, name))(imp => piReset(imp, space.id, name))
+
+  private val stateInspector: StateInspection = new StateInspection:
+    def currentState(space: MockSpace, name: String): IO[MockError, ScenarioState] =
+      dispatch(space)(cs => readState(cs.port, cs.flowId, space.id, name))(imp =>
+        readState(imp.port, imp.port.toString, space.id, name)
+      )
+    def setState(space: MockSpace, name: String, to: ScenarioState): IO[MockError, Unit] =
+      dispatch(space)(cs => guardDefined(cs.scenarios, space.id, name)(putState(cs.port, cs.flowId, name, to)))(imp =>
+        guardDefined(imp.scenarios, space.id, name)(putState(imp.port, imp.port.toString, name, to))
+      )
+
+  private def piDefine(imp: Imposter, sc: ScenarioDef): IO[MockError, Unit] =
+    for
+      _ <- ZIO.foreachDiscard(sc.rules) { r =>
+             for
+               ruleId <- freshId
+               index  <- imp.stubs.get.map(_.size)
+               u      <- url(s"/imposters/${imp.port}/stubs")
+               stub    = RiftProtocol.statefulStub(sc.name, r.whenState, r.thenState, MockRule(r.request, r.respond))
+               res    <- send(jsonRequest(HttpMethod.POST, u, RiftProtocol.addStubBodyOf(index, stub)))
+               _      <- expectSuccess(s"add scenario stub to imposter ${imp.port}", res)
+               _      <- imp.stubs.update(_ :+ ruleId)
+             yield ()
+           }
+      // Always pin the initial state: it puts the scenario in its declared start
+      // state (so a re-define resets it) and registers an explicit FlowStore entry.
+      _ <- putState(imp.port, imp.port.toString, sc.name, sc.initial)
+      _ <- imp.scenarios.update(_ + (sc.name -> sc.initial))
+    yield ()
+
+  private def corrDefine(cs: CorrSpace, sc: ScenarioDef): IO[MockError, Unit] =
+    for
+      _ <- ZIO.foreachDiscard(sc.rules) { r =>
+             val stub = RiftProtocol.statefulStub(sc.name, r.whenState, r.thenState, MockRule(r.request, r.respond))
+             for
+               u   <- url(s"/imposters/${cs.port}/spaces/${enc(cs.flowId)}/stubs")
+               res <- send(jsonRequest(HttpMethod.POST, u, stub))
+               _   <- expectSuccess(s"add scenario stub to space ${cs.flowId}", res)
+             yield ()
+           }
+      _ <- putState(cs.port, cs.flowId, sc.name, sc.initial)
+      _ <- cs.scenarios.update(_ + (sc.name -> sc.initial))
+    yield ()
+
+  private def piReset(imp: Imposter, spaceId: SpaceId, name: String): IO[MockError, Unit] =
+    imp.scenarios.get.flatMap(_.get(name) match
+      case Some(initial) => putState(imp.port, imp.port.toString, name, initial)
+      case None          => ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${spaceId.value}"))
+    )
+
+  private def corrReset(cs: CorrSpace, spaceId: SpaceId, name: String): IO[MockError, Unit] =
+    cs.scenarios.get.flatMap(_.get(name) match
+      case Some(initial) => putState(cs.port, cs.flowId, name, initial)
+      case None          => ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${spaceId.value}"))
+    )
+
+  private def guardDefined(
+    scenarios: Ref[Map[String, ScenarioState]],
+    spaceId: SpaceId,
+    name: String
+  )(action: => IO[MockError, Unit]): IO[MockError, Unit] =
+    scenarios.get.flatMap(s =>
+      if s.contains(name) then action
+      else ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${spaceId.value}"))
+    )
+
+  private def putState(port: Int, flowId: String, name: String, state: ScenarioState): IO[MockError, Unit] =
+    for
+      u   <- url(s"/imposters/$port/scenarios/${enc(name)}/state")
+      body = Json.Obj("state" -> Json.Str(state.value), "flowId" -> Json.Str(flowId))
+      res <- send(jsonRequest(HttpMethod.PUT, u, body))
+      _   <- expectSuccess(s"set scenario '$name' state on imposter $port", res)
+    yield ()
+
+  private def readState(port: Int, flowId: String, spaceId: SpaceId, name: String): IO[MockError, ScenarioState] =
+    for
+      u    <- url(s"/imposters/$port/scenarios?flowId=${enc(flowId)}")
+      res  <- send(Request(method = HttpMethod.GET, url = u))
+      body <- expectSuccess(s"read scenarios for imposter $port", res)
+      st   <- ZIO.fromEither(RiftProtocol.parseScenarioState(body, name)).mapError(MockError.CommunicationError(_))
+      out <- st match
+               case Some(s) => ZIO.succeed(ScenarioState(s))
+               case None    => ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${spaceId.value}"))
+    yield out
+
   // ---------------------------------------------------------------------------
 
   private def serveSpace(src: NormalizedSource): IO[MockError, MockSpace] =
@@ -174,9 +279,10 @@ private[rift] final case class RiftMockControl(
           _            <- postImposter(port, body)
           ruleIds      <- freshIds(count)
           stubs        <- Ref.make(ruleIds)
+          scen         <- Ref.make(Map.empty[String, ScenarioState])
           id            = SpaceId(s"${src.name}-$port")
           space         = MockSpace(endpoint.baseUriFor(port), identity, id)
-          _            <- spaces.update(_.updated(id, Imposter(port, stubs)))
+          _            <- spaces.update(_.updated(id, Imposter(port, stubs, scen)))
         yield space
       stand.onError(_ => endpoint.releasePort(port))
     }
@@ -254,7 +360,8 @@ private[rift] final case class RiftMockControl(
       _         <- registerStubs(port, flowId, tagged).onError(_ => deleteSpace(port, flowId).ignore)
       rulesRef  <- Ref.make(tagged)
       faultsRef <- Ref.make(Vector.empty[(RuleId, RequestMatch, FaultKind)])
-      _         <- correlated.update(_.updated(id, CorrSpace(port, flowId, corr.header, rulesRef, faultsRef)))
+      scen      <- Ref.make(Map.empty[String, ScenarioState])
+      _         <- correlated.update(_.updated(id, CorrSpace(port, flowId, corr.header, rulesRef, faultsRef, scen)))
     yield MockSpace(endpoint.baseUriFor(port), req => req.copy(headers = req.headers.add(corr.header, flowId)), id)
 
   // Create the one shared imposter on first Correlated provision (race-safe).
@@ -448,13 +555,18 @@ private[rift] final case class RiftMockControl(
     else ZIO.fail(MockError.CommunicationError(s"$action: Rift returned HTTP $code: ${body.take(1000)}"))
 
 private[rift] object RiftMockControl:
-  final case class Imposter(port: Int, stubs: Ref[Vector[RuleId]])
+  final case class Imposter(
+    port: Int,
+    stubs: Ref[Vector[RuleId]],
+    scenarios: Ref[Map[String, ScenarioState]] // defined scenario name -> initial state (for reset)
+  )
   final case class CorrSpace(
     port: Int,
     flowId: String,
     header: String,
     rules: Ref[Vector[(RuleId, MockRule)]],
-    faults: Ref[Vector[(RuleId, RequestMatch, FaultKind)]]
+    faults: Ref[Vector[(RuleId, RequestMatch, FaultKind)]],
+    scenarios: Ref[Map[String, ScenarioState]]
   )
 
   /**

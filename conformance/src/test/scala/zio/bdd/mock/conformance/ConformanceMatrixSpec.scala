@@ -97,7 +97,7 @@ object ConformanceMatrixSpec extends ZIOSpecDefault:
     MockBackendUnderTest(
       "rift",
       (Client.default ++ Provisioning.live) >>> Rift.managed().mapError(asT),
-      Set(Capability.Faults),
+      Set(Capability.Faults, Capability.StatefulScenarios, Capability.StateInspection),
       Isolation.PerInstance,
       available = riftEnabled
     )
@@ -161,21 +161,24 @@ object ConformanceMatrixSpec extends ZIOSpecDefault:
         else riftCells.size == all.size && riftCells.forall(_ == Outcome.Skip)
       )
     } @@ TestAspect.withLiveClock,
-    test("cap-stateful feature PASSes on WireMock; SKIPs on Rift until #131 (#130)") {
+    test("cap-stateful feature PASSes on both adapters (WireMock + Rift under RIFT_IT) (#131)") {
       val all = CapStatefulScenarios.all
       for
         matrix   <- ConformanceHarness.run(List(wiremock, rift), all)
         _        <- ZIO.logInfo(s"cap-stateful matrix:\n${matrix.render}")
         wmFails   = nonPass(matrix, "wiremock", all)
         _        <- ZIO.logInfo(s"wiremock non-pass: $wmFails").when(wmFails.nonEmpty)
+        riftFails = nonPass(matrix, "rift", all)
+        _        <- ZIO.logInfo(s"rift non-pass: $riftFails").when(riftEnabled && riftFails.nonEmpty)
         riftCells = all.flatMap(s => matrix.cell(s.name, "rift").map(_.outcome))
       yield assertTrue(
         all.nonEmpty,
-        // WireMock now advertises StatefulScenarios + StateInspection -> the whole feature runs and passes.
         all.forall(s => matrix.cell(s.name, "wiremock").exists(_.outcome == Outcome.Pass)),
         matrix.cells.count(_.backend == "wiremock") == all.size,
-        // Rift doesn't advertise these until #131 -> every Rift cell is a justified SKIP.
-        riftCells.size == all.size && riftCells.forall(_ == Outcome.Skip)
+        // Rift advertises StatefulScenarios + StateInspection now (#131): every scenario PASSes in CI
+        // (RIFT_IT); else the whole column is SKIPPED-unavailable (local, no Docker).
+        if riftEnabled then all.forall(s => matrix.cell(s.name, "rift").exists(_.outcome == Outcome.Pass))
+        else riftCells.size == all.size && riftCells.forall(_ == Outcome.Skip)
       )
     } @@ TestAspect.withLiveClock,
     test("fault-injection features pass on every adapter (#128)") {
