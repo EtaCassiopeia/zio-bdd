@@ -20,17 +20,47 @@ private[wiremock] object WireMockTranslation:
    * `None` (the space owns its server outright).
    */
   def stub(id: SpaceId, rule: MockRule, priority: Priority, correlation: Option[Correlation]): StubMapping =
-    val base = methodAndUrl(rule.`match`)
-    rule.`match`.headers.foreach((k, v) => base.withHeader(k, valuePattern(v)))
-    rule.`match`.query.foreach((k, v) => base.withQueryParam(k, valuePattern(v)))
-    rule.`match`.body.foreach(b => base.withRequestBody(bodyPattern(b)))
-    correlation.foreach(c => base.withHeader(c.header, c.matcher(id)))
+    val base = requestBuilder(id, rule.`match`, correlation)
     base.atPriority(priority match
       case Priority.Overlay => 1
       case Priority.Base    => 10
     )
     base.withId(UUID.randomUUID())
     base.willReturn(response(rule.respond)).build()
+
+  /**
+   * Build one edge of a scenario FSM (#130): the request matcher (plus the
+   * space's correlation header) gated by
+   * `inScenario(name).whenScenarioStateIs`, optionally transitioning via
+   * `willSetStateTo` (`None` = stay). `priority` comes from the rule's
+   * declaration index so that among rules eligible in the same state, the
+   * first-declared wins — WireMock otherwise breaks an equal-priority tie in
+   * favour of the most-recently-added stub.
+   */
+  def statefulStub(
+    id: SpaceId,
+    scenarioName: String,
+    whenState: ScenarioState,
+    thenState: Option[ScenarioState],
+    rule: MockRule,
+    priority: Int,
+    correlation: Option[Correlation]
+  ): StubMapping =
+    val sc = requestBuilder(id, rule.`match`, correlation)
+      .inScenario(scenarioName)
+      .whenScenarioStateIs(whenState.value)
+    thenState.foreach(s => sc.willSetStateTo(s.value))
+    sc.atPriority(priority)
+    sc.withId(UUID.randomUUID())
+    sc.willReturn(response(rule.respond)).build()
+
+  private def requestBuilder(id: SpaceId, m: RequestMatch, correlation: Option[Correlation]): MappingBuilder =
+    val base = methodAndUrl(m)
+    m.headers.foreach((k, v) => base.withHeader(k, valuePattern(v)))
+    m.query.foreach((k, v) => base.withQueryParam(k, valuePattern(v)))
+    m.body.foreach(b => base.withRequestBody(bodyPattern(b)))
+    correlation.foreach(c => base.withHeader(c.header, c.matcher(id)))
+    base
 
   private def methodAndUrl(m: RequestMatch): MappingBuilder =
     val url = m.path match

@@ -85,7 +85,12 @@ object ConformanceMatrixSpec extends ZIOSpecDefault:
   // ---- the backends ----
 
   private val wiremock =
-    MockBackendUnderTest("wiremock", Provisioning.live >>> WireMock.correlated(), Set.empty, Isolation.Correlated)
+    MockBackendUnderTest(
+      "wiremock",
+      Provisioning.live >>> WireMock.correlated(),
+      Set(Capability.StatefulScenarios, Capability.StateInspection),
+      Isolation.Correlated
+    )
 
   private val riftEnabled = sys.env.contains("RIFT_IT")
   private val rift =
@@ -156,17 +161,21 @@ object ConformanceMatrixSpec extends ZIOSpecDefault:
         else riftCells.size == all.size && riftCells.forall(_ == Outcome.Skip)
       )
     } @@ TestAspect.withLiveClock,
-    test("cap-stateful feature is defined + capability-gated; SKIPs until an adapter advertises it (#129)") {
+    test("cap-stateful feature PASSes on WireMock; SKIPs on Rift until #131 (#130)") {
       val all = CapStatefulScenarios.all
       for
-        matrix <- ConformanceHarness.run(List(wiremock, rift), all)
-        _      <- ZIO.logInfo(s"cap-stateful matrix:\n${matrix.render}")
+        matrix   <- ConformanceHarness.run(List(wiremock, rift), all)
+        _        <- ZIO.logInfo(s"cap-stateful matrix:\n${matrix.render}")
+        wmFails   = nonPass(matrix, "wiremock", all)
+        _        <- ZIO.logInfo(s"wiremock non-pass: $wmFails").when(wmFails.nonEmpty)
+        riftCells = all.flatMap(s => matrix.cell(s.name, "rift").map(_.outcome))
       yield assertTrue(
         all.nonEmpty,
-        // Neither adapter advertises StatefulScenarios/StateInspection yet -> every cell is a justified SKIP.
-        all.forall(s => matrix.cell(s.name, "wiremock").exists(_.outcome == Outcome.Skip)),
-        all.forall(s => matrix.cell(s.name, "rift").exists(_.outcome == Outcome.Skip)),
-        matrix.conformant(wiremock) // justified (capability-gated) skips keep the column conformant
+        // WireMock now advertises StatefulScenarios + StateInspection -> the whole feature runs and passes.
+        all.forall(s => matrix.cell(s.name, "wiremock").exists(_.outcome == Outcome.Pass)),
+        matrix.cells.count(_.backend == "wiremock") == all.size,
+        // Rift doesn't advertise these until #131 -> every Rift cell is a justified SKIP.
+        riftCells.size == all.size && riftCells.forall(_ == Outcome.Skip)
       )
     } @@ TestAspect.withLiveClock
   )
