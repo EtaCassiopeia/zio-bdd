@@ -2,6 +2,109 @@ import xerial.sbt.Sonatype.sonatypeCentralHost
 import StepGeneratorPlugin.autoImport.*
 import com.typesafe.tools.mima.core.*
 
+import java.net.URI
+import java.nio.file.{Files => JFiles, StandardCopyOption}
+import java.security.MessageDigest
+
+// ---- librift_ffi native library provisioning (embedded adapter, #133) ----------------------
+// The embedded MockControl drives Rift in-process over the librift_ffi C-ABI via Panama FFM. The
+// prebuilt shared library ships per host triple on the Rift GitHub release; the conformance gate
+// downloads + checksum-verifies it and passes its path to the forked test JVM. FFM is a preview
+// API on JDK 21, so those JVMs run with --enable-preview + --enable-native-access.
+
+lazy val riftFfiVersion  = settingKey[String]("Rift release tag providing librift_ffi")
+lazy val riftFfiLibFile  = settingKey[File]("Host-resolved path to the downloaded librift_ffi library")
+lazy val downloadRiftFfi = taskKey[File]("Download + checksum-verify librift_ffi for the host triple")
+
+// The release asset name for the host OS/arch, or None on an unsupported platform (tests then skip).
+// NOTE: build.sbt is compiled with the Scala 2.12 dialect — keep this block 2.12-compatible.
+def riftFfiAssetName: Option[String] = {
+  val os = sys.props.getOrElse("os.name", "").toLowerCase
+  val arch = sys.props.getOrElse("os.arch", "").toLowerCase match {
+    case "aarch64" | "arm64" => "aarch64"
+    case "x86_64" | "amd64"  => "x86_64"
+    case other               => other
+  }
+  if (os.contains("mac") || os.contains("darwin")) Some(s"librift_ffi-darwin-$arch.dylib")
+  else if (os.contains("linux")) Some(s"librift_ffi-linux-$arch.so")
+  else if (os.contains("win")) Some(s"librift_ffi-windows-$arch.dll")
+  else None
+}
+
+def riftFfiLibTarget(targetDir: File): File =
+  targetDir / "native" / riftFfiAssetName.getOrElse("librift_ffi.unavailable")
+
+def sha256Hex(f: File): String =
+  MessageDigest.getInstance("SHA-256").digest(JFiles.readAllBytes(f.toPath)).map(b => f"$b%02x").mkString
+
+// The major version of the JDK building this project. FFM (java.lang.foreign) is a preview API on
+// 21 and absent before it, so the embedded adapter's sources only compile on 21+. The project's
+// baseline is JDK 11 (CI + release), so embedded is gated: on a < 21 JDK its source dirs are not
+// added (the rift/conformance modules build clean and the published artifacts stay JDK-11), and a
+// dedicated JDK-21 CI job exercises it.
+def jdkMajor: Int = {
+  val raw = sys.props.getOrElse("java.specification.version", "11")
+  val s   = if (raw.startsWith("1.")) raw.substring(2) else raw
+  s.takeWhile(_.isDigit) match { case "" => 11; case d => d.toInt }
+}
+lazy val ffmEnabled: Boolean = jdkMajor >= 21
+
+// JDK-21-only: provisions the native library + the embedded source dirs + the preview/native-access
+// test JVM. Empty on a < 21 JDK, so the embedded adapter is simply absent from that build.
+lazy val embeddedNativeSettings: Seq[Def.Setting[_]] =
+  if (!ffmEnabled) Nil
+  else
+    Seq(
+      Compile / unmanagedSourceDirectories += (Compile / sourceDirectory).value / "jdk21",
+      Test / unmanagedSourceDirectories += (Test / sourceDirectory).value / "jdk21",
+      // The Java FFM bridge uses the preview Foreign Function & Memory API.
+      javacOptions ++= Seq("--release", "21", "--enable-preview"),
+      riftFfiVersion := "0.7.0",
+      riftFfiLibFile := riftFfiLibTarget(target.value),
+  downloadRiftFfi := {
+    val log     = streams.value.log
+    val version = riftFfiVersion.value
+    val out     = riftFfiLibFile.value
+    riftFfiAssetName match {
+      case None =>
+        log.warn(
+          s"[rift-ffi] no prebuilt librift_ffi for ${sys.props.getOrElse("os.name", "?")}/" +
+            s"${sys.props.getOrElse("os.arch", "?")}; embedded tests will be skipped"
+        )
+        out
+      case Some(asset) =>
+        val base = s"https://github.com/EtaCassiopeia/rift/releases/download/v$version"
+        val expected = {
+          val in = URI.create(s"$base/$asset.sha256").toURL.openStream()
+          try new String(in.readAllBytes(), "UTF-8").trim.split("\\s+").head
+          finally in.close()
+        }
+        if (out.exists() && sha256Hex(out) == expected) {
+          log.info(s"[rift-ffi] using cached $asset")
+          out
+        } else {
+          JFiles.createDirectories(out.toPath.getParent)
+          log.info(s"[rift-ffi] downloading $asset (v$version) ...")
+          val in = URI.create(s"$base/$asset").toURL.openStream()
+          try JFiles.copy(in, out.toPath, StandardCopyOption.REPLACE_EXISTING)
+          finally in.close()
+          val got = sha256Hex(out)
+          if (got != expected) sys.error(s"[rift-ffi] checksum mismatch for $asset: got $got, expected $expected")
+          log.info(s"[rift-ffi] downloaded + verified $asset")
+          out
+        }
+    }
+  },
+  Test / fork := true,
+  Test / javaOptions ++= Seq(
+    "--enable-preview",
+    "--enable-native-access=ALL-UNNAMED",
+    s"-Drift.ffi.lib=${riftFfiLibFile.value.getAbsolutePath}"
+  ),
+  // Ensure the native library is present (and verified) before the forked test JVM starts.
+  (Test / test) := (Test / test).dependsOn(downloadRiftFfi).value
+)
+
 inThisBuild(
   List(
     organization := "io.github.etacassiopeia",
@@ -151,6 +254,10 @@ lazy val rift = (project in file("rift"))
       "com.dimafeng" %% "testcontainers-scala-core"  % "0.41.4"
     ),
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
+    // The embedded adapter (#133) lives in JDK-21-only source dirs (src/{main,test}/jdk21) and is
+    // compiled with --release 21 --enable-preview — added by embeddedNativeSettings only on a 21+ JDK,
+    // so on the JDK-11 baseline the rift module builds (and publishes) without the FFM bridge.
+    embeddedNativeSettings,
     // Not yet published as a 1.x artifact — no binary-compat baseline to check against.
     mimaPreviousArtifacts := Set.empty
   )
@@ -180,6 +287,9 @@ lazy val conformance = (project in file("conformance"))
     name := "zio-bdd-conformance",
     libraryDependencies ++= commonDependencies,
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
+    // The conformance matrix runs the portable scenarios against MockControl.embedded (#133), which
+    // drives Rift in-process via FFM — so the forked test JVM needs the native library + preview.
+    embeddedNativeSettings,
     publish / skip        := true, // a test harness, not a published artifact
     mimaPreviousArtifacts := Set.empty
   )
