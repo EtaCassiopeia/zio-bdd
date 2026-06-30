@@ -2,6 +2,7 @@ package zio.bdd.mock.rift
 
 import zio.*
 import zio.bdd.mock.*
+import zio.bdd.mock.dsl.*
 import zio.http.Client
 import zio.test.*
 
@@ -193,12 +194,188 @@ object RiftMockControlSpec extends ZIOSpecDefault:
         )
       }
     },
-    test("advertises no capabilities; every accessor fails fast") {
+    test("advertises all six capabilities and every accessor succeeds (#132)") {
       withAdapter { (control, _) =>
-        for faultsE <- control.faults.either
+        for
+          faultsE   <- control.faults.either
+          scenE     <- control.scenarios.either
+          siE       <- control.stateInspection.either
+          scriptE   <- control.scripting.either
+          proxyE    <- control.proxyRecord.either
+          templateE <- control.templating.either
         yield assertTrue(
-          control.capabilities.isEmpty,
-          faultsE == Left(Unsupported(Capability.Faults, "rift"))
+          control.capabilities == Capability.values.toSet,
+          faultsE.isRight,
+          scenE.isRight,
+          siE.isRight,
+          scriptE.isRight,
+          proxyE.isRight,
+          templateE.isRight
+        )
+      }
+    },
+    test("faults.inject posts a first-match stub carrying _rift.fault.tcp to the space's imposter") {
+      withAdapter { (control, fake) =>
+        for
+          space  <- control.provision(pingSource).orDieWith(e => new RuntimeException(e.toString)).map(_.head)
+          faults <- control.faults.orDieWith(u => new RuntimeException(u.toString))
+          ruleId <- faults
+                      .inject(space, RequestMatch(path = PathMatch.Exact("/boom")), FaultKind.ConnectionReset)
+                      .orDieWith(e => new RuntimeException(e.toString))
+          calls <- fake.stubCalls.get
+          post   = calls.find(c => c.startsWith(s"POST ${portOf(space.baseUri)} "))
+        yield assertTrue(
+          ruleId.value.nonEmpty,
+          post.exists(_.contains("\"index\":0")), // first-match — wins over a normal rule
+          post.exists(_.contains("CONNECTION_RESET_BY_PEER")),
+          post.exists(_.contains("/boom"))
+        )
+      }
+    },
+    test("scripting/proxyRecord/templating each post a first-match capability stub to the imposter (#132)") {
+      withAdapter { (control, fake) =>
+        def asT(e: Any): Throwable = new RuntimeException(e.toString)
+        for
+          space    <- control.provision(pingSource).orDieWith(asT).map(_.head)
+          script   <- control.scripting.orDieWith(asT)
+          proxy    <- control.proxyRecord.orDieWith(asT)
+          template <- control.templating.orDieWith(asT)
+          sid <- script
+                   .inject(space, RequestMatch(path = PathMatch.Exact("/s")), Script(ScriptEngine.Rhai, "code"))
+                   .orDieWith(asT)
+          pid <- proxy.proxy(space, RequestMatch(path = PathMatch.Exact("/p")), "http://up").orDieWith(asT)
+          tid <-
+            template
+              .inject(
+                space,
+                RequestMatch(path = PathMatch.Exact("/t")),
+                ResponseTemplate(body = "x${V}", captures = List(TemplateCapture("${V}", TemplateSource.Body, ".*")))
+              )
+              .orDieWith(asT)
+          calls <- fake.stubCalls.get
+          posts  = calls.filter(_.startsWith(s"POST ${portOf(space.baseUri)} "))
+          // the capability stubs are tracked in imp.stubs, so removeRule reaches them (not RuleNotFound)
+          rmS <- control.removeRule(space, sid).either
+          rmT <- control.removeRule(space, tid).either
+        yield assertTrue(
+          sid.value.nonEmpty && pid.value.nonEmpty && tid.value.nonEmpty,
+          posts.forall(_.contains("\"index\":0")), // all first-match
+          posts.exists(c => c.contains("_rift") && c.contains("script") && c.contains("rhai")),
+          posts.exists(c => c.contains("proxy") && c.contains("proxyOnce") && c.contains("http://up")),
+          posts.exists(c => c.contains("copy") && c.contains("${V}")),
+          rmS.isRight && rmT.isRight
+        )
+      }
+    },
+    test(
+      "Correlated scripting/proxy/templating each register a capability space stub ahead of the rules and are removable (#132)"
+    ) {
+      withCorrelated { (control, fake) =>
+        def asT(e: Any): Throwable = new RuntimeException(e.toString)
+        for
+          space    <- control.provision(pingSource).orDieWith(asT).map(_.head)
+          script   <- control.scripting.orDieWith(asT)
+          proxy    <- control.proxyRecord.orDieWith(asT)
+          template <- control.templating.orDieWith(asT)
+          sid <- script
+                   .inject(space, RequestMatch(path = PathMatch.Exact("/s")), Script(ScriptEngine.Rhai, "code"))
+                   .orDieWith(asT)
+          pid <- proxy.proxy(space, RequestMatch(path = PathMatch.Exact("/p")), "http://up").orDieWith(asT)
+          tid <-
+            template
+              .inject(
+                space,
+                RequestMatch(path = PathMatch.Exact("/t")),
+                ResponseTemplate(body = "x${V}", captures = List(TemplateCapture("${V}", TemplateSource.Body, ".*")))
+              )
+              .orDieWith(asT)
+          stubs   <- fake.spaceStubs.get // "$port/$flowId $body" per POST .../spaces/:flow/stubs
+          scriptIx = stubs.indexWhere(s => s.contains("script") && s.contains("rhai") && s.contains("/s"))
+          // a rebuild re-registers the space's /ping rule AFTER the capability stubs → they win first-match
+          rulePast = stubs.zipWithIndex.exists((s, i) => i > scriptIx && s.contains("/ping"))
+          rmS     <- control.removeRule(space, sid).either // tracked in cs.extras → removable, not RuleNotFound
+          rmP     <- control.removeRule(space, pid).either
+          rmT     <- control.removeRule(space, tid).either
+        yield assertTrue(
+          sid.value.nonEmpty && pid.value.nonEmpty && tid.value.nonEmpty,
+          scriptIx >= 0,
+          rulePast,
+          stubs.exists(s => s.contains("proxyOnce") && s.contains("/p")),
+          stubs.exists(s => s.contains("copy") && s.contains("/t")),
+          rmS.isRight && rmP.isRight && rmT.isRight
+        )
+      }
+    },
+    test("Correlated faults.inject registers a fault space stub ahead of the rules (first-match) and is removable") {
+      withCorrelated { (control, fake) =>
+        for
+          space  <- control.provision(pingSource).orDieWith(e => new RuntimeException(e.toString)).map(_.head)
+          faults <- control.faults.orDieWith(u => new RuntimeException(u.toString))
+          ruleId <- faults
+                      .inject(space, RequestMatch(path = PathMatch.Exact("/boom")), FaultKind.ConnectionReset)
+                      .orDieWith(e => new RuntimeException(e.toString))
+          stubs <- fake.spaceStubs.get // "$port/$flowId $body" per POST .../spaces/:flow/stubs
+          faultIx =
+            stubs.indexWhere(s => s.contains("_rift") && s.contains("CONNECTION_RESET_BY_PEER") && s.contains("/boom"))
+          // the rebuild re-registers the space's /ping rule AFTER the fault → fault wins first-match
+          rulePast = stubs.zipWithIndex.exists((s, i) => i > faultIx && s.contains("/ping"))
+          rmE     <- control.removeRule(space, ruleId).either // tracked in cs.faults → removable, not RuleNotFound
+        yield assertTrue(
+          ruleId.value.nonEmpty,
+          faultIx >= 0,
+          rulePast,
+          rmE.isRight
+        )
+      }
+    },
+    // The container proves end-to-end stateful behaviour (RiftContainerSpec / cap-stateful under RIFT_IT);
+    // here we assert the adapter issues the right scenario admin calls — no Docker, no wrong-path regression.
+    test("define/setState/currentState/reset issue the right Rift scenario admin calls (#131)") {
+      val invoice =
+        scenario("invoice")
+          .when("Started", get("/inv"))
+          .respond(ok.text("created"))
+          .goTo("Paid")
+          .when("Paid", get("/inv"))
+          .respond(ok.text("paid"))
+          .stay
+          .build
+      withAdapter { (control, fake) =>
+        for
+          space <-
+            control.provision(MockSource.Dsl(MockSpec(Nil))).orDieWith(e => RuntimeException(e.toString)).map(_.head)
+          port    = portOf(space.baseUri)
+          ss     <- control.scenarios.orDieWith(u => RuntimeException(u.toString))
+          si     <- control.stateInspection.orDieWith(u => RuntimeException(u.toString))
+          _      <- ss.define(space, invoice).orDieWith(e => RuntimeException(e.toString))
+          stubs  <- fake.stubCalls.get
+          _      <- fake.setScenarios(s"""{"flowId":"$port","scenarios":[{"name":"invoice","state":"Paid"}]}""")
+          cur    <- si.currentState(space, "invoice").orDieWith(e => RuntimeException(e.toString))
+          gets   <- fake.scenarioGets.get
+          _      <- si.setState(space, "invoice", ScenarioState("Paid")).orDieWith(e => RuntimeException(e.toString))
+          _      <- ss.reset(space, "invoice").orDieWith(e => RuntimeException(e.toString))
+          puts   <- fake.scenarioPuts.get
+          ghost  <- si.currentState(space, "ghost").either
+          ghostR <- ss.reset(space, "ghost").either
+        yield assertTrue(
+          // define posts both FSM edges with the scenario fields; rule 0 is at index 0 (first-match order)
+          stubs.count(_.contains("\"scenarioName\":\"invoice\"")) == 2,
+          stubs.exists(s => s.contains("\"index\":0") && s.contains("\"requiredScenarioState\":\"Started\"")),
+          stubs.exists(_.contains("\"newScenarioState\":\"Paid\"")), // the advance edge
+          // define pins the initial state via PUT /scenarios/invoice/state {state, flowId=port}
+          puts.exists(p =>
+            p.startsWith(s"$port/invoice ") && p.contains("\"state\":\"Started\"") && p.contains(
+              s"\"flowId\":\"$port\""
+            )
+          ),
+          // currentState reads GET /scenarios?flowId=port and parses the view
+          cur == ScenarioState("Paid"),
+          gets.exists(_ == s"$port?$port"),
+          // setState PUTs the new state
+          puts.exists(_.contains("\"state\":\"Paid\"")),
+          // an unknown scenario fails with InvalidDefinition (Ref guard + absent in the view)
+          ghost == Left(MockError.InvalidDefinition(s"no scenario 'ghost' on space ${space.id.value}")),
+          ghostR == Left(MockError.InvalidDefinition(s"no scenario 'ghost' on space ${space.id.value}"))
         )
       }
     },

@@ -2,6 +2,7 @@ package zio.bdd.mock.wiremock
 
 import zio.*
 import zio.bdd.mock.*
+import zio.bdd.mock.dsl.*
 import zio.test.*
 
 import java.net.{URI, http as jhttp}
@@ -46,7 +47,10 @@ object WireMockControlSpec extends ZIOSpecDefault:
   private val perInstance = PortAllocator.layer >>> Provisioning.layer >>> WireMock.perInstance
   private val traceparent = PortAllocator.layer >>> Provisioning.layer >>> WireMock.correlated(Correlation.traceparent)
 
-  private def die[A](z: IO[MockError, A]): UIO[A] = z.orDieWith(e => new RuntimeException(e.toString))
+  private def die[A](z: IO[MockError, A]): UIO[A]    = z.orDieWith(e => new RuntimeException(e.toString))
+  private def dieU[A](z: IO[Unsupported, A]): UIO[A] = z.orDieWith(u => new RuntimeException(u.toString))
+
+  private val emptySource = MockSource.Dsl(MockSpec(Nil))
 
   // Send straight to a base URI with no inject (and an optional raw header), to
   // model a SUT that did NOT carry the space tag.
@@ -144,6 +148,57 @@ object WireMockControlSpec extends ZIOSpecDefault:
           elapsed <- Clock.nanoTime.map(_ - start)
         yield assertTrue(resp.status == 200, elapsed >= 250.millis.toNanos) // ~300ms fixed delay
       } @@ TestAspect.withLiveClock,
+      test("advertises Faults but none of the optional Rift-only capabilities (#132); their accessors fail fast") {
+        for
+          control    <- ZIO.service[MockControl]
+          faultsE    <- control.faults.either
+          scriptingE <- control.scripting.either
+          proxyE     <- control.proxyRecord.either
+          templateE  <- control.templating.either
+        yield assertTrue(
+          control.capabilities.contains(Capability.Faults),
+          !control.capabilities.contains(Capability.Scripting),
+          !control.capabilities.contains(Capability.ProxyRecord),
+          !control.capabilities.contains(Capability.Templating),
+          faultsE.isRight,
+          scriptingE == Left(Unsupported(Capability.Scripting, "wiremock")),
+          proxyE == Left(Unsupported(Capability.ProxyRecord, "wiremock")),
+          templateE == Left(Unsupported(Capability.Templating, "wiremock"))
+        )
+      },
+      test("faults.inject ConnectionReset makes the SUT client observe a transport failure") {
+        for
+          control <- ZIO.service[MockControl]
+          a       <- die(control.provision(pingSource)).map(_.head)
+          faults  <- control.faults.orDieWith(u => new RuntimeException(u.toString))
+          _       <- die(faults.inject(a, RequestMatch(path = PathMatch.Exact("/boom")), FaultKind.ConnectionReset))
+          ping    <- SutClient.make(a).send(Method.Get, "/ping").exit // the normal rule still serves
+          boom    <- SutClient.make(a).send(Method.Get, "/boom").exit
+        yield assertTrue(ping.isSuccess, boom.isFailure)
+      },
+      test("faults.inject LatencySpike delays an otherwise-normal 200 response") {
+        for
+          control <- ZIO.service[MockControl]
+          a       <- die(control.provision(pingSource)).map(_.head)
+          faults  <- control.faults.orDieWith(u => new RuntimeException(u.toString))
+          _       <- die(faults.inject(a, RequestMatch(path = PathMatch.Exact("/slow")), FaultKind.LatencySpike(700.millis)))
+          start   <- Clock.nanoTime
+          resp    <- SutClient.make(a).send(Method.Get, "/slow").orDie
+          elapsed <- Clock.nanoTime.map(_ - start)
+        yield assertTrue(resp.status == 200, elapsed >= 400.millis.toNanos)
+      } @@ TestAspect.withLiveClock,
+      test("a fault overrides a normal rule on the same path (precedence) and removeRule restores it") {
+        for
+          control  <- ZIO.service[MockControl]
+          a        <- die(control.provision(pingSource)).map(_.head)   // /ping -> 200 pong
+          ok       <- SutClient.make(a).send(Method.Get, "/ping").exit
+          faults   <- control.faults.orDieWith(u => new RuntimeException(u.toString))
+          rid      <- die(faults.inject(a, RequestMatch(path = PathMatch.Exact("/ping")), FaultKind.ConnectionReset))
+          broken   <- SutClient.make(a).send(Method.Get, "/ping").exit // the fault wins over the rule
+          _        <- die(control.removeRule(a, rid))                  // the fault is tracked → removable
+          restored <- SutClient.make(a).send(Method.Get, "/ping").orDie
+        yield assertTrue(ok.isSuccess, broken.isFailure, restored.status == 200, restored.body == "pong")
+      },
       test("provisionNative(WireMock) serves a raw stub on its own server; a Rift spec is rejected") {
         for
           control <- ZIO.service[MockControl]
@@ -167,7 +222,75 @@ object WireMockControlSpec extends ZIOSpecDefault:
           ra      <- die(control.received(a))
           rb      <- die(control.received(b))
         yield assertTrue(ra.size == 1, rb.size == 2) // received filters by space header on the shared server
-      }
+      },
+      // --- stateful scenarios (#130): edges the portable cap-stateful catalog can't express ---
+      suite("stateful scenarios")(
+        test("define replaces an existing scenario of the same name (replacing any existing)") {
+          for
+            control <- ZIO.service[MockControl]
+            ss      <- dieU(control.scenarios)
+            a       <- die(control.provision(emptySource)).map(_.head)
+            _       <- die(ss.define(a, scenario("sc").when("Started", get("/x")).respond(ok.text("v1")).stay.build))
+            r1      <- SutClient.make(a).send(Method.Get, "/x").orDie
+            _       <- die(ss.define(a, scenario("sc").when("Started", get("/x")).respond(ok.text("v2")).stay.build))
+            r2      <- SutClient.make(a).send(Method.Get, "/x").orDie
+          yield assertTrue(r1.body == "v1", r2.body == "v2") // the old edge is gone, not shadowed
+        },
+        test("a non-Started initial state is honoured by define and restored by reset") {
+          val oc =
+            scenario("oc")
+              .startingAt("Open")
+              .when("Open", get("/o"))
+              .respond(ok.text("open"))
+              .goTo("Closed")
+              .when("Closed", get("/o"))
+              .respond(ok.text("closed"))
+              .stay
+              .build
+          for
+            control <- ZIO.service[MockControl]
+            ss      <- dieU(control.scenarios)
+            si      <- dieU(control.stateInspection)
+            a       <- die(control.provision(emptySource)).map(_.head)
+            _       <- die(ss.define(a, oc))
+            s0      <- die(si.currentState(a, "oc"))
+            r1      <- SutClient.make(a).send(Method.Get, "/o").orDie // Open -> "open", -> Closed
+            r2      <- SutClient.make(a).send(Method.Get, "/o").orDie // Closed -> "closed"
+            _       <- die(ss.reset(a, "oc"))
+            s1      <- die(si.currentState(a, "oc"))
+            r3      <- SutClient.make(a).send(Method.Get, "/o").orDie // back in Open -> "open"
+          yield assertTrue(
+            s0 == ScenarioState("Open"),
+            r1.body == "open",
+            r2.body == "closed",
+            s1 == ScenarioState("Open"),
+            r3.body == "open"
+          )
+        },
+        test("reset / currentState / setState of an unknown scenario fail with InvalidDefinition") {
+          for
+            control <- ZIO.service[MockControl]
+            ss      <- dieU(control.scenarios)
+            si      <- dieU(control.stateInspection)
+            a       <- die(control.provision(emptySource)).map(_.head)
+            e1      <- ss.reset(a, "ghost").either
+            e2      <- si.currentState(a, "ghost").either
+            e3      <- si.setState(a, "ghost", ScenarioState("X")).either
+            expected = MockError.InvalidDefinition(s"no scenario 'ghost' on space ${a.id.value}")
+          yield assertTrue(e1 == Left(expected), e2 == Left(expected), e3 == Left(expected))
+        },
+        test("destroy removes the scenario's stubs from the shared server") {
+          for
+            control <- ZIO.service[MockControl]
+            ss      <- dieU(control.scenarios)
+            a       <- die(control.provision(emptySource)).map(_.head)
+            _       <- die(ss.define(a, scenario("sc").when("Started", get("/x")).respond(ok.text("v1")).stay.build))
+            before  <- SutClient.make(a).send(Method.Get, "/x").orDie
+            _       <- die(control.destroy(a))
+            after   <- SutClient.make(a).send(Method.Get, "/x").orDie
+          yield assertTrue(before.status == 200, before.body == "v1", after.status == 404)
+        }
+      )
     ).provide(correlated),
     test("the PerInstance-mode adapter reports PerInstance isolation") {
       ZIO.serviceWith[MockControl](c => assertTrue(c.isolation == Isolation.PerInstance))
@@ -188,6 +311,21 @@ object WireMockControlSpec extends ZIOSpecDefault:
         aGone.isLeft      // A's server was stopped — connection refused
       )
     }.provide(perInstance),
+    test("WireMockTranslation.faultStub maps each kind to the WireMock Fault enum / fixed delay") {
+      import com.github.tomakehurst.wiremock.http.Fault
+      def respOf(kind: FaultKind) =
+        WireMockTranslation
+          .faultStub(SpaceId("s"), RequestMatch(path = PathMatch.Exact("/x")), kind, Priority.Overlay, None)
+          .getResponse
+      assertTrue(
+        respOf(FaultKind.ConnectionReset).getFault == Fault.CONNECTION_RESET_BY_PEER,
+        respOf(FaultKind.EmptyResponse).getFault == Fault.EMPTY_RESPONSE,
+        respOf(FaultKind.MalformedChunk).getFault == Fault.MALFORMED_RESPONSE_CHUNK,
+        respOf(FaultKind.RandomThenClose).getFault == Fault.RANDOM_DATA_THEN_CLOSE,
+        respOf(FaultKind.LatencySpike(1.second)).getFixedDelayMilliseconds.intValue == 1000,
+        respOf(FaultKind.LatencySpike(1.second)).getStatus == 200
+      )
+    },
     suite("traceparent correlation")(
       test("inject stamps a traceparent; a foreign trace-id does not reach the space") {
         for

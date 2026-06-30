@@ -21,13 +21,44 @@ object RiftProtocolSpec extends ZIOSpecDefault:
   )
 
   def spec = suite("RiftProtocol (canonical <-> Mountebank)")(
-    test("imposter carries port, http protocol, recordRequests, and one stub per rule") {
+    test("statefulStub carries the scenario FSM fields; stay omits newScenarioState (#131)") {
+      val invRule = (path: String, body: String) =>
+        MockRule(RequestMatch(path = PathMatch.Exact(path)), ResponseDef(status = 200, body = Body.Text(body)))
+      val advance = RiftProtocol.statefulStub(
+        "invoice",
+        ScenarioState("Started"),
+        Some(ScenarioState("Paid")),
+        invRule("/inv", "created")
+      )
+      val stay = RiftProtocol.statefulStub("invoice", ScenarioState("Paid"), None, invRule("/inv", "paid"))
+      assertTrue(
+        advance / "scenarioName" == Json.Str("invoice"),
+        advance / "requiredScenarioState" == Json.Str("Started"),
+        advance / "newScenarioState" == Json.Str("Paid"),
+        arr(advance / "responses").head / "is" / "body" == Json.Str("created"),
+        stay / "requiredScenarioState" == Json.Str("Paid"),
+        stay / "newScenarioState" == Json.Null // stay -> no transition field
+      )
+    },
+    test("parseScenarioState reads a scenario's state from the admin view; None when absent (#131)") {
+      val view =
+        """{"flowId":"4545","scenarios":[{"name":"invoice","state":"Paid"},{"name":"other","state":"Started"}]}"""
+      assertTrue(
+        RiftProtocol.parseScenarioState(view, "invoice") == Right(Some("Paid")),
+        RiftProtocol.parseScenarioState(view, "missing") == Right(None),
+        RiftProtocol.parseScenarioState("not json", "invoice").isLeft // malformed -> Left (becomes CommunicationError)
+      )
+    },
+    test("imposter carries port, http protocol, recordRequests, a stub per rule, and a flow store (#131)") {
       val j = RiftProtocol.imposter(4545, "ping", List(pingRule))
       assertTrue(
         j / "port" == Json.Num(4545),
         j / "protocol" == Json.Str("http"),
         j / "recordRequests" == Json.Bool(true),
-        arr(j / "stubs").size == 1
+        arr(j / "stubs").size == 1,
+        // an in-memory flow store keyed by port, so scenario stubs added later actually advance
+        j / "_rift" / "flowState" / "backend" == Json.Str("inmemory"),
+        j / "_rift" / "flowState" / "mountebankStateMapping" / "flowIdSource" == Json.Str("imposter_port")
       )
     },
     test("an exact path + method rule becomes equals predicates and an `is` response") {
@@ -74,6 +105,91 @@ object RiftProtocolSpec extends ZIOSpecDefault:
       assertTrue(
         withDelay / "is" / "statusCode" == Json.Num(201),
         withDelay / "_behaviors" / "wait" == Json.Num(50)
+      )
+    },
+    test("a connection FaultKind becomes a stub response with _rift.fault.tcp and a 200 carrier `is`") {
+      def tcp(fault: FaultKind): Json = RiftProtocol.faultResponse(fault) / "_rift" / "fault" / "tcp"
+      assertTrue(
+        tcp(FaultKind.ConnectionReset) == Json.Str("CONNECTION_RESET_BY_PEER"),
+        tcp(FaultKind.EmptyResponse) == Json.Str("EMPTY_RESPONSE"),
+        tcp(FaultKind.MalformedChunk) == Json.Str("MALFORMED_RESPONSE_CHUNK"),
+        tcp(FaultKind.RandomThenClose) == Json.Str("RANDOM_DATA_THEN_CLOSE"),
+        RiftProtocol.faultResponse(FaultKind.ConnectionReset) / "is" / "statusCode" == Json.Num(200)
+      )
+    },
+    test("a LatencySpike becomes _rift.fault.latency with probability 1 and ms; no tcp") {
+      import zio.*
+      val resp    = RiftProtocol.faultResponse(FaultKind.LatencySpike(1.second))
+      val latency = resp / "_rift" / "fault" / "latency"
+      assertTrue(
+        latency / "ms" == Json.Num(1000),
+        latency / "probability" == Json.Num(1),
+        field(resp / "_rift" / "fault", "tcp").isEmpty,
+        resp / "is" / "statusCode" == Json.Num(200)
+      )
+    },
+    test("faultStub carries the request predicates and the fault response under the given id") {
+      val m     = RequestMatch(method = Some(Method.Get), path = PathMatch.Exact("/boom"))
+      val stub  = RiftProtocol.faultStub(m, FaultKind.ConnectionReset, RuleId("f1"))
+      val preds = arr(stub / "predicates")
+      assertTrue(
+        stub / "id" == Json.Str("f1"),
+        preds.exists(p => p / "equals" / "path" == Json.Str("/boom")),
+        arr(stub / "responses").head / "_rift" / "fault" / "tcp" == Json.Str("CONNECTION_RESET_BY_PEER")
+      )
+    },
+    test("scriptStub carries predicates and a _rift.script response (engine + code) (#132)") {
+      val m = RequestMatch(path = PathMatch.Exact("/s"))
+      val stub =
+        RiftProtocol.scriptStub(m, Script(ScriptEngine.Rhai, "fn should_inject(r,f){#{inject:false}}"), RuleId("s1"))
+      val resp = arr(stub / "responses").head
+      assertTrue(
+        stub / "id" == Json.Str("s1"),
+        arr(stub / "predicates").exists(p => p / "equals" / "path" == Json.Str("/s")),
+        resp / "_rift" / "script" / "engine" == Json.Str("rhai"),
+        resp / "_rift" / "script" / "code" == Json.Str("fn should_inject(r,f){#{inject:false}}")
+      )
+    },
+    test("script engine tokens map to rhai/lua/javascript (#132)") {
+      assertTrue(
+        RiftProtocol.scriptEngineName(ScriptEngine.Rhai) == "rhai",
+        RiftProtocol.scriptEngineName(ScriptEngine.Lua) == "lua",
+        RiftProtocol.scriptEngineName(ScriptEngine.JavaScript) == "javascript"
+      )
+    },
+    test(
+      "proxyStub emits a proxy response to the upstream in proxyOnce mode with method+path predicate generators (#132)"
+    ) {
+      val stub = RiftProtocol.proxyStub(RequestMatch(path = PathMatch.Exact("/p")), "http://up:8080", RuleId("p1"))
+      val resp = arr(stub / "responses").head
+      val gen  = arr(resp / "proxy" / "predicateGenerators").head
+      assertTrue(
+        stub / "id" == Json.Str("p1"),
+        resp / "proxy" / "to" == Json.Str("http://up:8080"),
+        resp / "proxy" / "mode" == Json.Str("proxyOnce"),
+        gen / "matches" / "method" == Json.Bool(true),
+        gen / "matches" / "path" == Json.Bool(true)
+      )
+    },
+    test("templateStub emits an `is` body plus a _behaviors.copy per capture; path/body sources map (#132)") {
+      val template = ResponseTemplate(
+        body = "Hello ${NAME} ${WHO}",
+        captures = List(
+          TemplateCapture("${NAME}", TemplateSource.Path, "[^/]+$"),
+          TemplateCapture("${WHO}", TemplateSource.Body, "\\w+")
+        )
+      )
+      val stub     = RiftProtocol.templateStub(RequestMatch(path = PathMatch.Exact("/greet")), template, RuleId("t1"))
+      val resp     = arr(stub / "responses").head
+      val copies   = arr(resp / "_behaviors" / "copy")
+      val pathCopy = copies.find(_ / "into" == Json.Str("${NAME}")).getOrElse(Json.Null)
+      val bodyCopy = copies.find(_ / "into" == Json.Str("${WHO}")).getOrElse(Json.Null)
+      assertTrue(
+        resp / "is" / "body" == Json.Str("Hello ${NAME} ${WHO}"),
+        pathCopy / "from" == Json.Str("path"),
+        pathCopy / "using" / "method" == Json.Str("regex"),
+        pathCopy / "using" / "selector" == Json.Str("[^/]+$"),
+        bodyCopy / "from" == Json.Str("body") // TemplateSource.Body -> "body"
       )
     },
     test("PathMatch.Any emits no path predicate") {

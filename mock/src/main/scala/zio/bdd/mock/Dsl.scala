@@ -120,3 +120,50 @@ object dsl:
 
   /** Build a DSL [[MockSource]] straight from rules. */
   def dslSource(rules: MockRule*): MockSource = mock(rules*).source
+
+  // --- stateful scenario builder (#129) -------------------------------------
+  // Fluent FSM builder: scenario("invoice").startingAt("Created")
+  //   .when("Created", get("/x")).respond(ok.text("a")).goTo("Paid")
+  //   .when("Paid", get("/x")).respond(ok.text("b")).stay
+  //   .build  ->  a ScenarioDef structurally identical to the hand-written one.
+
+  /**
+   * Begin a [[ScenarioDef]] named `name`, starting in
+   * [[ScenarioState.Started]].
+   */
+  def scenario(name: String): ScenarioBuilder = ScenarioBuilder(name, ScenarioState.Started, Vector.empty)
+
+  final case class ScenarioBuilder private[dsl] (
+    name: String,
+    initial: ScenarioState,
+    rules: Vector[StatefulRule]
+  ):
+    /** Override the initial state (default [[ScenarioState.Started]]). */
+    def startingAt(state: String): ScenarioBuilder = copy(initial = ScenarioState(state))
+
+    /**
+     * Begin an edge that fires while the FSM is in `state` and a request
+     * matches `request` (continue with `.respond`).
+     */
+    def when(state: String, request: RequestMatch): WhenStep = WhenStep(this, ScenarioState(state), request)
+
+    def build: ScenarioDef = ScenarioDef(name, rules.toList, initial)
+
+  final case class WhenStep private[dsl] (sb: ScenarioBuilder, whenState: ScenarioState, request: RequestMatch):
+    /** ...serves `response` (continue with `.goTo`/`.stay`). */
+    def respond(response: ResponseDef): RespondedStep = RespondedStep(sb, whenState, request, response)
+
+  final case class RespondedStep private[dsl] (
+    sb: ScenarioBuilder,
+    whenState: ScenarioState,
+    request: RequestMatch,
+    response: ResponseDef
+  ):
+    /** ...then transition to `state`. */
+    def goTo(state: String): ScenarioBuilder = add(Some(ScenarioState(state)))
+
+    /** ...and stay in the current state. */
+    def stay: ScenarioBuilder = add(None)
+
+    private def add(thenState: Option[ScenarioState]): ScenarioBuilder =
+      sb.copy(rules = sb.rules :+ StatefulRule(whenState, request, response, thenState))
