@@ -148,6 +148,50 @@ object WireMockControlSpec extends ZIOSpecDefault:
           elapsed <- Clock.nanoTime.map(_ - start)
         yield assertTrue(resp.status == 200, elapsed >= 250.millis.toNanos) // ~300ms fixed delay
       } @@ TestAspect.withLiveClock,
+      test("advertises Faults; its accessor succeeds and an unadvertised accessor fails fast") {
+        for
+          control    <- ZIO.service[MockControl]
+          faultsE    <- control.faults.either
+          scriptingE <- control.scripting.either
+        yield assertTrue(
+          control.capabilities.contains(Capability.Faults),
+          faultsE.isRight,
+          scriptingE == Left(Unsupported(Capability.Scripting, "wiremock"))
+        )
+      },
+      test("faults.inject ConnectionReset makes the SUT client observe a transport failure") {
+        for
+          control <- ZIO.service[MockControl]
+          a       <- die(control.provision(pingSource)).map(_.head)
+          faults  <- control.faults.orDieWith(u => new RuntimeException(u.toString))
+          _       <- die(faults.inject(a, RequestMatch(path = PathMatch.Exact("/boom")), FaultKind.ConnectionReset))
+          ping    <- SutClient.make(a).send(Method.Get, "/ping").exit // the normal rule still serves
+          boom    <- SutClient.make(a).send(Method.Get, "/boom").exit
+        yield assertTrue(ping.isSuccess, boom.isFailure)
+      },
+      test("faults.inject LatencySpike delays an otherwise-normal 200 response") {
+        for
+          control <- ZIO.service[MockControl]
+          a       <- die(control.provision(pingSource)).map(_.head)
+          faults  <- control.faults.orDieWith(u => new RuntimeException(u.toString))
+          _       <- die(faults.inject(a, RequestMatch(path = PathMatch.Exact("/slow")), FaultKind.LatencySpike(700.millis)))
+          start   <- Clock.nanoTime
+          resp    <- SutClient.make(a).send(Method.Get, "/slow").orDie
+          elapsed <- Clock.nanoTime.map(_ - start)
+        yield assertTrue(resp.status == 200, elapsed >= 400.millis.toNanos)
+      } @@ TestAspect.withLiveClock,
+      test("a fault overrides a normal rule on the same path (precedence) and removeRule restores it") {
+        for
+          control  <- ZIO.service[MockControl]
+          a        <- die(control.provision(pingSource)).map(_.head)   // /ping -> 200 pong
+          ok       <- SutClient.make(a).send(Method.Get, "/ping").exit
+          faults   <- control.faults.orDieWith(u => new RuntimeException(u.toString))
+          rid      <- die(faults.inject(a, RequestMatch(path = PathMatch.Exact("/ping")), FaultKind.ConnectionReset))
+          broken   <- SutClient.make(a).send(Method.Get, "/ping").exit // the fault wins over the rule
+          _        <- die(control.removeRule(a, rid))                  // the fault is tracked → removable
+          restored <- SutClient.make(a).send(Method.Get, "/ping").orDie
+        yield assertTrue(ok.isSuccess, broken.isFailure, restored.status == 200, restored.body == "pong")
+      },
       test("provisionNative(WireMock) serves a raw stub on its own server; a Rift spec is rejected") {
         for
           control <- ZIO.service[MockControl]
@@ -260,6 +304,21 @@ object WireMockControlSpec extends ZIOSpecDefault:
         aGone.isLeft      // A's server was stopped — connection refused
       )
     }.provide(perInstance),
+    test("WireMockTranslation.faultStub maps each kind to the WireMock Fault enum / fixed delay") {
+      import com.github.tomakehurst.wiremock.http.Fault
+      def respOf(kind: FaultKind) =
+        WireMockTranslation
+          .faultStub(SpaceId("s"), RequestMatch(path = PathMatch.Exact("/x")), kind, Priority.Overlay, None)
+          .getResponse
+      assertTrue(
+        respOf(FaultKind.ConnectionReset).getFault == Fault.CONNECTION_RESET_BY_PEER,
+        respOf(FaultKind.EmptyResponse).getFault == Fault.EMPTY_RESPONSE,
+        respOf(FaultKind.MalformedChunk).getFault == Fault.MALFORMED_RESPONSE_CHUNK,
+        respOf(FaultKind.RandomThenClose).getFault == Fault.RANDOM_DATA_THEN_CLOSE,
+        respOf(FaultKind.LatencySpike(1.second)).getFixedDelayMilliseconds.intValue == 1000,
+        respOf(FaultKind.LatencySpike(1.second)).getStatus == 200
+      )
+    },
     suite("traceparent correlation")(
       test("inject stamps a traceparent; a foreign trace-id does not reach the space") {
         for

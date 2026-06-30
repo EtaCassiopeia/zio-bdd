@@ -3,6 +3,7 @@ package zio.bdd.mock.wiremock
 import zio.bdd.mock.*
 
 import com.github.tomakehurst.wiremock.client.{MappingBuilder, ResponseDefinitionBuilder, WireMock as WM}
+import com.github.tomakehurst.wiremock.http.Fault
 import com.github.tomakehurst.wiremock.matching.StringValuePattern
 import com.github.tomakehurst.wiremock.stubbing.StubMapping
 
@@ -20,13 +21,45 @@ private[wiremock] object WireMockTranslation:
    * `None` (the space owns its server outright).
    */
   def stub(id: SpaceId, rule: MockRule, priority: Priority, correlation: Option[Correlation]): StubMapping =
-    val base = requestBuilder(id, rule.`match`, correlation)
+    matcher(id, rule.`match`, priority, correlation).willReturn(response(rule.respond)).build()
+
+  /**
+   * Build a fault stub for space `id` matching `m` (#128): same request matcher
+   * as [[stub]] (so correlation/priority behave identically), but the response
+   * injects `fault` via WireMock's native `Fault` enum (connection kinds) or a
+   * fixed delay ([[FaultKind.LatencySpike]]).
+   */
+  def faultStub(
+    id: SpaceId,
+    m: RequestMatch,
+    fault: FaultKind,
+    priority: Priority,
+    correlation: Option[Correlation]
+  ): StubMapping =
+    matcher(id, m, priority, correlation).willReturn(faultResponse(fault)).build()
+
+  // Shared matcher builder for normal and fault stubs: the request matcher
+  // (requestBuilder) plus the Priority-enum precedence and a fresh id.
+  private def matcher(
+    id: SpaceId,
+    m: RequestMatch,
+    priority: Priority,
+    correlation: Option[Correlation]
+  ): MappingBuilder =
+    val base = requestBuilder(id, m, correlation)
     base.atPriority(priority match
       case Priority.Overlay => 1
       case Priority.Base    => 10
     )
     base.withId(UUID.randomUUID())
-    base.willReturn(response(rule.respond)).build()
+    base
+
+  private def faultResponse(fault: FaultKind): ResponseDefinitionBuilder = fault match
+    case FaultKind.ConnectionReset => WM.aResponse().withFault(Fault.CONNECTION_RESET_BY_PEER)
+    case FaultKind.EmptyResponse   => WM.aResponse().withFault(Fault.EMPTY_RESPONSE)
+    case FaultKind.MalformedChunk  => WM.aResponse().withFault(Fault.MALFORMED_RESPONSE_CHUNK)
+    case FaultKind.RandomThenClose => WM.aResponse().withFault(Fault.RANDOM_DATA_THEN_CLOSE)
+    case FaultKind.LatencySpike(d) => WM.aResponse().withStatus(200).withFixedDelay(d.toMillis.toInt)
 
   /**
    * Build one edge of a scenario FSM (#130): the request matcher (plus the

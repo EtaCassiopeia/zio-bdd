@@ -54,7 +54,7 @@ private[rift] final case class RiftMockControl(
   import RiftMockControl.{CorrSpace, Imposter}
 
   def backendName: String           = "rift"
-  def capabilities: Set[Capability] = Set.empty
+  def capabilities: Set[Capability] = Set(Capability.Faults)
 
   override def isolation: Isolation = mode match
     case RiftMode.Correlated(_) => Isolation.Correlated
@@ -102,12 +102,45 @@ private[rift] final case class RiftMockControl(
   def received(space: MockSpace): IO[MockError, List[RecordedRequest]] =
     dispatch(space)(corrReceived)(piReceived)
 
-  def faults: IO[Unsupported, Faults]                   = unsupported(Capability.Faults)
+  def faults: IO[Unsupported, Faults]                   = ZIO.succeed(riftFaults)
   def scenarios: IO[Unsupported, StatefulScenarios]     = unsupported(Capability.StatefulScenarios)
   def stateInspection: IO[Unsupported, StateInspection] = unsupported(Capability.StateInspection)
   def scripting: IO[Unsupported, Scripting]             = unsupported(Capability.Scripting)
   def proxyRecord: IO[Unsupported, ProxyRecord]         = unsupported(Capability.ProxyRecord)
   def templating: IO[Unsupported, Templating]           = unsupported(Capability.Templating)
+
+  // ===== Faults (#128) — `_rift.fault` (rift#239) =================================
+
+  private val riftFaults: Faults = new Faults:
+    def inject(space: MockSpace, m: RequestMatch, fault: FaultKind): IO[MockError, RuleId] =
+      dispatch(space)(cs => corrInjectFault(cs, m, fault))(imp => piInjectFault(imp, m, fault))
+
+  // PerInstance: first-match (index 0) so the fault wins over any normal rule on
+  // the same match; tracked in `imp.stubs` so it stays index-aligned with the
+  // server and is removable via `removeRule`.
+  private def piInjectFault(imp: Imposter, m: RequestMatch, fault: FaultKind): IO[MockError, RuleId] =
+    for
+      ruleId <- freshId
+      u      <- url(s"/imposters/${imp.port}/stubs")
+      res    <- send(jsonRequest(HttpMethod.POST, u, RiftProtocol.addFaultStubBody(0, m, fault, ruleId)))
+      _      <- expectSuccess(s"inject fault into imposter ${imp.port}", res)
+      _      <- imp.stubs.update(ruleId +: _)
+    yield ruleId
+
+  // Correlated: track the fault and rebuild the space with faults registered ahead
+  // of the rules, so it wins first-match (rift#223 has no per-stub index). Tracked
+  // in `cs.faults` so it survives a later rule rebuild and is removable via
+  // `removeRule`; `destroy` clears it with the whole flow. Server-first, commit on
+  // success (mirrors corrAddRule's Overlay rebuild).
+  private def corrInjectFault(cs: CorrSpace, m: RequestMatch, fault: FaultKind): IO[MockError, RuleId] =
+    for
+      ruleId <- freshId
+      rules  <- cs.rules.get
+      faults <- cs.faults.get
+      next    = (ruleId, m, fault) +: faults
+      _      <- rebuild(cs, next, rules)
+      _      <- cs.faults.set(next)
+    yield ruleId
 
   // ---------------------------------------------------------------------------
 
@@ -218,9 +251,10 @@ private[rift] final case class RiftMockControl(
       tagged <- tagRules(rules)
       // Mirror serveImposter's release-on-error: if a stub POST fails partway, tear
       // the half-built flow down so it can't orphan stubs on the shared imposter.
-      _        <- registerStubs(port, flowId, tagged).onError(_ => deleteSpace(port, flowId).ignore)
-      rulesRef <- Ref.make(tagged)
-      _        <- correlated.update(_.updated(id, CorrSpace(port, flowId, corr.header, rulesRef)))
+      _         <- registerStubs(port, flowId, tagged).onError(_ => deleteSpace(port, flowId).ignore)
+      rulesRef  <- Ref.make(tagged)
+      faultsRef <- Ref.make(Vector.empty[(RuleId, RequestMatch, FaultKind)])
+      _         <- correlated.update(_.updated(id, CorrSpace(port, flowId, corr.header, rulesRef, faultsRef)))
     yield MockSpace(endpoint.baseUriFor(port), req => req.copy(headers = req.headers.add(corr.header, flowId)), id)
 
   // Create the one shared imposter on first Correlated provision (race-safe).
@@ -251,12 +285,18 @@ private[rift] final case class RiftMockControl(
     }
 
   private def corrRemoveRule(cs: CorrSpace, spaceId: SpaceId, id: RuleId): IO[MockError, Unit] =
-    cs.rules.get.flatMap { v =>
-      if !v.exists(_._1 == id) then ZIO.fail(MockError.RuleNotFound(spaceId, id))
-      else
-        val next = v.filterNot(_._1 == id)
-        rebuildSpaceWith(cs, next) *> cs.rules.set(next) // commit tracking only on success
-    }
+    for
+      rules  <- cs.rules.get
+      faults <- cs.faults.get
+      _ <- // commit tracking only on success; a removed id is either a rule or a fault
+        if rules.exists(_._1 == id) then
+          val next = rules.filterNot(_._1 == id)
+          rebuild(cs, faults, next) *> cs.rules.set(next)
+        else if faults.exists(_._1 == id) then
+          val nextF = faults.filterNot(_._1 == id)
+          rebuild(cs, nextF, rules) *> cs.faults.set(nextF)
+        else ZIO.fail(MockError.RuleNotFound(spaceId, id))
+    yield ()
 
   private def corrReplaceRules(cs: CorrSpace, rules: List[MockRule]): IO[MockError, Unit] =
     tagRules(rules).flatMap(next => rebuildSpaceWith(cs, next) *> cs.rules.set(next))
@@ -272,14 +312,46 @@ private[rift] final case class RiftMockControl(
       recs <- ZIO.fromEither(RiftProtocol.parseRequestsArray(body)).mapError(MockError.CommunicationError(_))
     yield recs
 
-  // rift#223 has no per-stub-in-space delete: re-register `rules` as the space's
-  // stubs after a whole-space teardown. Server-first — the caller commits
-  // tracking only on success. A mid-rebuild failure leaves the space's *server*
-  // stubs partial (surfaced as a CommunicationError); tracking is left unchanged.
-  // (A successful rebuild also clears the space's recorded requests + flow state
-  // — benign at scenario boundaries; see the class doc.)
+  // rift#223 has no per-stub-in-space delete: re-register the space's stubs after a
+  // whole-space teardown. Server-first — the caller commits tracking only on success.
+  // A mid-rebuild failure leaves the space's *server* stubs partial (surfaced as a
+  // CommunicationError); tracking is left unchanged. (A successful rebuild also clears
+  // the space's recorded requests + flow state — benign at scenario boundaries; see
+  // the class doc.) Re-register with the currently-tracked faults (a rule mutation
+  // must not drop an injected fault).
   private def rebuildSpaceWith(cs: CorrSpace, rules: Vector[(RuleId, MockRule)]): IO[MockError, Unit] =
-    deleteSpace(cs.port, cs.flowId) *> registerStubs(cs.port, cs.flowId, rules)
+    cs.faults.get.flatMap(faults => rebuild(cs, faults, rules))
+
+  // Faults are registered ahead of the rules so they win first-match (Mountebank is
+  // first-match-wins, and rift#223 space stubs append in registration order).
+  private def rebuild(
+    cs: CorrSpace,
+    faults: Vector[(RuleId, RequestMatch, FaultKind)],
+    rules: Vector[(RuleId, MockRule)]
+  ): IO[MockError, Unit] =
+    deleteSpace(cs.port, cs.flowId) *>
+      registerFaultStubs(cs.port, cs.flowId, faults) *>
+      registerStubs(cs.port, cs.flowId, rules)
+
+  private def registerFaultStubs(
+    port: Int,
+    flowId: String,
+    faults: Vector[(RuleId, RequestMatch, FaultKind)]
+  ): IO[MockError, Unit] =
+    ZIO.foreachDiscard(faults)((rid, m, fault) => postSpaceFaultStub(port, flowId, m, fault, rid))
+
+  private def postSpaceFaultStub(
+    port: Int,
+    flowId: String,
+    m: RequestMatch,
+    fault: FaultKind,
+    id: RuleId
+  ): IO[MockError, Unit] =
+    for
+      u   <- url(s"/imposters/$port/spaces/${enc(flowId)}/stubs")
+      res <- send(jsonRequest(HttpMethod.POST, u, RiftProtocol.faultStub(m, fault, id)))
+      _   <- expectSuccess(s"add fault stub to $flowId", res)
+    yield ()
 
   // Assign each rule a fresh id, keyed for tracking + re-registration under a space.
   private def tagRules(rules: List[MockRule]): UIO[Vector[(RuleId, MockRule)]] =
@@ -377,7 +449,13 @@ private[rift] final case class RiftMockControl(
 
 private[rift] object RiftMockControl:
   final case class Imposter(port: Int, stubs: Ref[Vector[RuleId]])
-  final case class CorrSpace(port: Int, flowId: String, header: String, rules: Ref[Vector[(RuleId, MockRule)]])
+  final case class CorrSpace(
+    port: Int,
+    flowId: String,
+    header: String,
+    rules: Ref[Vector[(RuleId, MockRule)]],
+    faults: Ref[Vector[(RuleId, RequestMatch, FaultKind)]]
+  )
 
   /**
    * Build an adapter against an endpoint in the given isolation `mode`, taking

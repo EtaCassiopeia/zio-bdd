@@ -88,7 +88,7 @@ object ConformanceMatrixSpec extends ZIOSpecDefault:
     MockBackendUnderTest(
       "wiremock",
       Provisioning.live >>> WireMock.correlated(),
-      Set(Capability.StatefulScenarios, Capability.StateInspection),
+      Set(Capability.Faults, Capability.StatefulScenarios, Capability.StateInspection),
       Isolation.Correlated
     )
 
@@ -97,7 +97,7 @@ object ConformanceMatrixSpec extends ZIOSpecDefault:
     MockBackendUnderTest(
       "rift",
       (Client.default ++ Provisioning.live) >>> Rift.managed().mapError(asT),
-      Set.empty,
+      Set(Capability.Faults),
       Isolation.PerInstance,
       available = riftEnabled
     )
@@ -114,7 +114,7 @@ object ConformanceMatrixSpec extends ZIOSpecDefault:
         matrix
           .cell(injectFault, "wiremock")
           .map(_.outcome)
-          .contains(Outcome.Skip),   // Faults un-advertised → SKIP, not FAIL
+          .contains(Outcome.Pass),   // Faults advertised (#128) → the accessor succeeds → PASS
         matrix.conformant(wiremock), // zero FAIL, skip justified by capability
         // Rift: conformant when available (CI with RIFT_IT), else the column is SKIPPED-unavailable (local, no Docker)
         if riftEnabled then matrix.conformant(rift)
@@ -176,6 +176,25 @@ object ConformanceMatrixSpec extends ZIOSpecDefault:
         matrix.cells.count(_.backend == "wiremock") == all.size,
         // Rift doesn't advertise these until #131 -> every Rift cell is a justified SKIP.
         riftCells.size == all.size && riftCells.forall(_ == Outcome.Skip)
+      )
+    } @@ TestAspect.withLiveClock,
+    test("fault-injection features pass on every adapter (#128)") {
+      val all = FaultScenarios.all
+      for
+        matrix   <- ConformanceHarness.run(List(wiremock, rift), all)
+        _        <- ZIO.logInfo(s"faults matrix:\n${matrix.render}")
+        wmFails   = nonPass(matrix, "wiremock", all)
+        _        <- ZIO.logInfo(s"wiremock non-pass: $wmFails").when(wmFails.nonEmpty)
+        rfFails   = nonPass(matrix, "rift", all)
+        _        <- ZIO.logInfo(s"rift non-pass: $rfFails").when(rfFails.nonEmpty)
+        riftCells = all.flatMap(s => matrix.cell(s.name, "rift").map(_.outcome))
+      yield assertTrue(
+        all.nonEmpty,
+        all.forall(s => matrix.cell(s.name, "wiremock").exists(_.outcome == Outcome.Pass)),
+        matrix.cells.count(_.backend == "wiremock") == all.size,
+        // Rift: every fault kind PASSes in CI (RIFT_IT, real container); else the column is SKIPPED-unavailable.
+        if riftEnabled then all.forall(s => matrix.cell(s.name, "rift").exists(_.outcome == Outcome.Pass))
+        else riftCells.size == all.size && riftCells.forall(_ == Outcome.Skip)
       )
     } @@ TestAspect.withLiveClock
   )

@@ -23,7 +23,9 @@ object CapabilityNegotiationSpec extends ZIOSpecDefault:
     private def cap[A](c: Capability)(a: => A): IO[Unsupported, A] =
       if caps(c) then ZIO.succeed(a) else ZIO.fail(Unsupported(c, backendName))
 
-    def faults: IO[Unsupported, Faults]                   = cap(Capability.Faults)(new Faults {})
+    private val anyFault: Faults = (_, _, _) => ZIO.succeed(RuleId("fault"))
+
+    def faults: IO[Unsupported, Faults]                   = cap(Capability.Faults)(anyFault)
     def scenarios: IO[Unsupported, StatefulScenarios]     = cap(Capability.StatefulScenarios)(StubCaps.scenarios)
     def stateInspection: IO[Unsupported, StateInspection] = cap(Capability.StateInspection)(StubCaps.stateInspection)
     def scripting: IO[Unsupported, Scripting]             = cap(Capability.Scripting)(new Scripting {})
