@@ -195,6 +195,34 @@ enum FaultKind:
   case RandomThenClose
   case LatencySpike(delay: Duration)
 
+/** The engine a [[Scripting]] script runs on (#132). */
+enum ScriptEngine:
+  case Rhai, Lua, JavaScript
+
+/** A backend script that computes the response for matching requests (#132). */
+final case class Script(engine: ScriptEngine, code: String)
+
+/** Where a [[TemplateCapture]] reads its value from on the request (#132). */
+enum TemplateSource:
+  case Path, Body
+
+/**
+ * One templating capture (#132): extract from `source` using `regex` (the
+ * matched text) and substitute every occurrence of the literal `token` in the
+ * response body with it.
+ */
+final case class TemplateCapture(token: String, source: TemplateSource, regex: String)
+
+/**
+ * A templated response (#132): `body` may embed capture `token`s, each replaced
+ * by the value its [[TemplateCapture]] pulls from the request.
+ */
+final case class ResponseTemplate(
+  body: String,
+  captures: List[TemplateCapture],
+  status: Int = 200
+)
+
 /**
  * The unit of isolation. Hides *how* isolation is achieved:
  *   - PerInstance: a unique `baseUri` per space; `inject = identity`.

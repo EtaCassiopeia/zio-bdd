@@ -16,3 +16,7 @@ object StubCaps:
   val stateInspection: StateInspection = new StateInspection:
     def currentState(space: MockSpace, name: String): IO[MockError, ScenarioState]       = ZIO.succeed(ScenarioState.Started)
     def setState(space: MockSpace, name: String, to: ScenarioState): IO[MockError, Unit] = ZIO.unit
+
+  val scripting: Scripting     = (_, _, _) => ZIO.succeed(RuleId("stub"))
+  val proxyRecord: ProxyRecord = (_, _, _) => ZIO.succeed(RuleId("stub"))
+  val templating: Templating   = (_, _, _) => ZIO.succeed(RuleId("stub"))

@@ -28,9 +28,9 @@ object CapabilityNegotiationSpec extends ZIOSpecDefault:
     def faults: IO[Unsupported, Faults]                   = cap(Capability.Faults)(anyFault)
     def scenarios: IO[Unsupported, StatefulScenarios]     = cap(Capability.StatefulScenarios)(StubCaps.scenarios)
     def stateInspection: IO[Unsupported, StateInspection] = cap(Capability.StateInspection)(StubCaps.stateInspection)
-    def scripting: IO[Unsupported, Scripting]             = cap(Capability.Scripting)(new Scripting {})
-    def proxyRecord: IO[Unsupported, ProxyRecord]         = cap(Capability.ProxyRecord)(new ProxyRecord {})
-    def templating: IO[Unsupported, Templating]           = cap(Capability.Templating)(new Templating {})
+    def scripting: IO[Unsupported, Scripting]             = cap(Capability.Scripting)(StubCaps.scripting)
+    def proxyRecord: IO[Unsupported, ProxyRecord]         = cap(Capability.ProxyRecord)(StubCaps.proxyRecord)
+    def templating: IO[Unsupported, Templating]           = cap(Capability.Templating)(StubCaps.templating)
 
   def spec = suite("capability fail-fast negotiation")(
     test("require fails at layer construction, before first use") {

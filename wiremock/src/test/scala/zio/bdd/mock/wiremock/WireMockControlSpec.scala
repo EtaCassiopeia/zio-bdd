@@ -148,15 +148,22 @@ object WireMockControlSpec extends ZIOSpecDefault:
           elapsed <- Clock.nanoTime.map(_ - start)
         yield assertTrue(resp.status == 200, elapsed >= 250.millis.toNanos) // ~300ms fixed delay
       } @@ TestAspect.withLiveClock,
-      test("advertises Faults; its accessor succeeds and an unadvertised accessor fails fast") {
+      test("advertises Faults but none of the optional Rift-only capabilities (#132); their accessors fail fast") {
         for
           control    <- ZIO.service[MockControl]
           faultsE    <- control.faults.either
           scriptingE <- control.scripting.either
+          proxyE     <- control.proxyRecord.either
+          templateE  <- control.templating.either
         yield assertTrue(
           control.capabilities.contains(Capability.Faults),
+          !control.capabilities.contains(Capability.Scripting),
+          !control.capabilities.contains(Capability.ProxyRecord),
+          !control.capabilities.contains(Capability.Templating),
           faultsE.isRight,
-          scriptingE == Left(Unsupported(Capability.Scripting, "wiremock"))
+          scriptingE == Left(Unsupported(Capability.Scripting, "wiremock")),
+          proxyE == Left(Unsupported(Capability.ProxyRecord, "wiremock")),
+          templateE == Left(Unsupported(Capability.Templating, "wiremock"))
         )
       },
       test("faults.inject ConnectionReset makes the SUT client observe a transport failure") {

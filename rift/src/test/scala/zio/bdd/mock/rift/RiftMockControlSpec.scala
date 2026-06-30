@@ -194,17 +194,23 @@ object RiftMockControlSpec extends ZIOSpecDefault:
         )
       }
     },
-    test("advertises Faults + StatefulScenarios + StateInspection; the other accessors fail fast (#131)") {
+    test("advertises all six capabilities and every accessor succeeds (#132)") {
       withAdapter { (control, _) =>
         for
-          faultsE <- control.faults.either
-          scenE   <- control.scenarios.either
-          siE     <- control.stateInspection.either
+          faultsE   <- control.faults.either
+          scenE     <- control.scenarios.either
+          siE       <- control.stateInspection.either
+          scriptE   <- control.scripting.either
+          proxyE    <- control.proxyRecord.either
+          templateE <- control.templating.either
         yield assertTrue(
-          control.capabilities == Set(Capability.Faults, Capability.StatefulScenarios, Capability.StateInspection),
+          control.capabilities == Capability.values.toSet,
           faultsE.isRight,
           scenE.isRight,
-          siE.isRight
+          siE.isRight,
+          scriptE.isRight,
+          proxyE.isRight,
+          templateE.isRight
         )
       }
     },
@@ -223,6 +229,80 @@ object RiftMockControlSpec extends ZIOSpecDefault:
           post.exists(_.contains("\"index\":0")), // first-match — wins over a normal rule
           post.exists(_.contains("CONNECTION_RESET_BY_PEER")),
           post.exists(_.contains("/boom"))
+        )
+      }
+    },
+    test("scripting/proxyRecord/templating each post a first-match capability stub to the imposter (#132)") {
+      withAdapter { (control, fake) =>
+        def asT(e: Any): Throwable = new RuntimeException(e.toString)
+        for
+          space    <- control.provision(pingSource).orDieWith(asT).map(_.head)
+          script   <- control.scripting.orDieWith(asT)
+          proxy    <- control.proxyRecord.orDieWith(asT)
+          template <- control.templating.orDieWith(asT)
+          sid <- script
+                   .inject(space, RequestMatch(path = PathMatch.Exact("/s")), Script(ScriptEngine.Rhai, "code"))
+                   .orDieWith(asT)
+          pid <- proxy.proxy(space, RequestMatch(path = PathMatch.Exact("/p")), "http://up").orDieWith(asT)
+          tid <-
+            template
+              .inject(
+                space,
+                RequestMatch(path = PathMatch.Exact("/t")),
+                ResponseTemplate(body = "x${V}", captures = List(TemplateCapture("${V}", TemplateSource.Body, ".*")))
+              )
+              .orDieWith(asT)
+          calls <- fake.stubCalls.get
+          posts  = calls.filter(_.startsWith(s"POST ${portOf(space.baseUri)} "))
+          // the capability stubs are tracked in imp.stubs, so removeRule reaches them (not RuleNotFound)
+          rmS <- control.removeRule(space, sid).either
+          rmT <- control.removeRule(space, tid).either
+        yield assertTrue(
+          sid.value.nonEmpty && pid.value.nonEmpty && tid.value.nonEmpty,
+          posts.forall(_.contains("\"index\":0")), // all first-match
+          posts.exists(c => c.contains("_rift") && c.contains("script") && c.contains("rhai")),
+          posts.exists(c => c.contains("proxy") && c.contains("proxyOnce") && c.contains("http://up")),
+          posts.exists(c => c.contains("copy") && c.contains("${V}")),
+          rmS.isRight && rmT.isRight
+        )
+      }
+    },
+    test(
+      "Correlated scripting/proxy/templating each register a capability space stub ahead of the rules and are removable (#132)"
+    ) {
+      withCorrelated { (control, fake) =>
+        def asT(e: Any): Throwable = new RuntimeException(e.toString)
+        for
+          space    <- control.provision(pingSource).orDieWith(asT).map(_.head)
+          script   <- control.scripting.orDieWith(asT)
+          proxy    <- control.proxyRecord.orDieWith(asT)
+          template <- control.templating.orDieWith(asT)
+          sid <- script
+                   .inject(space, RequestMatch(path = PathMatch.Exact("/s")), Script(ScriptEngine.Rhai, "code"))
+                   .orDieWith(asT)
+          pid <- proxy.proxy(space, RequestMatch(path = PathMatch.Exact("/p")), "http://up").orDieWith(asT)
+          tid <-
+            template
+              .inject(
+                space,
+                RequestMatch(path = PathMatch.Exact("/t")),
+                ResponseTemplate(body = "x${V}", captures = List(TemplateCapture("${V}", TemplateSource.Body, ".*")))
+              )
+              .orDieWith(asT)
+          stubs   <- fake.spaceStubs.get // "$port/$flowId $body" per POST .../spaces/:flow/stubs
+          scriptIx = stubs.indexWhere(s => s.contains("script") && s.contains("rhai") && s.contains("/s"))
+          // a rebuild re-registers the space's /ping rule AFTER the capability stubs → they win first-match
+          rulePast = stubs.zipWithIndex.exists((s, i) => i > scriptIx && s.contains("/ping"))
+          rmS     <- control.removeRule(space, sid).either // tracked in cs.extras → removable, not RuleNotFound
+          rmP     <- control.removeRule(space, pid).either
+          rmT     <- control.removeRule(space, tid).either
+        yield assertTrue(
+          sid.value.nonEmpty && pid.value.nonEmpty && tid.value.nonEmpty,
+          scriptIx >= 0,
+          rulePast,
+          stubs.exists(s => s.contains("proxyOnce") && s.contains("/p")),
+          stubs.exists(s => s.contains("copy") && s.contains("/t")),
+          rmS.isRight && rmP.isRight && rmT.isRight
         )
       }
     },

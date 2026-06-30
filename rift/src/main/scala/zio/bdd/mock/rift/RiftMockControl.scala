@@ -55,7 +55,14 @@ private[rift] final case class RiftMockControl(
 
   def backendName: String = "rift"
   def capabilities: Set[Capability] =
-    Set(Capability.Faults, Capability.StatefulScenarios, Capability.StateInspection)
+    Set(
+      Capability.Faults,
+      Capability.StatefulScenarios,
+      Capability.StateInspection,
+      Capability.Scripting,
+      Capability.ProxyRecord,
+      Capability.Templating
+    )
 
   override def isolation: Isolation = mode match
     case RiftMode.Correlated(_) => Isolation.Correlated
@@ -106,9 +113,9 @@ private[rift] final case class RiftMockControl(
   def faults: IO[Unsupported, Faults]                   = ZIO.succeed(riftFaults)
   def scenarios: IO[Unsupported, StatefulScenarios]     = ZIO.succeed(statefulScenarios)
   def stateInspection: IO[Unsupported, StateInspection] = ZIO.succeed(stateInspector)
-  def scripting: IO[Unsupported, Scripting]             = unsupported(Capability.Scripting)
-  def proxyRecord: IO[Unsupported, ProxyRecord]         = unsupported(Capability.ProxyRecord)
-  def templating: IO[Unsupported, Templating]           = unsupported(Capability.Templating)
+  def scripting: IO[Unsupported, Scripting]             = ZIO.succeed(riftScripting)
+  def proxyRecord: IO[Unsupported, ProxyRecord]         = ZIO.succeed(riftProxyRecord)
+  def templating: IO[Unsupported, Templating]           = ZIO.succeed(riftTemplating)
 
   // ===== Faults (#128) — `_rift.fault` (rift#239) =================================
 
@@ -138,9 +145,52 @@ private[rift] final case class RiftMockControl(
       ruleId <- freshId
       rules  <- cs.rules.get
       faults <- cs.faults.get
+      extras <- cs.extras.get
       next    = (ruleId, m, fault) +: faults
-      _      <- rebuild(cs, next, rules)
+      _      <- rebuild(cs, extras, next, rules)
       _      <- cs.faults.set(next)
+    yield ruleId
+
+  // ===== Optional capabilities (#132): scripting / proxy-record / templating ======
+  // Each installs a special-response stub (`_rift.script`, a Mountebank `proxy`, or
+  // an `is` + `_behaviors.copy`) for matching requests. Like faults, the stub is
+  // first-match (PerInstance: index 0, tracked in `imp.stubs`; Correlated: tracked in
+  // `cs.extras`, re-registered ahead of rules on rebuild) so it wins over a normal
+  // rule, is removable via `removeRule`, and survives a later space rebuild.
+
+  private val riftScripting: Scripting = new Scripting:
+    def inject(space: MockSpace, m: RequestMatch, script: Script): IO[MockError, RuleId] =
+      injectStub(space, rid => RiftProtocol.scriptStub(m, script, rid))
+
+  private val riftProxyRecord: ProxyRecord = new ProxyRecord:
+    def proxy(space: MockSpace, m: RequestMatch, upstream: String): IO[MockError, RuleId] =
+      injectStub(space, rid => RiftProtocol.proxyStub(m, upstream, rid))
+
+  private val riftTemplating: Templating = new Templating:
+    def inject(space: MockSpace, m: RequestMatch, template: ResponseTemplate): IO[MockError, RuleId] =
+      injectStub(space, rid => RiftProtocol.templateStub(m, template, rid))
+
+  private def injectStub(space: MockSpace, buildStub: RuleId => Json): IO[MockError, RuleId] =
+    freshId.flatMap(rid =>
+      dispatch(space)(cs => corrInjectStub(cs, rid, buildStub(rid)))(imp => piInjectStub(imp, rid, buildStub(rid)))
+    )
+
+  private def piInjectStub(imp: Imposter, ruleId: RuleId, stub: Json): IO[MockError, RuleId] =
+    for
+      u   <- url(s"/imposters/${imp.port}/stubs")
+      res <- send(jsonRequest(HttpMethod.POST, u, RiftProtocol.addStubBodyOf(0, stub)))
+      _   <- expectSuccess(s"inject capability stub into imposter ${imp.port}", res)
+      _   <- imp.stubs.update(ruleId +: _)
+    yield ruleId
+
+  private def corrInjectStub(cs: CorrSpace, ruleId: RuleId, stub: Json): IO[MockError, RuleId] =
+    for
+      rules  <- cs.rules.get
+      faults <- cs.faults.get
+      extras <- cs.extras.get
+      next    = (ruleId, stub) +: extras
+      _      <- rebuild(cs, next, faults, rules)
+      _      <- cs.extras.set(next)
     yield ruleId
 
   // ===== StatefulScenarios + StateInspection (#131) ===============================
@@ -153,9 +203,10 @@ private[rift] final case class RiftMockControl(
   // Limitations (untested edges — the conformance gate is PerInstance, one define per
   // space): re-`define` of an existing name APPENDS stubs rather than replacing the
   // prior ones (provision a fresh space per scenario, as the conformance does); and on
-  // a Correlated space a plain-rule mutation (addRule/removeRule/replaceRules) rebuilds
-  // the space — dropping its scenario stubs too. Don't mix rule mutation with scenarios
-  // on one Correlated space.
+  // a Correlated space a plain-rule mutation (addRule/removeRule/replaceRules) — or a
+  // capability injection (faults/script/proxy/template), which rebuilds the same way —
+  // drops the space's scenario stubs (and discards any proxy recording). Don't mix
+  // scenarios with rule mutation or capability injection on one Correlated space.
 
   private val statefulScenarios: StatefulScenarios = new StatefulScenarios:
     def define(space: MockSpace, scenarioDef: ScenarioDef): IO[MockError, Unit] =
@@ -360,8 +411,11 @@ private[rift] final case class RiftMockControl(
       _         <- registerStubs(port, flowId, tagged).onError(_ => deleteSpace(port, flowId).ignore)
       rulesRef  <- Ref.make(tagged)
       faultsRef <- Ref.make(Vector.empty[(RuleId, RequestMatch, FaultKind)])
+      extrasRef <- Ref.make(Vector.empty[(RuleId, Json)])
       scen      <- Ref.make(Map.empty[String, ScenarioState])
-      _         <- correlated.update(_.updated(id, CorrSpace(port, flowId, corr.header, rulesRef, faultsRef, scen)))
+      _ <- correlated.update(
+             _.updated(id, CorrSpace(port, flowId, corr.header, rulesRef, faultsRef, extrasRef, scen))
+           )
     yield MockSpace(endpoint.baseUriFor(port), req => req.copy(headers = req.headers.add(corr.header, flowId)), id)
 
   // Create the one shared imposter on first Correlated provision (race-safe).
@@ -395,13 +449,17 @@ private[rift] final case class RiftMockControl(
     for
       rules  <- cs.rules.get
       faults <- cs.faults.get
-      _ <- // commit tracking only on success; a removed id is either a rule or a fault
+      extras <- cs.extras.get
+      _ <- // commit tracking only on success; a removed id is a rule, a fault, or a capability stub
         if rules.exists(_._1 == id) then
           val next = rules.filterNot(_._1 == id)
-          rebuild(cs, faults, next) *> cs.rules.set(next)
+          rebuild(cs, extras, faults, next) *> cs.rules.set(next)
         else if faults.exists(_._1 == id) then
           val nextF = faults.filterNot(_._1 == id)
-          rebuild(cs, nextF, rules) *> cs.faults.set(nextF)
+          rebuild(cs, extras, nextF, rules) *> cs.faults.set(nextF)
+        else if extras.exists(_._1 == id) then
+          val nextE = extras.filterNot(_._1 == id)
+          rebuild(cs, nextE, faults, rules) *> cs.extras.set(nextE)
         else ZIO.fail(MockError.RuleNotFound(spaceId, id))
     yield ()
 
@@ -427,18 +485,35 @@ private[rift] final case class RiftMockControl(
   // the class doc.) Re-register with the currently-tracked faults (a rule mutation
   // must not drop an injected fault).
   private def rebuildSpaceWith(cs: CorrSpace, rules: Vector[(RuleId, MockRule)]): IO[MockError, Unit] =
-    cs.faults.get.flatMap(faults => rebuild(cs, faults, rules))
+    for
+      extras <- cs.extras.get
+      faults <- cs.faults.get
+      _      <- rebuild(cs, extras, faults, rules)
+    yield ()
 
-  // Faults are registered ahead of the rules so they win first-match (Mountebank is
-  // first-match-wins, and rift#223 space stubs append in registration order).
+  // Capability stubs (extras) and faults are registered ahead of the rules so they
+  // win first-match (Mountebank is first-match-wins, and rift#223 space stubs append
+  // in registration order).
   private def rebuild(
     cs: CorrSpace,
+    extras: Vector[(RuleId, Json)],
     faults: Vector[(RuleId, RequestMatch, FaultKind)],
     rules: Vector[(RuleId, MockRule)]
   ): IO[MockError, Unit] =
     deleteSpace(cs.port, cs.flowId) *>
+      registerRawStubs(cs.port, cs.flowId, extras) *>
       registerFaultStubs(cs.port, cs.flowId, faults) *>
       registerStubs(cs.port, cs.flowId, rules)
+
+  private def registerRawStubs(port: Int, flowId: String, extras: Vector[(RuleId, Json)]): IO[MockError, Unit] =
+    ZIO.foreachDiscard(extras)((_, stub) => postSpaceRawStub(port, flowId, stub))
+
+  private def postSpaceRawStub(port: Int, flowId: String, stub: Json): IO[MockError, Unit] =
+    for
+      u   <- url(s"/imposters/$port/spaces/${enc(flowId)}/stubs")
+      res <- send(jsonRequest(HttpMethod.POST, u, stub))
+      _   <- expectSuccess(s"add capability stub to $flowId", res)
+    yield ()
 
   private def registerFaultStubs(
     port: Int,
@@ -566,6 +641,7 @@ private[rift] object RiftMockControl:
     header: String,
     rules: Ref[Vector[(RuleId, MockRule)]],
     faults: Ref[Vector[(RuleId, RequestMatch, FaultKind)]],
+    extras: Ref[Vector[(RuleId, Json)]], // pre-built capability stubs (#132): script / proxy / template
     scenarios: Ref[Map[String, ScenarioState]]
   )
 

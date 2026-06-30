@@ -97,7 +97,7 @@ object ConformanceMatrixSpec extends ZIOSpecDefault:
     MockBackendUnderTest(
       "rift",
       (Client.default ++ Provisioning.live) >>> Rift.managed().mapError(asT),
-      Set(Capability.Faults, Capability.StatefulScenarios, Capability.StateInspection),
+      Capability.values.toSet, // Rift advertises every capability (#132)
       Isolation.PerInstance,
       available = riftEnabled
     )
@@ -199,8 +199,33 @@ object ConformanceMatrixSpec extends ZIOSpecDefault:
         if riftEnabled then all.forall(s => matrix.cell(s.name, "rift").exists(_.outcome == Outcome.Pass))
         else riftCells.size == all.size && riftCells.forall(_ == Outcome.Skip)
       )
+    } @@ TestAspect.withLiveClock,
+    test("cap-scripting feature PASSes on Rift; SKIPs on WireMock (un-advertised) (#132)") {
+      riftOnlyCapability("cap-scripting", ScriptingScenarios.all)
+    } @@ TestAspect.withLiveClock,
+    test("cap-templating feature PASSes on Rift; SKIPs on WireMock (un-advertised) (#132)") {
+      riftOnlyCapability("cap-templating", TemplatingScenarios.all)
     } @@ TestAspect.withLiveClock
   )
+
+  // A capability only Rift advertises: WireMock SKIPs every scenario (un-advertised,
+  // a justified SKIP — never FAIL); Rift PASSes under RIFT_IT, else its column is
+  // SKIPPED-unavailable (local, no Docker).
+  private def riftOnlyCapability(label: String, all: List[ConformanceScenario]) =
+    for
+      matrix   <- ConformanceHarness.run(List(wiremock, rift), all)
+      _        <- ZIO.logInfo(s"$label matrix:\n${matrix.render}")
+      rfFails   = nonPass(matrix, "rift", all)
+      _        <- ZIO.logInfo(s"rift non-pass: $rfFails").when(riftEnabled && rfFails.nonEmpty)
+      wmCells   = all.flatMap(s => matrix.cell(s.name, "wiremock").map(_.outcome))
+      riftCells = all.flatMap(s => matrix.cell(s.name, "rift").map(_.outcome))
+    yield assertTrue(
+      all.nonEmpty,
+      wmCells.size == all.size && wmCells.forall(_ == Outcome.Skip),
+      matrix.conformant(wiremock),
+      if riftEnabled then all.forall(s => matrix.cell(s.name, "rift").exists(_.outcome == Outcome.Pass))
+      else riftCells.size == all.size && riftCells.forall(_ == Outcome.Skip)
+    )
 
   private def nonPass(matrix: Matrix, backend: String, scenarios: List[ConformanceScenario]): List[String] =
     scenarios.flatMap { s =>
