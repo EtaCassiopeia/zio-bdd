@@ -117,7 +117,7 @@ object RiftMockControlSpec extends ZIOSpecDefault:
                  s"""{"port":$port,"requests":[{"method":"GET","path":"/ping","headers":{},"body":null}]}"""
                )
           recvE <- control.received(s).either
-        yield assertTrue(recvE == Right(List(RecordedRequest(Method.Get, "/ping", Map.empty, None))))
+        yield assertTrue(recvE == Right(List(RecordedRequest(Method.Get, "/ping", Headers.empty, None))))
       }
     },
     test("addRule/replaceRules/removeRule hit the stubs sub-resource endpoints") {
@@ -237,7 +237,7 @@ object RiftMockControlSpec extends ZIOSpecDefault:
           deleted  <- fake.deletedPorts.get
           globals  <- fake.globalDeletes.get
         yield assertTrue(
-          recvE == Right(List(RecordedRequest(Method.Get, "/native", Map.empty, None))),
+          recvE == Right(List(RecordedRequest(Method.Get, "/native", Headers.empty, None))),
           destroyE.isRight,
           deleted == Chunk(port), // space-local: only this imposter
           globals == 0            // never the global reset
@@ -369,8 +369,8 @@ object RiftMockControlSpec extends ZIOSpecDefault:
             a.baseUri == b.baseUri,                                           // shared imposter -> shared baseUri
             stubs.exists(_.contains(s"/${a.id.value} ")),                     // A's stub scoped under A's flowId
             stubs.exists(_.contains(s"/${b.id.value} ")),
-            a.inject(req).headers.get("X-Mock-Space").contains(a.id.value), // inject routes the request to A
-            a.inject(req).headers.get("X-Mock-Space") != b.inject(req).headers.get("X-Mock-Space")
+            a.inject(req).headers.first("X-Mock-Space").contains(a.id.value), // inject routes the request to A
+            a.inject(req).headers.first("X-Mock-Space") != b.inject(req).headers.first("X-Mock-Space")
           )
       }
     },
@@ -409,7 +409,7 @@ object RiftMockControlSpec extends ZIOSpecDefault:
           recvE   <- control.received(s).either
           matches <- fake.requestMatches.get
         yield assertTrue(
-          recvE == Right(List(RecordedRequest(Method.Get, "/ping", Map.empty, None))),
+          recvE == Right(List(RecordedRequest(Method.Get, "/ping", Headers.empty, None))),
           matches.exists(_.contains(s"header:X-Mock-Space=${s.id.value}")) // filtered by THIS space's flowId
         )
       }
@@ -488,12 +488,12 @@ object RiftMockControlSpec extends ZIOSpecDefault:
           val a   = aE.toOption.get.head
           val b   = bE.toOption.get.head
           val req = HttpRequest(Method.Get, "http://sut/")
-          val ta  = a.inject(req).headers.get("traceparent")
+          val ta  = a.inject(req).headers.first("traceparent")
           assertTrue(
             aE.isRight && bE.isRight,
             posted.head.contains("\"flowIdSource\":\"header:traceparent\""),
             ta.exists(_.matches("00-[0-9a-f]{32}-[0-9a-f]{16}-01")), // W3C traceparent shape
-            ta != b.inject(req).headers.get("traceparent")           // distinct per space
+            ta != b.inject(req).headers.first("traceparent")         // distinct per space
           )
       }
     },

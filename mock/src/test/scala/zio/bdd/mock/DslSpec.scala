@@ -114,7 +114,7 @@ object DslSpec extends ZIOSpecDefault:
       test("withHeader / withStatus / withLatency refine the response") {
         assertTrue(
           ok.withHeader("Content-Type", "application/json") ==
-            ResponseDef(status = 200, headers = Map("Content-Type" -> "application/json")),
+            ResponseDef(status = 200, headers = Headers("Content-Type" -> "application/json")),
           ok.withStatus(204) == ResponseDef(status = 204),
           ok.json("{}").withLatency(50.millis) ==
             ResponseDef(status = 200, body = Body.Json("{}"), delay = Some(50.millis))
@@ -152,7 +152,7 @@ object DslSpec extends ZIOSpecDefault:
           ),
           respond = ResponseDef(
             status = 201,
-            headers = Map("Location" -> "/users/1"),
+            headers = Headers("Location" -> "/users/1"),
             body = Body.Json("""{"ok":true}"""),
             delay = Some(10.millis)
           ),

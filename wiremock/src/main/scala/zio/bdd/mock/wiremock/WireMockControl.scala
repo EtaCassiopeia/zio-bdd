@@ -132,7 +132,10 @@ private[wiremock] final case class WireMockControl(
             WireMockTranslation.recorded(
               req.getMethod.getName,
               req.getUrl,
-              req.getHeaders.all.asScala.map(h => h.key.toLowerCase -> h.firstValue).toMap,
+              // keep every value per key (Headers lower-cases the key) — don't drop to firstValue (#162)
+              req.getHeaders.all.asScala.foldLeft(Headers.empty)((acc, h) =>
+                h.values.asScala.foldLeft(acc)((a, v) => a.add(h.key, v))
+              ),
               Option(req.getBodyAsString).filter(_.nonEmpty)
             )
           )
@@ -216,7 +219,7 @@ private[wiremock] final case class WireMockControl(
 
   private def injectFor(id: SpaceId, corr: Option[Correlation]): HttpRequest => HttpRequest =
     corr match
-      case Some(c) => req => req.copy(headers = req.headers + (c.header -> c.value(id)))
+      case Some(c) => req => req.copy(headers = req.headers.add(c.header, c.value(id)))
       case None    => identity
 
   private def stop(server: WireMockServer): UIO[Unit] =
