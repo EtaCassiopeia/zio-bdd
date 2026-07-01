@@ -6,7 +6,7 @@ import zio.bdd.core.step.{Stage, ZIOSteps}
 import zio.bdd.mock.*
 
 import java.net.URI
-import java.net.http.{HttpClient, HttpRequest as JHttpRequest, HttpResponse as JHttpResponse}
+import java.net.http.{HttpRequest as JHttpRequest, HttpResponse as JHttpResponse}
 import scala.jdk.CollectionConverters.*
 
 /**
@@ -168,8 +168,10 @@ trait MockSteps[R, S] { self: ZIOSteps[R & MockControl, S] =>
         val publisher = injected.body match
           case Some(body) => JHttpRequest.BodyPublishers.ofString(body)
           case None       => JHttpRequest.BodyPublishers.noBody()
-        val request  = builder.method(injected.method.toString.toUpperCase, publisher).build()
-        val response = HttpClient.newHttpClient().send(request, JHttpResponse.BodyHandlers.ofString())
+        val request = builder.method(injected.method.toString.toUpperCase, publisher).build()
+        // Pinned to HTTP/1.1 for the same reason as SutClient (#183): mock servers are cleartext
+        // HTTP/1.1 and the default HTTP/2 h2c path intermittently EOFs a 201.
+        val response = SutClient.http1Client.send(request, JHttpResponse.BodyHandlers.ofString())
         val headers = response.headers().map().asScala.foldLeft(Headers.empty) { case (h, (k, vs)) =>
           vs.asScala.foldLeft(h)((acc, v) => acc.add(k, v))
         }
