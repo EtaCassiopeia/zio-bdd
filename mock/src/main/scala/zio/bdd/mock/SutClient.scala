@@ -44,6 +44,12 @@ trait SutClient:
 object SutClient:
   def make(space: MockSpace): SutClient = Live(space)
 
+  // Mock servers speak cleartext HTTP/1.1; the JDK client defaults to HTTP/2, whose h2c upgrade
+  // path intermittently EOFs on a 201 response under the test runtime (#183). Pin HTTP/1.1 — there
+  // is no reason to negotiate HTTP/2 against a mock. Shared with MockSteps.sendThrough.
+  private[mock] def http1Client: HttpClient =
+    HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build()
+
   /** Per-scenario layer: bind the SUT's dependency client to `space`. */
   def layer(space: MockSpace): ULayer[SutClient] = ZLayer.succeed(make(space))
 
@@ -66,7 +72,7 @@ object SutClient:
           case Some(content) => JHttpRequest.BodyPublishers.ofString(content)
           case None          => JHttpRequest.BodyPublishers.noBody()
         val request  = builder.method(injected.method.toString.toUpperCase, publisher).build()
-        val response = HttpClient.newHttpClient().send(request, JHttpResponse.BodyHandlers.ofString())
+        val response = http1Client.send(request, JHttpResponse.BodyHandlers.ofString())
         // Preserve every value per response header key (Headers canonicalises keys to lower-case).
         val respHeaders = response.headers().map().asScala.foldLeft(Headers.empty) { case (h, (k, vs)) =>
           vs.asScala.foldLeft(h)((acc, v) => acc.add(k, v))

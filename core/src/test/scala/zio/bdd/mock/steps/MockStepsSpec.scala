@@ -219,6 +219,16 @@ object MockStepsSpec extends ZIOSpecDefault:
         )
       ).map(r => assertTrue(!r.isPassed, r.error.isDefined))
     },
+    test("a 201-with-body response round-trips through sendThrough (the case that EOFs under HTTP/2) (#183)") {
+      run(
+        List(
+          step(G, """a mock space returning 201 "created" at "/thing""""),
+          step(W, """a "POST" "/thing" is sent through the space"""),
+          step(T, "the space response status is 201"),
+          step(T, """the space response body contains "created"""")
+        )
+      ).map(r => assertTrue(r.isPassed))
+    },
     test("a send to an unstubbed path returns 404 through the space") {
       run(
         List(

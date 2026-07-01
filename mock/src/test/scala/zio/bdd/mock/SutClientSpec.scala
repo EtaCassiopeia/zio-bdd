@@ -53,10 +53,13 @@ object SutClientSpec extends ZIOSpecDefault:
                     val seg = full.stripPrefix("/").split("/", 2)
                     (seg(0), "/" + (if seg.length > 1 then seg(1) else ""))
                 recordings.computeIfAbsent(key, _ => new CopyOnWriteArrayList[(String, String)]()).add((method, path))
-                // Echo the request body back, stamp a header, and fail /down — so a
-                // test can pin SutResponse status/body/header decoding and the
-                // non-2xx-is-a-value contract.
-                val status    = if path.endsWith("/down") then 503 else 200
+                // Echo the request body back, stamp a header, fail /down, and 201 on /created — so a
+                // test can pin SutResponse status/body/header decoding, the non-2xx-is-a-value
+                // contract, and the 201-with-body round-trip (#183).
+                val status =
+                  if path.endsWith("/down") then 503
+                  else if path.endsWith("/created") then 201
+                  else 200
                 val respBytes = reqBody.getBytes
                 exchange.getResponseHeaders.set("X-Served-By", "dep")
                 exchange.sendResponseHeaders(status, if respBytes.isEmpty then -1 else respBytes.length.toLong)
@@ -167,6 +170,20 @@ object SutClientSpec extends ZIOSpecDefault:
             _   <- SutClient.make(rewriting).send(Method.Get, "/orig")
             rec <- dep.received("Z")
           yield assertTrue(rec == List(("GET", "/orig-rewritten"))) // the inject's URI rewrite was honoured
+        }
+      }
+    },
+    test(
+      "the SUT-facing client is pinned to HTTP/1.1 (mock servers are cleartext HTTP/1.1; HTTP/2 h2c EOFs a 201) (#183)"
+    ) {
+      assertTrue(SutClient.http1Client.version == HttpClient.Version.HTTP_1_1)
+    },
+    test("a 201-with-body response round-trips through SutClient (the case that EOFs under HTTP/2) (#183)") {
+      ZIO.scoped {
+        dependency.flatMap { dep =>
+          val client = SutClient.make(dep.perInstanceSpace("C"))
+          for created <- client.send(Method.Post, "/created", body = Some("new-resource"))
+          yield assertTrue(created.status == 201, created.body == "new-resource")
         }
       }
     },
