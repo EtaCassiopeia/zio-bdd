@@ -33,9 +33,9 @@ private[rift] object RiftProtocol:
   private def flowStateExt(flowIdSource: String): (String, Json) =
     "_rift" -> Json.Obj(
       "flowState" -> Json.Obj(
-        "backend"                -> Json.Str("inmemory"),
-        "ttlSeconds"             -> Json.Num(300),
-        "mountebankStateMapping" -> Json.Obj("flowIdSource" -> Json.Str(flowIdSource))
+        "backend"      -> Json.Str("inmemory"),
+        "ttlSeconds"   -> Json.Num(300),
+        "flowIdSource" -> Json.Str(flowIdSource)
       )
     )
 
@@ -59,8 +59,7 @@ private[rift] object RiftProtocol:
    * source of `header:<correlationHeader>`, so Rift resolves each request's
    * flow + gates stubs/recorded requests by that header natively (rift#223).
    * The flow-state config is a backend-native extension, so it lives under
-   * `_rift.flowState`
-   * (`imposter.config.rift.flowState.mountebankStateMapping.flowIdSource`).
+   * `_rift.flowState` (`imposter.config.rift.flowState.flowIdSource`).
    */
   def correlatedImposter(port: Int, name: String, correlationHeader: String): Json =
     Json.Obj(
