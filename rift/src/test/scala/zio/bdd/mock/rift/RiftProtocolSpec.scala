@@ -58,7 +58,16 @@ object RiftProtocolSpec extends ZIOSpecDefault:
         arr(j / "stubs").size == 1,
         // an in-memory flow store keyed by port, so scenario stubs added later actually advance
         j / "_rift" / "flowState" / "backend" == Json.Str("inmemory"),
-        j / "_rift" / "flowState" / "mountebankStateMapping" / "flowIdSource" == Json.Str("imposter_port")
+        // flowIdSource sits directly under flowState; the mountebankStateMapping wrapper is gone (rift#266)
+        j / "_rift" / "flowState" / "flowIdSource" == Json.Str("imposter_port"),
+        field(j / "_rift" / "flowState", "mountebankStateMapping").isEmpty
+      )
+    },
+    test("correlatedImposter emits flowIdSource header:<h> directly under flowState; no wrapper (rift#266)") {
+      val j = RiftProtocol.correlatedImposter(4600, "correlated", "X-Mock-Space")
+      assertTrue(
+        j / "_rift" / "flowState" / "flowIdSource" == Json.Str("header:X-Mock-Space"),
+        field(j / "_rift" / "flowState", "mountebankStateMapping").isEmpty
       )
     },
     test("an exact path + method rule becomes equals predicates and an `is` response") {

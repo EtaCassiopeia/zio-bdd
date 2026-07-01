@@ -52,12 +52,13 @@ object RiftMode:
  */
 object Rift:
 
-  // Pinned to v0.6.0. Floor is v0.4.0: Correlated isolation (#156) needs the
-  // space-scoped stub + per-space teardown endpoints (EtaCassiopeia/rift#223),
-  // first shipped in v0.4.0 — which also supersedes the older v0.2.0 floor (the
-  // rift#207 release where DELETE /imposters/:port tears down keep-alive
-  // connections so a destroyed imposter stops serving a pooled client).
-  val DefaultImage: String     = "zainalpour/rift-proxy:v0.6.0"
+  // Pinned to v0.8.0. Floor is v0.8.0: the adapter emits the flat
+  // `_rift.flowState.flowIdSource` shape (EtaCassiopeia/rift#266, #268), which
+  // Rift only reads from v0.8.0 on — earlier images expect the dropped
+  // `mountebankStateMapping` wrapper and return 404/empty on the correlated
+  // path. v0.8.0 also carries the v0.4.0 correlated-isolation endpoints (#223)
+  // and the v0.2.0 keep-alive teardown fix (#207).
+  val DefaultImage: String     = "zainalpour/rift-proxy:v0.8.0"
   val DefaultAdminPort: Int    = 2525
   val DefaultImposterBase: Int = 4545
   val DefaultPoolSize: Int     = 16
