@@ -114,6 +114,38 @@ object EmbeddedRiftFfiSpec extends ZIOSpecDefault:
           reverted.status == 200 && reverted.body == "native!"   // native stub preserved across mutation
         )).provide(Provisioning.live, EmbeddedRift.layer.mapError(asT))
     },
+    test("proxyRecord: an injected proxy records the upstream response and replays it (#185)") {
+      if !EmbeddedRift.available then ZIO.succeed(assertCompletes)
+      else
+        // A second embedded imposter is the upstream: the proxy on the target space forwards GET /u
+        // to it, records the first response, and replays it on the second call — proving the advertised
+        // ProxyRecord capability works end-to-end over the FFI, not just that the adapter emits the JSON.
+        val upstreamSource =
+          MockSource.Dsl(
+            MockSpec(
+              List(
+                MockRule(
+                  RequestMatch(method = Some(Method.Get), path = PathMatch.Exact("/u")),
+                  ResponseDef(status = 200, body = Body.Text("from-upstream"))
+                )
+              )
+            )
+          )
+        (for
+          control  <- ZIO.service[MockControl]
+          upstream <- control.provision(upstreamSource).mapError(asT).map(_.head)
+          target   <- control.provision(pingSource).mapError(asT).map(_.head)
+          proxy    <- control.proxyRecord.mapError(u => new RuntimeException(s"Unsupported: $u"))
+          _        <- proxy.proxy(target, RequestMatch(path = PathMatch.Exact("/u")), upstream.baseUri).mapError(asT)
+          first    <- SutClient.make(target).send(Method.Get, "/u")
+          replayed <- SutClient.make(target).send(Method.Get, "/u")
+          _        <- control.destroy(target).mapError(asT)
+          _        <- control.destroy(upstream).mapError(asT)
+        yield assertTrue(
+          first.status == 200 && first.body == "from-upstream",      // proxied + recorded
+          replayed.status == 200 && replayed.body == "from-upstream" // replayed from the recording
+        )).provide(Provisioning.live, EmbeddedRift.layer.mapError(asT))
+    },
     test("provisionNative: a WireMock spec is rejected with InvalidDefinition") {
       if !EmbeddedRift.available then ZIO.succeed(assertCompletes)
       else
