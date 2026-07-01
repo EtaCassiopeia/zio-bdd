@@ -18,19 +18,25 @@ import zio.test.*
  *
  * `Matrix.conformant(embedded)` is the full acceptance condition for a suite:
  * with the library present, the core scenarios (which require no capability)
- * must PASS and the capability scenarios SKIP-justified (embedded advertises
- * none); with it absent, the whole column is SKIPPED-unavailable (also
- * conformant). So one assertion gates each catalogue.
+ * must PASS, the stub-based capability scenarios (faults/scripting/templating,
+ * #185) must PASS against the live engine, and the stateful scenarios
+ * SKIP-justified (embedded advertises no StatefulScenarios/StateInspection —
+ * the C-ABI has no scenario-state endpoints); with the library absent, the
+ * whole column is SKIPPED-unavailable (also conformant). So one assertion gates
+ * each catalogue.
  */
 object EmbeddedConformanceSpec extends ZIOSpecDefault:
 
   private def asT(e: MockError): Throwable = new RuntimeException(s"MockError: $e")
 
+  // The embedded adapter advertises the four stub-based capabilities (#185); StatefulScenarios
+  // and StateInspection stay out of scope (no scenario-state endpoints over the C-ABI). This must
+  // mirror EmbeddedRiftMockControl.capabilities so the harness runs the supported catalogues live.
   private val embedded =
     MockBackendUnderTest(
       "embedded",
       Provisioning.live >>> EmbeddedRift.layer.mapError(asT),
-      Set.empty,
+      Set(Capability.Faults, Capability.Scripting, Capability.ProxyRecord, Capability.Templating),
       Isolation.PerInstance,
       available = EmbeddedRift.available
     )
