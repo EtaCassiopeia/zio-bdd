@@ -32,21 +32,44 @@ object TypedExtractor {
 trait DefaultTypedExtractor {
 
   /**
-   * Matches any text, optionally double-quoted. Quotes are stripped from the
-   * captured value.
+   * Matches any text, optionally double-quoted (standard Cucumber `{string}`
+   * semantics). The quoted branch is escape-aware and non-spanning — it stops
+   * at its own unescaped closing quote (`\"`/`\\` stay inside the token)
+   * instead of the old greedy `".*"` running to the last quote on the line —
+   * and the captured value is unquoted and unescaped (`\"`→`"`, `\\`→`\`). The
+   * unquoted `.*` fallback is unchanged. (#184)
    */
-  val string: TypedExtractor[String] = TypedExtractor.make[String]("(\".*\"|.*)") { (_, groups, groupIndex) =>
-    groups
-      .lift(groupIndex)
-      .map { s =>
-        val trimmed = s.trim
-        val unquoted =
-          if (trimmed.startsWith("\"") && trimmed.endsWith("\""))
-            trimmed.substring(1, trimmed.length - 1)
-          else trimmed
-        (unquoted, groupIndex + 1)
+  val string: TypedExtractor[String] =
+    TypedExtractor.make[String]("""("(?:\\.|[^"\\])*"|.*)""") { (_, groups, groupIndex) =>
+      groups
+        .lift(groupIndex)
+        .map { s =>
+          val trimmed = s.trim
+          val unquoted =
+            if (trimmed.length >= 2 && trimmed.startsWith("\"") && trimmed.endsWith("\""))
+              unescapeQuoted(trimmed.substring(1, trimmed.length - 1))
+            else trimmed
+          (unquoted, groupIndex + 1)
+        }
+        .toRight(s"Expected string at group $groupIndex")
+    }
+
+  // Cucumber unescaping of a quoted token's contents: only `\"` and `\\` are escapes (→ `"` / `\`);
+  // any other backslash sequence is left verbatim.
+  private def unescapeQuoted(s: String): String = {
+    val sb = new StringBuilder(s.length)
+    var i  = 0
+    while (i < s.length) {
+      val c = s.charAt(i)
+      if (c == '\\' && i + 1 < s.length && { val n = s.charAt(i + 1); n == '"' || n == '\\' }) {
+        sb.append(s.charAt(i + 1))
+        i += 2
+      } else {
+        sb.append(c)
+        i += 1
       }
-      .toRight(s"Expected string at group $groupIndex")
+    }
+    sb.toString
   }
 
   /** Matches a single word (no whitespace). */

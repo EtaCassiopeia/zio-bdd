@@ -44,6 +44,51 @@ object TypedExtractorSpec extends ZIOSpecDefault with DefaultTypedExtractor {
     },
     test("fails when group index is out of bounds") {
       assert(string.extract(input(), List(), 0))(isLeft(containsString("Expected string")))
+    },
+    // End-to-end through StepExpression: the composed regex must give each quoted arg its own
+    // group instead of the first {string} spanning the whole line (#184).
+    test("two adjacent quoted args on one step do not span (#184)") {
+      val expr = StepExpression[(String, String, String)](
+        List(
+          Literal("the client sends "),
+          Extractor(string),
+          Literal(" "),
+          Extractor(string),
+          Literal(" with body "),
+          Extractor(string)
+        )
+      )
+      assert(expr.extract(input("the client sends \"POST\" \"/echo\" with body \"ping\"")))(
+        isSome(equalTo(("POST", "/echo", "ping")))
+      )
+    },
+    test("a quoted token with escaped quotes is captured whole and unescaped (#184)") {
+      val expr = StepExpression[Tuple1[String]](List(Literal("send "), Extractor(string)))
+      assert(expr.extract(input("send \"{\\\"id\\\":1}\"")))(isSome(equalTo(Tuple1("{\"id\":1}"))))
+    },
+    test("a quoted token unescapes an escaped backslash (#184)") {
+      val expr = StepExpression[Tuple1[String]](List(Literal("send "), Extractor(string)))
+      assert(expr.extract(input("send \"a\\\\b\"")))(isSome(equalTo(Tuple1("a\\b"))))
+    },
+    // A lone `"` reaches the handler only via the `.*` fallback; the length >= 2 guard returns it
+    // verbatim instead of throwing on substring(1, 0) (the old code's latent crash) (#184).
+    test("a lone quote is returned verbatim, not crashed on (#184)") {
+      assert(string.extract(input(), List("\""), 0))(isRight(equalTo(("\"", 1))))
+    },
+    // Only \" and \\ are escapes; any other backslash sequence in a quoted token stays verbatim (#184).
+    test("a non-escape backslash sequence inside a quoted token is left verbatim (#184)") {
+      assert(string.extract(input(), List("\"a\\nb\""), 0))(isRight(equalTo(("a\\nb", 1))))
+    },
+    // Unescaping is gated on the value being quoted: an unquoted backslash is not touched (#184).
+    test("an unquoted value containing a backslash is not unescaped (#184)") {
+      assert(string.extract(input(), List("a\\b"), 0))(isRight(equalTo(("a\\b", 1))))
+    },
+    // Composed: escape-aware boundary + unescape together across two args (#184).
+    test("a multi-arg step with an escaped quote in one value splits and unescapes correctly (#184)") {
+      val expr = StepExpression[(String, String)](
+        List(Literal("send "), Extractor(string), Literal(" to "), Extractor(string))
+      )
+      assert(expr.extract(input("send \"a\\\"b\" to \"c\"")))(isSome(equalTo(("a\"b", "c"))))
     }
   )
 
