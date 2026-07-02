@@ -3,7 +3,7 @@ package zio.bdd.core.step
 import zio.bdd.gherkin.StepType
 import zio.test.*
 import zio.test.Assertion.*
-import zio.{Scope, UIO, ZIO, ZLayer}
+import zio.{Ref, Scope, UIO, ZIO, ZLayer}
 
 object StepRegistrySpec extends ZIOSpecDefault with DefaultTypedExtractor {
 
@@ -164,10 +164,124 @@ object StepRegistrySpec extends ZIOSpecDefault with DefaultTypedExtractor {
     }
   )
 
+  // ── Specificity: overlapping prefixes (#186) ────────────────────────────────
+
+  // The 2-arg step from the issue: its first `{string}` `.*` fallback can greedily swallow
+  // the middle of a line meant for the 6-arg step (up to the final ` returns text `), so
+  // both full-match. The more specific (more literal) definition must win, not the one with
+  // fewest extractors.
+  private def stubShort(winner: Ref[String]) = makeStep(
+    StepType.GivenStep,
+    StepExpression[(String, String)](
+      List(Literal("a stub GET "), Extractor(string), Literal(" returns text "), Extractor(string))
+    ),
+    (_: (String, String)) => winner.set("short")
+  )
+
+  private def stubLong(winner: Ref[String]) = makeStep(
+    StepType.GivenStep,
+    StepExpression[(String, String, String, String, String, String)](
+      List(
+        Literal("a stub GET "),
+        Extractor(string),
+        Literal(" requiring query "),
+        Extractor(string),
+        Literal(" = "),
+        Extractor(string),
+        Literal(" and query "),
+        Extractor(string),
+        Literal(" = "),
+        Extractor(string),
+        Literal(" returns text "),
+        Extractor(string)
+      )
+    ),
+    (_: (String, String, String, String, String, String)) => winner.set("long")
+  )
+
+  private val longLine =
+    "a stub GET \"/q\" requiring query \"a\" = \"1\" and query \"b\" = \"2\" returns text \"matched\""
+
+  // Wires `steps` into a registry, runs the definition matched for `input`, and returns
+  // which one fired — each step writes its label to the shared `winner` Ref when executed.
+  private def winnerAfter(steps: Ref[String] => List[StepDef[Any, Unit]], stepType: StepType, input: String) =
+    for {
+      winner <- Ref.make("none")
+      effect <- registry(steps(winner)).findStep(stepType, si(input))
+      _      <- effect.provide(stateLayer ++ Scope.default)
+      who    <- winner.get
+    } yield who
+
+  private val specificity = suite("Specificity (overlapping prefixes)")(
+    test("longer more specific overlapping step wins over shorter one (#186)") {
+      winnerAfter(w => List(stubShort(w), stubLong(w)), StepType.GivenStep, longLine)
+        .map(who => assertTrue(who == "long"))
+    },
+    test("winner is independent of registration order (#186)") {
+      winnerAfter(w => List(stubLong(w), stubShort(w)), StepType.GivenStep, longLine)
+        .map(who => assertTrue(who == "long"))
+    },
+    test("fully-literal step still wins over a wildcard string variant (#186)") {
+      def steps(w: Ref[String]) = List(
+        makeStep(
+          StepType.ThenStep,
+          StepExpression[Tuple1[String]](List(Literal("the response body is "), Extractor(string))),
+          (_: Tuple1[String]) => w.set("wildcard")
+        ),
+        makeStep(
+          StepType.ThenStep,
+          StepExpression[EmptyTuple](List(Literal("the response body is not empty"))),
+          (_: EmptyTuple) => w.set("literal")
+        )
+      )
+      winnerAfter(steps, StepType.ThenStep, "the response body is not empty")
+        .map(who => assertTrue(who == "literal"))
+    },
+    // Guards the secondary tie-break key: when two matches pin the same number of literal
+    // characters, the one with fewer extractors must still win. Here both have literalLen 3;
+    // the wildcard's `{string}` matches the empty tail, so only `-extractorCount` separates
+    // them. Without the secondary key this would be a false ambiguity.
+    test("on a literal-length tie, fewer extractors still wins (#186)") {
+      def steps(w: Ref[String]) = List(
+        makeStep(
+          StepType.GivenStep,
+          StepExpression[Tuple1[String]](List(Literal("abc"), Extractor(string))),
+          (_: Tuple1[String]) => w.set("wildcard")
+        ),
+        makeStep(
+          StepType.GivenStep,
+          StepExpression[EmptyTuple](List(Literal("abc"))),
+          (_: EmptyTuple) => w.set("literal")
+        )
+      )
+      winnerAfter(steps, StepType.GivenStep, "abc").map(who => assertTrue(who == "literal"))
+    },
+    // Two structurally different patterns that tie on both keys (each: 1 literal char,
+    // 1 extractor) and both full-match must still be reported as ambiguous, not silently
+    // resolved by registration order.
+    test("structurally different steps that tie on specificity are ambiguous (#186)") {
+      val prefix = makeStep(
+        StepType.GivenStep,
+        StepExpression[Tuple1[String]](List(Literal("a"), Extractor(string))),
+        (_: Tuple1[String]) => ZIO.unit
+      )
+      val suffix = makeStep(
+        StepType.GivenStep,
+        StepExpression[Tuple1[String]](List(Extractor(string), Literal("b"))),
+        (_: Tuple1[String]) => ZIO.unit
+      )
+      val reg = registry(List(prefix, suffix))
+      assertZIO(reg.findStep(StepType.GivenStep, si("ab")).either)(
+        isLeft(isSubtype[AmbiguousStep](anything))
+      )
+    }
+  )
+
   def spec: Spec[TestEnvironment & Scope, Any] = suite("StepRegistry")(
     lookup,
     noMatch,
     ambiguity,
-    crossKeyword
+    crossKeyword,
+    specificity
   )
 }
