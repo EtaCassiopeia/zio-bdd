@@ -147,18 +147,26 @@ final case class StepRegistryLive[R, S](steps: List[StepDef[R, S]]) extends Step
     }
   }
 
-  // The definition with the fewest extractor placeholders is the most specific (most
-  // literal) one. This lets a literal step like `the response body is not empty` win
-  // over a wildcard `the response body is {string}`. Only a tie at the most-specific
-  // level is a genuine ambiguity. Shared by both literal-text and template lookup —
-  // both prefer the same specificity ordering.
-  private def extractorCount(sd: StepDef[R, S]): Int = sd match {
-    case StepDefImpl(_, expr, _) => expr.parts.count { case _: Extractor[?] => true; case _ => false }
+  // Specificity ranking used to break ties when several definitions match the same step
+  // text. The more *literal* (fixed, non-extractor) characters a definition pins down, the
+  // more specific it is: this lets a longer, more-qualified variant like
+  // `a stub GET {string} requiring query {string} ... returns text {string}` win over a
+  // shorter `a stub GET {string} returns text {string}`, whose trailing `{string}` `.*`
+  // fallback would otherwise greedily swallow the middle and silently shadow it (#186).
+  // Literal length is the primary key; extractor count (fewer = more specific) breaks a
+  // literal-length tie, preserving the long-standing preference of a fully-literal step
+  // (e.g. `the response body is not empty`) over a `{string}` wildcard. Only a tie on both
+  // keys is a genuine ambiguity. Shared by both literal-text and template lookup.
+  private def specificity(sd: StepDef[R, S]): (Int, Int) = sd match {
+    case StepDefImpl(_, expr, _) =>
+      val literalLen     = expr.parts.collect { case Literal(s) => s.length }.sum
+      val extractorCount = expr.parts.count { case _: Extractor[?] => true; case _ => false }
+      (literalLen, -extractorCount)
   }
 
-  private def fewestExtractorsWinner[A](matches: List[(StepDef[R, S], A)]): Either[List[String], A] = {
-    val fewest  = matches.map { case (sd, _) => extractorCount(sd) }.min
-    val winners = matches.filter { case (sd, _) => extractorCount(sd) == fewest }
+  private def mostSpecificWinner[A](matches: List[(StepDef[R, S], A)]): Either[List[String], A] = {
+    val best    = matches.map { case (sd, _) => specificity(sd) }.max
+    val winners = matches.filter { case (sd, _) => specificity(sd) == best }
     winners match {
       case (_, a) :: Nil => Right(a)
       case _             => Left(winners.map { case (StepDefImpl(_, expr, _), _) => expr.toString })
@@ -170,7 +178,7 @@ final case class StepRegistryLive[R, S](steps: List[StepDef[R, S]]) extends Step
       case Nil                => ZIO.fail(NoMatchingStep(stepType, input, generateSnippet(stepType, input)))
       case (_, effect) :: Nil => ZIO.succeed(effect)
       case multiple =>
-        ZIO.fromEither(fewestExtractorsWinner(multiple).left.map(patterns => AmbiguousStep(stepType, input, patterns)))
+        ZIO.fromEither(mostSpecificWinner(multiple).left.map(patterns => AmbiguousStep(stepType, input, patterns)))
     }
 
   override def allDefinitions: UIO[List[StepMetadata]] =
@@ -211,7 +219,7 @@ final case class StepRegistryLive[R, S](steps: List[StepDef[R, S]]) extends Step
         case (_, cols) :: Nil => ZIO.succeed(cols)
         case multiple =>
           ZIO.fromEither(
-            fewestExtractorsWinner(multiple).left.map(patterns => AmbiguousTemplate(stepType, template, patterns))
+            mostSpecificWinner(multiple).left.map(patterns => AmbiguousTemplate(stepType, template, patterns))
           )
       }
     resolved.flatMap(cols => validateColumnTypes(stepType, template, cols))
