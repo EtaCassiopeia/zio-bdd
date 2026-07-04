@@ -2,7 +2,7 @@ package zio.bdd.mock.rift.embedded
 
 import zio.*
 import zio.bdd.mock.*
-import zio.bdd.mock.rift.{RiftProtocol, RiftScenarioAdmin}
+import zio.bdd.mock.rift.{Correlation, RiftCorrelatedSpace, RiftMode, RiftProtocol, RiftScenarioAdmin}
 import zio.http.Client
 import zio.json.*
 import zio.json.ast.Json
@@ -21,30 +21,49 @@ import zio.json.ast.Json
  * ([[EmbeddedEngine.serveAdmin]]) over the same manager the FFI downcalls
  * drive. So the adapter is "the container adapter minus Docker": the hot-path
  * data plane stays FFI downcalls (`create_imposter`/`replace_stubs`/`recorded`,
- * no HTTP hop), while the admin long tail — scenario pin/read/reset — routes
- * over the loopback admin URL through the shared [[RiftScenarioAdmin]], exactly
- * as the container adapter does. `destroy` frees the port via
- * `rift_delete_imposter`. All six capabilities are advertised. (Older Rift is
- * unsupported — a pre-v2 library fails fast at load, so there is no legacy
+ * no HTTP hop), while the admin long tail — scenario pin/read/reset, and (in
+ * Correlated mode) the whole per-space stub plane — routes over the loopback
+ * admin URL, exactly as the container adapter does. `destroy` frees the port
+ * via `rift_delete_imposter`. All six capabilities are advertised. (Older Rift
+ * is unsupported — a pre-v2 library fails fast at load, so there is no legacy
  * tier.)
  *
- * The FFI surface for stubs is intentionally small: create an imposter, replace
- * all of its stubs, read its recorded requests. So this adapter keeps each
- * space's ordered rules in a [[Ref]] and realises every
- * rule/scenario/capability mutation as a whole-imposter `rift_replace_stubs`
- * (first-match order: capability stubs, then scenario stubs, then rules, then
- * native base stubs). It is PerInstance only — one imposter per space on its
- * own OS-assigned localhost port.
+ * Two isolation modes ([[RiftMode]]), mirroring the container adapter:
+ *
+ *   - PerInstance (default): each [[MockSpace]] is one imposter on its own
+ *     OS-assigned port, `inject == identity`. The FFI surface for stubs is
+ *     intentionally small: create an imposter, replace all of its stubs, read
+ *     its recorded requests. So this path keeps each space's ordered rules in a
+ *     [[Ref]] and realises every rule/scenario/capability mutation as a
+ *     whole-imposter `rift_replace_stubs` (first-match order: capability stubs,
+ *     then scenario stubs, then rules, then native base stubs).
+ *
+ *   - Correlated: all spaces share ONE imposter (created via
+ *     `rift_create_imposter` on an allocator-issued port, guarded by
+ *     `sharedPort` so it is created at most once), whose `flowIdSource` is
+ *     `header:<correlation>`. Since the FFI has no per-space stub surface, the
+ *     shared imposter's spaces are driven entirely over the loopback admin
+ *     plane through [[RiftCorrelatedSpace]] — the same wire calls the container
+ *     adapter issues (`POST/DELETE .../spaces/:flowId/...`, the header-filtered
+ *     `received`) — so isolation semantics are byte-identical, only the shared
+ *     imposter's own creation/teardown goes through the FFI instead of HTTP.
+ *
+ * A native imposter ([[provisionNative]]) always gets its own port regardless
+ * of mode, so the two space kinds coexist; per-space operations dispatch by
+ * which space a [[MockSpace]] belongs to, not by the active mode.
  */
 private[embedded] final case class EmbeddedRiftMockControl(
   engine: EmbeddedEngine,
   provisioning: Provisioning,
+  mode: RiftMode,
   spaces: Ref[Map[SpaceId, EmbeddedRiftMockControl.Imposter]],
+  correlated: Ref[Map[SpaceId, EmbeddedRiftMockControl.CorrSpace]],
+  sharedPort: Ref.Synchronized[Option[Int]],
   ids: Ref[Int],
   admin: EmbeddedRiftMockControl.Admin
 ) extends MockControl:
 
-  import EmbeddedRiftMockControl.Imposter
+  import EmbeddedRiftMockControl.{CorrSpace, Imposter}
 
   def backendName: String = "embedded"
 
@@ -59,6 +78,10 @@ private[embedded] final case class EmbeddedRiftMockControl(
       Capability.StateInspection
     )
 
+  override def isolation: Isolation = mode match
+    case RiftMode.Correlated(_) => Isolation.Correlated
+    case RiftMode.PerInstance   => Isolation.PerInstance
+
   def provision(source: MockSource): IO[MockError, List[MockSpace]] =
     for
       sources <- provisioning.normalize(source)
@@ -67,76 +90,86 @@ private[embedded] final case class EmbeddedRiftMockControl(
       // partial provision doesn't leave them serving. The original failure propagates; a cleanup
       // failure is logged, never masks it.
       spaces <- ZIO
-                  .foreach(sources)(src => serve(src).tap(s => created.update(s :: _)))
-                  .onError(_ => created.get.flatMap(ZIO.foreachDiscard(_)(s => destroy(s).ignoreLogged)))
+                  .foreach(sources)(src => serveSpace(src).tap(s => created.update(s :: _)))
+                  .onError(_ =>
+                    created.get.flatMap(
+                      ZIO.foreachDiscard(_)(s =>
+                        destroy(s).catchAllCause(c => ZIO.logWarningCause(s"rollback: destroy ${s.id.value} failed", c))
+                      )
+                    )
+                  )
     yield spaces
 
   def provisionNative[B <: Backend](spec: NativeSpec[B]): IO[MockError, List[MockSpace]] =
     spec match
+      // A native imposter always gets its own port (PerInstance), full-fidelity, regardless of mode.
       case NativeSpec.Rift(imposterJson) =>
-        serve(NormalizedSource("native", SourcePayload.Raw(imposterJson), None)).map(List(_))
+        serveImposter(NormalizedSource("native", SourcePayload.Raw(imposterJson), None)).map(List(_))
       case NativeSpec.WireMock(_) =>
         ZIO.fail(MockError.InvalidDefinition("the embedded Rift adapter cannot provision a WireMock native spec"))
 
   def addRule(space: MockSpace, rule: MockRule, priority: Priority): IO[MockError, RuleId] =
-    withImposter(space) { imp =>
-      for
-        ruleId <- freshId
-        cur    <- imp.rules.get
-        extras <- imp.extras.get
-        // First match wins: an overlay sits on top (index 0), a base rule is appended.
-        next = priority match
-                 case Priority.Overlay => (ruleId, rule) +: cur
-                 case Priority.Base    => cur :+ (ruleId, rule)
-        // Server-first, commit tracking on success — so a failed downcall never leaves the Ref
-        // claiming a rule the engine didn't accept.
-        _ <- rebuildCurrent(imp, extras, next)
-        _ <- imp.rules.set(next)
-      yield ruleId
-    }
+    dispatch(space)(cs => corrAddRule(cs, rule, priority))(imp => piAddRule(imp, rule, priority))
+
+  private def piAddRule(imp: Imposter, rule: MockRule, priority: Priority): IO[MockError, RuleId] =
+    for
+      ruleId <- freshId
+      cur    <- imp.rules.get
+      extras <- imp.extras.get
+      // First match wins: an overlay sits on top (index 0), a base rule is appended.
+      next = priority match
+               case Priority.Overlay => (ruleId, rule) +: cur
+               case Priority.Base    => cur :+ (ruleId, rule)
+      // Server-first, commit tracking on success — so a failed downcall never leaves the Ref
+      // claiming a rule the engine didn't accept.
+      _ <- rebuildCurrent(imp, extras, next)
+      _ <- imp.rules.set(next)
+    yield ruleId
 
   def removeRule(space: MockSpace, id: RuleId): IO[MockError, Unit] =
-    withImposter(space) { imp =>
-      for
-        rules  <- imp.rules.get
-        extras <- imp.extras.get
-        // commit tracking only on success; a removed id is a rule or a capability stub
-        _ <-
-          if rules.exists(_._1 == id) then
-            val next = rules.filterNot(_._1 == id)
-            rebuildCurrent(imp, extras, next) *> imp.rules.set(next)
-          else if extras.exists(_._1 == id) then
-            val nextE = extras.filterNot(_._1 == id)
-            rebuildCurrent(imp, nextE, rules) *> imp.extras.set(nextE)
-          else ZIO.fail(MockError.RuleNotFound(space.id, id))
-      yield ()
-    }
+    dispatch(space)(cs => corrRemoveRule(cs, space.id, id))(imp => piRemoveRule(imp, space.id, id))
+
+  private def piRemoveRule(imp: Imposter, spaceId: SpaceId, id: RuleId): IO[MockError, Unit] =
+    for
+      rules  <- imp.rules.get
+      extras <- imp.extras.get
+      // commit tracking only on success; a removed id is a rule or a capability stub
+      _ <-
+        if rules.exists(_._1 == id) then
+          val next = rules.filterNot(_._1 == id)
+          rebuildCurrent(imp, extras, next) *> imp.rules.set(next)
+        else if extras.exists(_._1 == id) then
+          val nextE = extras.filterNot(_._1 == id)
+          rebuildCurrent(imp, nextE, rules) *> imp.extras.set(nextE)
+        else ZIO.fail(MockError.RuleNotFound(spaceId, id))
+    yield ()
 
   def replaceRules(space: MockSpace, rules: List[MockRule]): IO[MockError, Unit] =
-    withImposter(space) { imp =>
-      for
-        next   <- tagRules(rules)
-        extras <- imp.extras.get
-        _      <- rebuildCurrent(imp, extras, next)
-        _      <- imp.rules.set(next)
-      yield ()
-    }
+    dispatch(space)(cs => corrReplaceRules(cs, rules))(imp => piReplaceRules(imp, rules))
+
+  private def piReplaceRules(imp: Imposter, rules: List[MockRule]): IO[MockError, Unit] =
+    for
+      next   <- tagRules(rules)
+      extras <- imp.extras.get
+      _      <- rebuildCurrent(imp, extras, next)
+      _      <- imp.rules.set(next)
+    yield ()
 
   def destroy(space: MockSpace): IO[MockError, Unit] =
-    withImposter(space) { imp =>
-      // rift_delete_imposter frees the bound port immediately (an equal-port re-provision then
-      // succeeds); tracking is dropped so every later op on the space fails SpaceNotFound.
-      engine.deleteImposter(imp.port) *> spaces.update(_ - space.id)
-    }
+    dispatch(space)(cs => corrDestroy(space.id, cs))(imp => piDestroy(space, imp))
+
+  private def piDestroy(space: MockSpace, imp: Imposter): IO[MockError, Unit] =
+    // rift_delete_imposter frees the bound port immediately (an equal-port re-provision then
+    // succeeds); tracking is dropped so every later op on the space fails SpaceNotFound.
+    engine.deleteImposter(imp.port) *> spaces.update(_ - space.id)
 
   def received(space: MockSpace): IO[MockError, List[RecordedRequest]] =
-    withImposter(space) { imp =>
-      engine
-        .recorded(imp.port)
-        .flatMap(json =>
-          ZIO.fromEither(RiftProtocol.parseRequestsArray(json)).mapError(MockError.CommunicationError(_))
-        )
-    }
+    dispatch(space)(corrReceived)(piReceived)
+
+  private def piReceived(imp: Imposter): IO[MockError, List[RecordedRequest]] =
+    engine
+      .recorded(imp.port)
+      .flatMap(json => ZIO.fromEither(RiftProtocol.parseRequestsArray(json)).mapError(MockError.CommunicationError(_)))
 
   def faults: IO[Unsupported, Faults]           = ZIO.succeed(embeddedFaults)
   def scripting: IO[Unsupported, Scripting]     = ZIO.succeed(embeddedScripting)
@@ -149,40 +182,73 @@ private[embedded] final case class EmbeddedRiftMockControl(
 
   // ===== Stub-based capabilities (#132/#185) ======================================
   // Each installs a special-response stub (`_rift.fault`, `_rift.script`, a Mountebank
-  // `proxy`, or an `is` + `_behaviors.copy`) tracked in `imp.extras` and re-registered
-  // ahead of the space's rules on every rebuild — so it wins first-match over a normal
-  // rule and is removable via `removeRule`.
+  // `proxy`, or an `is` + `_behaviors.copy`) — PerInstance: tracked in `imp.extras` and
+  // re-registered ahead of the space's rules on every `rift_replace_stubs`; Correlated: a
+  // fault is tracked in `cs.faults`, the rest in `cs.extras`, both re-registered ahead of
+  // `cs.rules` on every space rebuild (mirrors the container adapter) — so each wins
+  // first-match over a normal rule and is removable via `removeRule`.
 
   private val embeddedFaults: Faults = new Faults:
     def inject(space: MockSpace, m: RequestMatch, fault: FaultKind): IO[MockError, RuleId] =
-      injectExtra(space, rid => RiftProtocol.faultStub(m, fault, rid))
+      dispatch(space)(cs => corrInjectFault(cs, m, fault))(imp =>
+        piInjectExtra(imp, rid => RiftProtocol.faultStub(m, fault, rid))
+      )
 
   private val embeddedScripting: Scripting = new Scripting:
     def inject(space: MockSpace, m: RequestMatch, script: Script): IO[MockError, RuleId] =
-      injectExtra(space, rid => RiftProtocol.scriptStub(m, script, rid))
+      injectStub(space, rid => RiftProtocol.scriptStub(m, script, rid))
 
   private val embeddedProxyRecord: ProxyRecord = new ProxyRecord:
     def proxy(space: MockSpace, m: RequestMatch, upstream: String): IO[MockError, RuleId] =
-      injectExtra(space, rid => RiftProtocol.proxyStub(m, upstream, rid))
+      injectStub(space, rid => RiftProtocol.proxyStub(m, upstream, rid))
 
   private val embeddedTemplating: Templating = new Templating:
     def inject(space: MockSpace, m: RequestMatch, template: ResponseTemplate): IO[MockError, RuleId] =
-      injectExtra(space, rid => RiftProtocol.templateStub(m, template, rid))
+      injectStub(space, rid => RiftProtocol.templateStub(m, template, rid))
+
+  private def injectStub(space: MockSpace, buildStub: RuleId => Json): IO[MockError, RuleId] =
+    dispatch(space)(cs => corrInjectStub(cs, buildStub))(imp => piInjectExtra(imp, buildStub))
 
   // Track a fresh capability stub and rebuild the imposter with it ahead of the rules.
   // Server-first, commit tracking on success — so a failed downcall never leaves `imp.extras`
   // claiming a stub the engine didn't accept (mirrors addRule).
-  private def injectExtra(space: MockSpace, buildStub: RuleId => Json): IO[MockError, RuleId] =
-    withImposter(space) { imp =>
-      for
-        ruleId <- freshId
-        rules  <- imp.rules.get
-        extras <- imp.extras.get
-        next    = (ruleId, buildStub(ruleId)) +: extras
-        _      <- rebuildCurrent(imp, next, rules)
-        _      <- imp.extras.set(next)
-      yield ruleId
-    }
+  private def piInjectExtra(imp: Imposter, buildStub: RuleId => Json): IO[MockError, RuleId] =
+    for
+      ruleId <- freshId
+      rules  <- imp.rules.get
+      extras <- imp.extras.get
+      next    = (ruleId, buildStub(ruleId)) +: extras
+      _      <- rebuildCurrent(imp, next, rules)
+      _      <- imp.extras.set(next)
+    yield ruleId
+
+  // Correlated: track the fault and rebuild the space with faults ahead of the rules, so it
+  // wins first-match. Tracked in `cs.faults` so it survives a later rule rebuild and is
+  // removable via `removeRule`; `destroy` clears it with the whole space. Server-first, commit
+  // on success (mirrors the container adapter's corrInjectFault).
+  private def corrInjectFault(cs: CorrSpace, m: RequestMatch, fault: FaultKind): IO[MockError, RuleId] =
+    for
+      ruleId <- freshId
+      rules  <- cs.rules.get
+      faults <- cs.faults.get
+      extras <- cs.extras.get
+      next    = (ruleId, m, fault) +: faults
+      _      <- rebuildCorr(cs, extras, next, rules)
+      _      <- cs.faults.set(next)
+    yield ruleId
+
+  // Correlated: track the pre-built capability stub in `cs.extras` and rebuild the space with
+  // it ahead of the rules (mirrors the container adapter's corrInjectStub).
+  private def corrInjectStub(cs: CorrSpace, buildStub: RuleId => Json): IO[MockError, RuleId] =
+    for
+      ruleId <- freshId
+      rules  <- cs.rules.get
+      faults <- cs.faults.get
+      extras <- cs.extras.get
+      next    = (ruleId, buildStub(ruleId)) +: extras
+      _      <- rebuildCorr(cs, next, faults, rules)
+      _      <- cs.extras.set(next)
+    yield ruleId
 
   // ===== StatefulScenarios + StateInspection (v2, #131/#193) ======================
   // The v2 in-process admin plane runs over the same ImposterManager the FFI downcalls drive
@@ -194,60 +260,112 @@ private[embedded] final case class EmbeddedRiftMockControl(
 
   private val embeddedScenarios: StatefulScenarios = new StatefulScenarios:
     def define(space: MockSpace, sc: ScenarioDef): IO[MockError, Unit] =
-      withImposter(space) { imp =>
-        val newStubs =
-          sc.rules.map(r =>
-            RiftProtocol.statefulStub(sc.name, r.whenState, r.thenState, MockRule(r.request, r.respond))
-          )
-        for
-          cur    <- imp.scenarioStubs.get
-          extras <- imp.extras.get
-          rules  <- imp.rules.get
-          nextS   = cur ++ newStubs
-          // Ordering mirrors the container adapter's piDefine (server-first): register the stubs,
-          // commit the stub-tracking Ref (so a later rebuild preserves them), pin the initial state,
-          // then commit the scenarios map. Like the container, a re-define of an existing name appends
-          // rather than replaces — provision a fresh space per scenario (as the conformance does).
-          _ <- rebuildWith(imp, extras, nextS, rules)
-          _ <- imp.scenarioStubs.set(nextS)
-          _ <- putScenarioState(imp, sc.name, sc.initial)
-          _ <- imp.scenarios.update(_ + (sc.name -> sc.initial))
-        yield ()
-      }
+      dispatch(space)(cs => corrDefine(cs, sc))(imp => piDefine(imp, sc))
     def reset(space: MockSpace, name: String): IO[MockError, Unit] =
-      withImposter(space) { imp =>
-        imp.scenarios.get.flatMap(_.get(name) match
-          case Some(initial) => putScenarioState(imp, name, initial)
-          case None          => ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${space.id.value}"))
-        )
-      }
+      dispatch(space)(cs => corrReset(cs, space.id, name))(imp => piReset(imp, space.id, name))
+
+  private def piDefine(imp: Imposter, sc: ScenarioDef): IO[MockError, Unit] =
+    val newStubs =
+      sc.rules.map(r => RiftProtocol.statefulStub(sc.name, r.whenState, r.thenState, MockRule(r.request, r.respond)))
+    for
+      cur    <- imp.scenarioStubs.get
+      extras <- imp.extras.get
+      rules  <- imp.rules.get
+      nextS   = cur ++ newStubs
+      // Ordering mirrors the container adapter's piDefine (server-first): register the stubs,
+      // commit the stub-tracking Ref (so a later rebuild preserves them), pin the initial state,
+      // then commit the scenarios map. Like the container, a re-define of an existing name appends
+      // rather than replaces — provision a fresh space per scenario (as the conformance does).
+      _ <- rebuildWith(imp, extras, nextS, rules)
+      _ <- imp.scenarioStubs.set(nextS)
+      _ <- putScenarioState(imp.port, imp.port.toString, sc.name, sc.initial)
+      _ <- imp.scenarios.update(_ + (sc.name -> sc.initial))
+    yield ()
+
+  private def piReset(imp: Imposter, spaceId: SpaceId, name: String): IO[MockError, Unit] =
+    imp.scenarios.get.flatMap(_.get(name) match
+      case Some(initial) => putScenarioState(imp.port, imp.port.toString, name, initial)
+      case None          => ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${spaceId.value}"))
+    )
+
+  // Correlated: unlike PerInstance, the stateful stubs aren't tracked for rebuild-survival — a
+  // later plain-rule mutation or capability injection on the same space drops them (mirrors the
+  // container adapter's corrDefine and its documented limitation: don't mix scenarios with rule
+  // mutation on one Correlated space).
+  private def corrDefine(cs: CorrSpace, sc: ScenarioDef): IO[MockError, Unit] =
+    for
+      _ <- ZIO.foreachDiscard(sc.rules) { r =>
+             val stub = RiftProtocol.statefulStub(sc.name, r.whenState, r.thenState, MockRule(r.request, r.respond))
+             RiftCorrelatedSpace.postRawStub(admin.client, admin.url, cs.port, cs.flowId, stub)
+           }
+      _ <- putScenarioState(cs.port, cs.flowId, sc.name, sc.initial)
+      _ <- cs.scenarios.update(_ + (sc.name -> sc.initial))
+    yield ()
+
+  private def corrReset(cs: CorrSpace, spaceId: SpaceId, name: String): IO[MockError, Unit] =
+    cs.scenarios.get.flatMap(_.get(name) match
+      case Some(initial) => putScenarioState(cs.port, cs.flowId, name, initial)
+      case None          => ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${spaceId.value}"))
+    )
 
   private val embeddedStateInspection: StateInspection = new StateInspection:
     def currentState(space: MockSpace, name: String): IO[MockError, ScenarioState] =
-      withImposter(space) { imp =>
-        RiftScenarioAdmin.readState(admin.client, admin.url, imp.port, imp.port.toString, name).flatMap {
-          case Some(s) => ZIO.succeed(ScenarioState(s))
-          case None    => ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${space.id.value}"))
-        }
-      }
+      dispatch(space)(cs => readState(cs.port, cs.flowId, space.id, name))(imp =>
+        readState(imp.port, imp.port.toString, space.id, name)
+      )
     def setState(space: MockSpace, name: String, to: ScenarioState): IO[MockError, Unit] =
-      withImposter(space) { imp =>
-        imp.scenarios.get.flatMap(s =>
-          if s.contains(name) then putScenarioState(imp, name, to)
-          else ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${space.id.value}"))
-        )
-      }
+      dispatch(space)(cs => guardDefined(cs.scenarios, space.id, name)(putScenarioState(cs.port, cs.flowId, name, to)))(
+        imp => guardDefined(imp.scenarios, space.id, name)(putScenarioState(imp.port, imp.port.toString, name, to))
+      )
 
-  // flowId = the imposter port (PerInstance): the slice a request resolves its scenario state to.
-  private def putScenarioState(imp: Imposter, name: String, state: ScenarioState): IO[MockError, Unit] =
-    RiftScenarioAdmin.putState(admin.client, admin.url, imp.port, imp.port.toString, name, state)
+  private def guardDefined(
+    scenarios: Ref[Map[String, ScenarioState]],
+    spaceId: SpaceId,
+    name: String
+  )(action: => IO[MockError, Unit]): IO[MockError, Unit] =
+    scenarios.get.flatMap(s =>
+      if s.contains(name) then action
+      else ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${spaceId.value}"))
+    )
+
+  private def readState(port: Int, flowId: String, spaceId: SpaceId, name: String): IO[MockError, ScenarioState] =
+    RiftScenarioAdmin.readState(admin.client, admin.url, port, flowId, name).flatMap {
+      case Some(s) => ZIO.succeed(ScenarioState(s))
+      case None    => ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${spaceId.value}"))
+    }
+
+  // flowId = the imposter port (PerInstance) / the correlation value (Correlated): the slice a
+  // request resolves its scenario state to.
+  private def putScenarioState(port: Int, flowId: String, name: String, state: ScenarioState): IO[MockError, Unit] =
+    RiftScenarioAdmin.putState(admin.client, admin.url, port, flowId, name, state)
 
   // ---------------------------------------------------------------------------
+
+  // A space's operations follow the space, not the mode: a Correlated portable space, or a
+  // PerInstance/native imposter space.
+  private def dispatch[A](space: MockSpace)(onCorr: CorrSpace => IO[MockError, A])(
+    onImp: Imposter => IO[MockError, A]
+  ): IO[MockError, A] =
+    correlated.get.flatMap(_.get(space.id) match
+      case Some(cs) => onCorr(cs)
+      case None =>
+        spaces.get.flatMap(_.get(space.id) match
+          case Some(imp) => onImp(imp)
+          case None      => ZIO.fail(MockError.SpaceNotFound(space.id))
+        )
+    )
+
+  private def serveSpace(src: NormalizedSource): IO[MockError, MockSpace] =
+    mode match
+      case RiftMode.Correlated(corr) => serveCorrelatedSpace(src, corr)
+      case RiftMode.PerInstance      => serveImposter(src)
+
+  // ===== PerInstance — one imposter per space =====================================
 
   // Stand up one imposter for `src` on its own OS-assigned localhost port. The host allocates a
   // free port (PortAllocator) and the engine binds it directly (`rift_create_imposter` echoes the
   // requested port); a mismatch means the port was taken in the bind window — surfaced, not hidden.
-  private def serve(src: NormalizedSource): IO[MockError, MockSpace] =
+  private def serveImposter(src: NormalizedSource): IO[MockError, MockSpace] =
     for
       port  <- provisioning.allocator.freePort
       built <- buildImposter(port, src)
@@ -263,11 +381,125 @@ private[embedded] final case class EmbeddedRiftMockControl(
       _         <- spaces.update(_.updated(id, Imposter(port, rules, extras, scenStubs, scenarios, built.nativeStubs)))
     yield MockSpace(s"http://localhost:$port", identity, id)
 
-  private def withImposter[A](space: MockSpace)(f: Imposter => IO[MockError, A]): IO[MockError, A] =
-    spaces.get.flatMap(_.get(space.id) match
-      case Some(imp) => f(imp)
-      case None      => ZIO.fail(MockError.SpaceNotFound(space.id))
-    )
+  // ===== Correlated — one shared imposter, spaces by flowId =======================
+
+  private def serveCorrelatedSpace(src: NormalizedSource, corr: Correlation): IO[MockError, MockSpace] =
+    for
+      rules  <- rulesOf(src)
+      port   <- ensureSharedImposter(corr)
+      id     <- freshSpaceId(src.name)
+      flowId  = corr.value(id)
+      tagged <- tagRules(rules)
+      // Mirror serveImposter's release-on-error: if a stub POST fails partway, tear the half-built
+      // space down so it can't orphan stubs on the shared imposter.
+      _ <- RiftCorrelatedSpace
+             .registerStubs(admin.client, admin.url, port, flowId, tagged)
+             .onError(_ => RiftCorrelatedSpace.deleteSpace(admin.client, admin.url, port, flowId).ignore)
+      rulesRef  <- Ref.make(tagged)
+      faultsRef <- Ref.make(Vector.empty[(RuleId, RequestMatch, FaultKind)])
+      extrasRef <- Ref.make(Vector.empty[(RuleId, Json)])
+      scen      <- Ref.make(Map.empty[String, ScenarioState])
+      _ <- correlated.update(
+             _.updated(id, CorrSpace(port, flowId, corr.header, rulesRef, faultsRef, extrasRef, scen))
+           )
+    yield MockSpace(s"http://localhost:$port", req => req.copy(headers = req.headers.add(corr.header, flowId)), id)
+
+  // Create the one shared imposter on first Correlated provision (race-safe): the FFI, not HTTP,
+  // since the embedded engine's imposters are always FFI-created; a bind mismatch surfaces the same
+  // way serveImposter's does.
+  private def ensureSharedImposter(corr: Correlation): IO[MockError, Int] =
+    sharedPort.modifyZIO {
+      case existing @ Some(p) => ZIO.succeed((p, existing))
+      case None =>
+        for
+          port  <- provisioning.allocator.freePort
+          bound <- engine.createImposter(RiftProtocol.correlatedImposter(port, "correlated", corr.header).toJson)
+          _ <- ZIO.unless(bound == port)(
+                 ZIO.fail(MockError.ProvisionFailed(s"embedded Rift bound port $bound but $port was requested"))
+               )
+        yield (port, Some(port))
+    }
+
+  private def corrAddRule(cs: CorrSpace, rule: MockRule, priority: Priority): IO[MockError, RuleId] =
+    freshId.flatMap { ruleId =>
+      val tagged = (ruleId, rule)
+      // Server-first, then commit tracking — so a failed admin call never leaves `cs.rules`
+      // claiming a stub the server didn't accept (mirrors PerInstance).
+      val act = priority match
+        // Base appends (Rift's space POST appends).
+        case Priority.Base =>
+          RiftCorrelatedSpace.postStub(admin.client, admin.url, cs.port, cs.flowId, rule.copy(id = Some(ruleId))) *>
+            cs.rules.update(_ :+ tagged)
+        // Overlay must be first-match — rebuild with the prepended set.
+        case Priority.Overlay =>
+          cs.rules.get.flatMap(cur => rebuildSpaceWith(cs, tagged +: cur) *> cs.rules.set(tagged +: cur))
+      act.as(ruleId)
+    }
+
+  private def corrRemoveRule(cs: CorrSpace, spaceId: SpaceId, id: RuleId): IO[MockError, Unit] =
+    for
+      rules  <- cs.rules.get
+      faults <- cs.faults.get
+      extras <- cs.extras.get
+      // commit tracking only on success; a removed id is a rule, a fault, or a capability stub
+      _ <-
+        if rules.exists(_._1 == id) then
+          val next = rules.filterNot(_._1 == id)
+          rebuildCorr(cs, extras, faults, next) *> cs.rules.set(next)
+        else if faults.exists(_._1 == id) then
+          val nextF = faults.filterNot(_._1 == id)
+          rebuildCorr(cs, extras, nextF, rules) *> cs.faults.set(nextF)
+        else if extras.exists(_._1 == id) then
+          val nextE = extras.filterNot(_._1 == id)
+          rebuildCorr(cs, nextE, faults, rules) *> cs.extras.set(nextE)
+        else ZIO.fail(MockError.RuleNotFound(spaceId, id))
+    yield ()
+
+  private def corrReplaceRules(cs: CorrSpace, rules: List[MockRule]): IO[MockError, Unit] =
+    tagRules(rules).flatMap(next => rebuildSpaceWith(cs, next) *> cs.rules.set(next))
+
+  private def corrDestroy(spaceId: SpaceId, cs: CorrSpace): IO[MockError, Unit] =
+    RiftCorrelatedSpace.deleteSpace(admin.client, admin.url, cs.port, cs.flowId) *> correlated.update(_ - spaceId)
+
+  // Space-scoped recorded requests: the header-filtered admin query (rift#201) returns everything
+  // recorded under this space's flowId — identical to the container adapter, so a cross-space
+  // request (a different flowId) is excluded, while this space's own traffic (matched or not) is
+  // returned. Parity with `RiftMockControl`; no client-side re-filtering.
+  private def corrReceived(cs: CorrSpace): IO[MockError, List[RecordedRequest]] =
+    RiftCorrelatedSpace.received(admin.client, admin.url, cs.port, cs.flowId, cs.header)
+
+  // rift#223 has no per-stub-in-space delete: re-register the space's stubs after a whole-space
+  // teardown. Server-first — the caller commits tracking only on success. Re-register with the
+  // currently-tracked faults (a rule mutation must not drop an injected fault).
+  private def rebuildSpaceWith(cs: CorrSpace, rules: Vector[(RuleId, MockRule)]): IO[MockError, Unit] =
+    for
+      extras <- cs.extras.get
+      faults <- cs.faults.get
+      _      <- rebuildCorr(cs, extras, faults, rules)
+    yield ()
+
+  // Capability stubs (extras) and faults are registered ahead of the rules so they win
+  // first-match (Mountebank is first-match-wins, and rift#223 space stubs append in registration
+  // order).
+  private def rebuildCorr(
+    cs: CorrSpace,
+    extras: Vector[(RuleId, Json)],
+    faults: Vector[(RuleId, RequestMatch, FaultKind)],
+    rules: Vector[(RuleId, MockRule)]
+  ): IO[MockError, Unit] =
+    RiftCorrelatedSpace.rebuild(admin.client, admin.url, cs.port, cs.flowId, extras, faults, rules)
+
+  private def rulesOf(src: NormalizedSource): IO[MockError, List[MockRule]] =
+    src.payload match
+      case SourcePayload.Rules(rules) => ZIO.succeed(rules)
+      case SourcePayload.Raw(_) =>
+        ZIO.fail(
+          MockError.InvalidDefinition(
+            "Correlated mode needs portable rule sources; provision a raw Rift imposter via provisionNative"
+          )
+        )
+
+  // ---------------------------------------------------------------------------
 
   // Build the create-imposter body for `src`, the portable rules to track, and the native base
   // stubs to preserve. A DSL source's rules are each tagged with a fresh id and tracked; a raw
@@ -321,8 +553,21 @@ private[embedded] final case class EmbeddedRiftMockControl(
     val stubs = extras.map(_._2) ++ scenarioStubs ++ withIds(tracked).map(RiftProtocol.stub) ++ imp.nativeStubs
     engine.replaceStubs(imp.port, Json.Arr(stubs*).toJson)
 
-  private def freshId: UIO[RuleId]                  = ids.updateAndGet(_ + 1).map(n => RuleId(s"r$n"))
-  private def freshIds(n: Int): UIO[Vector[RuleId]] = ZIO.foreach(0 until n)(_ => freshId).map(_.toVector)
+  private def freshId: UIO[RuleId]                     = ids.updateAndGet(_ + 1).map(n => RuleId(s"r$n"))
+  private def freshIds(n: Int): UIO[Vector[RuleId]]    = ZIO.foreach(0 until n)(_ => freshId).map(_.toVector)
+  private def freshSpaceId(name: String): UIO[SpaceId] = ids.updateAndGet(_ + 1).map(n => SpaceId(s"$name-s$n"))
+
+  // Best-effort teardown of the shared Correlated imposter — the one imposter no single space
+  // owns (PerInstance leaves `sharedPort` empty, so this is a no-op). Registered as a scope
+  // finalizer in `make` so it is reclaimed with the rest of the engine's scope.
+  private[embedded] def teardownShared: UIO[Unit] =
+    sharedPort.get.flatMap {
+      case Some(p) =>
+        engine
+          .deleteImposter(p)
+          .catchAllCause(c => ZIO.logWarningCause("shared Correlated imposter teardown failed", c))
+      case None => ZIO.unit
+    }
 
 private[embedded] object EmbeddedRiftMockControl:
 
@@ -350,13 +595,45 @@ private[embedded] object EmbeddedRiftMockControl:
   )
 
   /**
+   * A Correlated space (rift#223): its shared imposter's port, its `flowId` on
+   * that imposter, the correlation `header` `received` filters by, the space's
+   * tracked portable rules, faults, and pre-built capability stubs (each
+   * re-registered ahead of the rules on a rebuild — rift#223 has no
+   * per-stub-in-space delete), and its defined scenarios' initial states (for
+   * reset). Mirrors the container adapter's `CorrSpace`.
+   */
+  final case class CorrSpace(
+    port: Int,
+    flowId: String,
+    header: String,
+    rules: Ref[Vector[(RuleId, MockRule)]],
+    faults: Ref[Vector[(RuleId, RequestMatch, FaultKind)]],
+    extras: Ref[Vector[(RuleId, Json)]],
+    scenarios: Ref[Map[String, ScenarioState]]
+  )
+
+  /**
    * The create-imposter body, the rules to track, and the native base stubs for
    * one space.
    */
   final case class Built(configJson: String, tagged: Vector[(RuleId, MockRule)], nativeStubs: Vector[Json])
 
-  def make(engine: EmbeddedEngine, provisioning: Provisioning, admin: Admin): UIO[MockControl] =
+  /**
+   * Build the adapter in the given isolation `mode`. Scoped: the shared
+   * Correlated imposter is torn down when the scope closes (mirrors the
+   * container adapter's `make`).
+   */
+  def make(
+    engine: EmbeddedEngine,
+    provisioning: Provisioning,
+    admin: Admin,
+    mode: RiftMode = RiftMode.PerInstance
+  ): URIO[Scope, MockControl] =
     for
-      spaces <- Ref.make(Map.empty[SpaceId, Imposter])
-      ids    <- Ref.make(0)
-    yield EmbeddedRiftMockControl(engine, provisioning, spaces, ids, admin)
+      spaces     <- Ref.make(Map.empty[SpaceId, Imposter])
+      correlated <- Ref.make(Map.empty[SpaceId, CorrSpace])
+      sharedPort <- Ref.Synchronized.make(Option.empty[Int])
+      ids        <- Ref.make(0)
+      control     = EmbeddedRiftMockControl(engine, provisioning, mode, spaces, correlated, sharedPort, ids, admin)
+      _          <- ZIO.addFinalizer(control.teardownShared)
+    yield control
