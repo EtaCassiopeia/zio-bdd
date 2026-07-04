@@ -323,3 +323,22 @@ isolation to the lower tiers.
 By default `globalLayer` delegates to `featureLayer`.  If you override neither,
 both tiers use whatever `environment` returns, which is the same single layer
 evaluated once per feature (the pre-3.0 behaviour).
+
+---
+
+## 8. Providing a `MockControl` mock backend
+
+The HTTP-mocking feature is delivered as an ordinary `ZLayer[…, …, MockControl]`, so a mock backend
+plugs into the same three-tier model. Add it to whichever tier owns the mock's lifetime — usually
+`environment`/`featureLayer` for a shared backend, or `scenarioLayer` when each scenario gets fresh,
+isolated mock spaces (e.g. with `@mock(...)` fixtures):
+
+```scala
+// a WireMock backend (in-process, JDK 11+, no Docker) available to every step:
+override def environment: ZLayer[Any, Throwable, MockControl] =
+  Provisioning.live >>> WireMock.correlated()
+```
+
+Swap that one layer to run the same suite on Rift (container or embedded) — see
+[Mock Adapters](mock-adapters.md). For per-scenario fixtures wired into `scenarioLayer`, see
+[Mock Gherkin Integration](mock-gherkin.md).

@@ -1,0 +1,378 @@
+# Advanced Mocking: Capabilities, the Native Escape Hatch, Negotiation
+
+Beyond the core `MockControl` port (provision/addRule/received/…) an adapter
+may advertise optional capabilities: fault injection, stateful FSM scenarios,
+direct state inspection, backend scripting, proxy/record, and response
+templating. This page covers all six, the `provisionNative` escape hatch for
+when the portable model isn't enough, and how a suite negotiates capabilities
+so a missing one fails fast and by name instead of mid-scenario.
+
+---
+
+## 1. Capabilities overview
+
+Every capability accessor on `MockControl` returns `IO[Unsupported, X]`: fetch
+the capability instance first, then call its methods. If the backend doesn't
+advertise the capability, the accessor fails fast with
+`Unsupported(capability, backendName)` instead of the capability's method ever
+running:
+
+```scala
+sc <- ZIO.serviceWithZIO[MockControl](_.scenarios).mapError(u => new RuntimeException(u.message))
+_  <- sc.define(space, defineRetry(path))
+```
+
+| Capability | Accessor | Rift container | Rift embedded | WireMock |
+|---|---|---|---|---|
+| `Capability.Faults` | `faults: IO[Unsupported, Faults]` | yes | yes | yes |
+| `Capability.StatefulScenarios` | `scenarios: IO[Unsupported, StatefulScenarios]` | yes | yes | yes |
+| `Capability.StateInspection` | `stateInspection: IO[Unsupported, StateInspection]` | yes | yes | yes |
+| `Capability.Scripting` | `scripting: IO[Unsupported, Scripting]` | yes | yes | no |
+| `Capability.ProxyRecord` | `proxyRecord: IO[Unsupported, ProxyRecord]` | yes | yes | no |
+| `Capability.Templating` | `templating: IO[Unsupported, Templating]` | yes | yes | no |
+
+Faults, StatefulScenarios, and StateInspection are portable across all three
+adapters. Scripting, ProxyRecord, and Templating are Rift-only (container or
+embedded — embedded is capability-complete, a pure backend swap for the
+container, not a reduced subset); WireMock does not advertise them. See
+[Adapters](mock-adapters.md) for the full per-adapter breakdown and
+[Mocking overview](mocking.md) for the `MockControl` port these accessors sit
+on.
+
+---
+
+## 2. Faults
+
+`Faults.inject` installs a fault for requests matching `m` in `space`,
+returning the fault rule's id (removable via `MockControl#removeRule`). The
+four connection kinds make the SUT's HTTP client observe a transport-level
+failure; `FaultKind.LatencySpike` instead delays an otherwise normal 200
+response. A fault takes precedence over a normal rule on the same match:
+
+```scala
+enum FaultKind:
+  case ConnectionReset
+  case EmptyResponse
+  case MalformedChunk
+  case RandomThenClose
+  case LatencySpike(delay: Duration)
+```
+
+From `Faults11Suite` in the sample corpus:
+
+```scala
+Given("the backend supports faults") {
+  requiring(Capability.Faults)
+}
+
+Given("a " / string / " fault is injected for GET " / string) { (kind: String, path: String) =>
+  for
+    space <- activeSpace
+    fk    <- faultKind(kind)
+    fs    <- ZIO.serviceWithZIO[MockControl](_.faults).mapError(u => new RuntimeException(u.message))
+    _     <- fs.inject(space, get(path), fk).mapError(e => new RuntimeException(s"$e"))
+  yield ()
+}
+
+Given("a latency fault of " / int / " millis is injected for GET " / string) { (ms: Int, path: String) =>
+  for
+    space <- activeSpace
+    fs    <- ZIO.serviceWithZIO[MockControl](_.faults).mapError(u => new RuntimeException(u.message))
+    _     <- fs.inject(space, get(path), FaultKind.LatencySpike(ms.millis)).mapError(e => new RuntimeException(s"$e"))
+  yield ()
+}
+```
+
+---
+
+## 3. Stateful scenarios + state inspection
+
+`StatefulScenarios` runs a single-token FSM per scenario: a request eligible
+in the scenario's current state serves its response and (optionally)
+transitions the state. Build the FSM with the `scenario(...)` DSL builder (see
+[the DSL](mock-dsl.md) §5), then install it with `define` and rewind it with
+`reset`:
+
+```scala
+private def defineRetry(path: String) =
+  scenario("retry")
+    .startingAt("Started")
+    .when("Started", get(path)).respond(status(503)).goTo("Attempt1")
+    .when("Attempt1", get(path)).respond(status(503)).goTo("Attempt2")
+    .when("Attempt2", get(path)).respond(ok.text("ok")).goTo("Done")
+    .build
+
+Given("the backend supports stateful scenarios") {
+  requiring(Capability.StatefulScenarios)
+}
+
+Given("a fail-twice-then-succeed scenario for GET " / string) { (path: String) =>
+  for
+    space <- activeSpace
+    sc    <- ZIO.serviceWithZIO[MockControl](_.scenarios).mapError(u => new RuntimeException(u.message))
+    _     <- sc.define(space, defineRetry(path)).mapError(e => new RuntimeException(s"$e"))
+  yield ()
+}
+
+When("the scenario " / string / " is reset") { (name: String) =>
+  for
+    space <- activeSpace
+    sc    <- ZIO.serviceWithZIO[MockControl](_.scenarios).mapError(u => new RuntimeException(u.message))
+    _     <- sc.reset(space, name).mapError(e => new RuntimeException(s"$e"))
+  yield ()
+}
+```
+
+(Lifted from `Stateful12Suite`.)
+
+`StateInspection` is split out from `StatefulScenarios` because not every
+backend exposes direct state poking: `currentState` reads a scenario's
+current state and `setState` forces a transition, both without driving any
+request. From `StateInspect13Suite`:
+
+```scala
+Given("the backend supports state inspection") {
+  requiring(Capability.StateInspection)
+}
+
+When("the state of " / string / " is forced to " / string) { (name: String, to: String) =>
+  for
+    space <- activeSpace
+    s     <- ZIO.serviceWithZIO[MockControl](_.stateInspection).mapError(u => new RuntimeException(u.message))
+    _     <- s.setState(space, name, ScenarioState(to)).mapError(e => new RuntimeException(s"$e"))
+  yield ()
+}
+
+Then("the current state of " / string / " is " / string) { (name: String, expected: String) =>
+  for
+    space <- activeSpace
+    s     <- ZIO.serviceWithZIO[MockControl](_.stateInspection).mapError(u => new RuntimeException(u.message))
+    cur   <- s.currentState(space, name).mapError(e => new RuntimeException(s"$e"))
+    _     <- Assertions.assertEquals(cur.value, expected, s"current state of '$name'")
+  yield ()
+}
+```
+
+---
+
+## 4. Scripting
+
+`Scripting.inject` installs a script that computes the response for requests
+matching `m`, running on the backend's own scripting engine and able to read
+the matched request. Rift only:
+
+```scala
+final case class Script(engine: ScriptEngine, code: String)
+
+enum ScriptEngine:
+  case Rhai, Lua, JavaScript
+```
+
+From `Scripting14Suite` — a Rhai script that echoes the request method into
+the body (a static stub couldn't do this, so a passing round-trip proves the
+engine actually ran the script):
+
+```scala
+private val rhaiEchoMethod =
+  "fn should_inject(request, flow_store) { #{inject: true, fault: \"error\", status: 200, " +
+    "body: `scripted-${request.method}`, headers: #{\"Content-Type\": \"text/plain\"}} }"
+
+Given("the backend supports scripting") {
+  requiring(Capability.Scripting)
+}
+
+Given("a " / string / " script echoing the method for GET " / string) { (engine: String, path: String) =>
+  val eng = engine match
+    case "Rhai"       => ScriptEngine.Rhai
+    case "Lua"        => ScriptEngine.Lua
+    case "JavaScript" => ScriptEngine.JavaScript
+    case other        => throw new IllegalArgumentException(s"unknown engine '$other'")
+  for
+    space <- activeSpace
+    sc    <- ZIO.serviceWithZIO[MockControl](_.scripting).mapError(u => new RuntimeException(u.message))
+    _     <- sc.inject(space, get(path), Script(eng, rhaiEchoMethod)).mapError(e => new RuntimeException(s"$e"))
+  yield ()
+}
+```
+
+---
+
+## 5. Proxy / record
+
+`ProxyRecord.proxy` proxies requests matching `m` to a real `upstream`,
+recording the first response and replaying it on subsequent calls — so the
+SUT keeps getting the recorded response even after the upstream goes down.
+Rift only. The recording is owned by the backend, not the port: once a
+request has recorded a response, removing the proxy rule is unreliable, and
+on a `Correlated` space any rule mutation rebuilds the space and discards the
+recording — inject a proxy on its own space and don't mutate rules after the
+first recorded call.
+
+From `ProxyRecord15Suite`:
+
+```scala
+Given("the backend supports proxy/record") {
+  requiring(Capability.ProxyRecord)
+}
+
+When("a proxy to " / string / " is installed for GET " / string) { (upstream: String, path: String) =>
+  for
+    space <- activeSpace
+    pr    <- ZIO.serviceWithZIO[MockControl](_.proxyRecord).mapError(u => new RuntimeException(u.message))
+    id    <- pr.proxy(space, get(path), upstream).mapError(e => new RuntimeException(s"$e"))
+    _     <- Assertions.assertTrue(id.value.nonEmpty, "proxy rule id should be non-empty")
+  yield ()
+}
+```
+
+---
+
+## 6. Templating
+
+`Templating.inject` installs a templated response for requests matching `m`:
+each `TemplateCapture` in the template pulls a value from the request and
+substitutes its token into the response body. Rift only:
+
+```scala
+final case class ResponseTemplate(body: String, captures: List[TemplateCapture], status: Int = 200)
+final case class TemplateCapture(token: String, source: TemplateSource, regex: String)
+
+enum TemplateSource:
+  case Path, Body
+```
+
+From `Templating16Suite`:
+
+```scala
+Given("the backend supports templating") {
+  requiring(Capability.Templating)
+}
+
+Given("a template greeting the last path segment at " / string) { (pathRegex: String) =>
+  for
+    space <- activeSpace
+    t     <- ZIO.serviceWithZIO[MockControl](_.templating).mapError(u => new RuntimeException(u.message))
+    template = ResponseTemplate("Hello ${NAME}", List(TemplateCapture("${NAME}", TemplateSource.Path, "[^/]+$")))
+    _ <- t.inject(space, RequestMatch(path = PathMatch.Regex(pathRegex)), template).mapError(e => new RuntimeException(s"$e"))
+  yield ()
+}
+
+Given("a body-echo template for POST " / string) { (path: String) =>
+  for
+    space <- activeSpace
+    t     <- ZIO.serviceWithZIO[MockControl](_.templating).mapError(u => new RuntimeException(u.message))
+    template = ResponseTemplate("echo:${WHO}", List(TemplateCapture("${WHO}", TemplateSource.Body, "\\w+")))
+    _ <- t.inject(space, post(path), template).mapError(e => new RuntimeException(s"$e"))
+  yield ()
+}
+```
+
+---
+
+## 7. The `provisionNative` escape hatch
+
+`provisionNative[B <: Backend](spec: NativeSpec[B])` stands up a space from a
+raw, backend-specific document instead of the portable model — the escape
+hatch for when you need one backend's native format:
+
+```scala
+enum NativeSpec[B <: Backend]:
+  case Rift(imposterJson: String) extends NativeSpec[Backend.Rift]
+  case WireMock(stubMappingJson: String) extends NativeSpec[Backend.WireMock]
+```
+
+`NativeSpec` is **not** a `MockSource` — it lives in `MockControl.scala` as a
+separate path that bypasses normalization entirely. A `NativeSpec[Backend.Rift]`
+only provisions against a Rift adapter and a `NativeSpec[Backend.WireMock]`
+only against WireMock; the phantom `Backend` type parameter pins the spec to
+one concrete backend at compile time, so the escape hatch is honest about the
+portability it trades away. A natively-provisioned `MockSpace` still
+participates in `destroy`/`received`/overlays/isolation exactly like a
+portable one — only its *definition* is backend-pinned, so use it when you
+need full-fidelity access to a backend's raw feature set (e.g. a Mountebank
+imposter field or a WireMock stub-mapping option the canonical model doesn't
+expose), not for anything you expect to run against a second adapter.
+
+From `Native17Suite` — each scenario is tagged for its backend and the
+harness runs the matching one:
+
+```scala
+Given("a native WireMock stub for GET " / string / " returning " / string) { (path: String, body: String) =>
+  val json =
+    s"""{"request":{"method":"GET","urlPath":"$path"},"response":{"status":200,"body":"$body"}}"""
+  provisionNativeSpec(NativeSpec.WireMock(json))
+}
+
+Given("a native Rift imposter for GET " / string / " returning " / string) { (path: String, body: String) =>
+  val json =
+    s"""{"port":0,"protocol":"http","stubs":[{"predicates":[{"equals":{"method":"GET","path":"$path"}}],""" +
+      s""""responses":[{"is":{"statusCode":200,"body":"$body"}}]}]}"""
+  provisionNativeSpec(NativeSpec.Rift(json))
+}
+
+private def provisionNativeSpec[B <: Backend](spec: NativeSpec[B]) =
+  for
+    spaces <- ctl(_.provisionNative(spec))
+    space  <- ZIO.fromOption(spaces.headOption).orElseFail(new IllegalStateException("no space"))
+    _      <- Stage.put(space)
+  yield ()
+```
+
+---
+
+## 8. Capability negotiation
+
+`require(Capability*): IO[Unsupported, Unit]` fails fast — before any rule is
+staged or request sent — when a needed capability isn't in `capabilities:
+Set[Capability]`, naming both the missing capability and the backend via
+`Unsupported.message`. Run it at wiring/setup time so a backend gap surfaces
+immediately, not mid-scenario; the typed accessors (`faults`, `scripting`, …)
+remain the same per-call gate `require` just moves earlier.
+
+From `Negotiation19Suite` — verifying negotiation itself, not assuming it:
+
+```scala
+Then("the backend advertises capability " / string) { (name: String) =>
+  ZIO
+    .serviceWith[MockControl](_.capabilities.contains(cap(name)))
+    .flatMap(has => Assertions.assertTrue(has, s"backend does not advertise $name"))
+}
+
+Then("requiring " / string / " succeeds") { (name: String) =>
+  ZIO.serviceWithZIO[MockControl](_.require(cap(name))).mapError(u => new RuntimeException(u.message)).unit
+}
+
+When("requiring " / string / " is attempted") { (name: String) =>
+  ZIO
+    .serviceWithZIO[MockControl](_.require(cap(name)).either)
+    .flatMap {
+      case Left(u)  => Stage.put(RequireOutcome(failed = true, u.message))
+      case Right(_) => Stage.put(RequireOutcome(failed = false, ""))
+    }
+}
+
+Then("it fails naming the missing capability " / string) { (name: String) =>
+  Stage
+    .get[RequireOutcome]
+    .mapError(e => new IllegalStateException(e.message))
+    .flatMap(o => Assertions.assertTrue(o.failed && o.message.contains(name), s"outcome=$o"))
+}
+```
+
+A portable suite that needs, say, Scripting `require`s it up front: against
+Rift (container or embedded) that succeeds and the suite runs; against
+WireMock it fails with `Unsupported`, and the harness's per-backend tag
+exclusion is what turns that into a clean SKIP instead of a failed run — the
+capability gap is real, not a bug to route around in step code. The
+conformance suite in the sample corpus is the executable spec of "correctly
+implements `MockControl`": every adapter runs the same portable scenarios,
+and the negotiation/exclusion machinery above is what lets a capability
+adapters don't share (Scripting/ProxyRecord/Templating on WireMock) skip
+cleanly rather than fail the suite.
+
+---
+
+Next: [Cookbook](mock-cookbook.md)
+
+See also: [Mocking overview](mocking.md) · [the DSL](mock-dsl.md) ·
+[Adapters](mock-adapters.md)

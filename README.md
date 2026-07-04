@@ -56,6 +56,7 @@ object AccountSpec extends ZIOSteps[Any, AccountState]:
 - **Step reuse** — `HasService[A, R]` typeclass lets step traits express service requirements without coupling to a concrete `R`
 - **Typed table extraction** — `table[T]` reads Gherkin data tables into `List[T]` using ZIO Schema
 - **Scalar extractors** — `string`, `word`, `int`, `long`, `double`, `boolean`, `bigDecimal`, `uuid`, `docString`
+- **HTTP mocking** — a portable `MockControl` SPI with Rift (container **and** no-Docker embedded FFM) and WireMock adapters; a type-safe mock DSL; capability negotiation; `@mock(...)` Gherkin fixtures — write one scenario, run it across backends (see [Mocking](docs/mocking.md))
 
 ## Installation
 
@@ -93,11 +94,13 @@ Both bundle the language server, so there is no separate setup step.
 | [docs/concepts.md](docs/concepts.md) | Mental model: how the framework works |
 | [docs/step-dsl.md](docs/step-dsl.md) | Step DSL, extractors, and patterns |
 | [docs/property-testing.md](docs/property-testing.md) | `@property(...)` tag, `HasGen[T]` registry, named generator overrides, failure replay, JUnit XML output |
+| [docs/mocking.md](docs/mocking.md) | HTTP mocking — portable `MockControl` SPI, DSL, adapters (Rift container + embedded, WireMock), `@mock` fixtures, capabilities |
 | [docs/index.md](docs/index.md) | Full documentation index — Gherkin syntax, state, layers, hooks, reporters, feature flags, cookbook, migrating from Cucumber, troubleshooting |
 
 ## Used by
 
 - [zio-openfeature](https://github.com/EtaCassiopeia/zio-openfeature) — ZIO bindings for the OpenFeature spec, using zio-bdd for conformance testing
+- [Rift](https://github.com/EtaCassiopeia/rift) — a Mountebank-compatible HTTP chaos proxy; drives its adapter conformance suite with zio-bdd (exercising a real backend end-to-end)
 
 ## License
 
