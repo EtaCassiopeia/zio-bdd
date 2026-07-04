@@ -14,7 +14,7 @@ import java.security.MessageDigest
 // preview API on JDK 21, so the embedded code stays JDK-21-gated; see embeddedNativeSettings.)
 // NOTE: build.sbt is compiled with the Scala 2.12 dialect — keep these blocks 2.12-compatible.
 
-val riftNativesVersion = "0.7.0"
+val riftNativesVersion = "0.9.0"
 
 // The (os, arch, ext) cdylibs bundled into the natives jar — linux/macOS × x86_64/aarch64 (#134).
 val riftNativeTriples: Seq[(String, String, String)] = Seq(
