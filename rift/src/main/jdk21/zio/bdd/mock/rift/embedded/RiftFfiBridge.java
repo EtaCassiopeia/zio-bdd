@@ -10,22 +10,32 @@ import java.lang.invoke.MethodHandle;
 import java.nio.file.Path;
 
 /**
- * Project Panama (FFM) bindings to the {@code librift_ffi} C-ABI (rift#204): an opaque handle +
- * JSON in / JSON out over the Rift engine, so {@code MockControl.embedded} can drive Rift
- * in-process with no Docker. Authored in Java because FFM is a preview API in JDK 21 and the
- * downcall {@link MethodHandle#invoke} is signature-polymorphic — both are handled natively by
- * javac (the {@code --enable-preview} class bit and the per-call-site descriptor), avoiding the
- * cross-language pitfalls of calling these from Scala.
+ * Project Panama (FFM) bindings to the {@code librift_ffi} C-ABI: an opaque handle + JSON in / JSON
+ * out over the Rift engine, so {@code MockControl.embedded} can drive Rift in-process with no Docker.
+ * Authored in Java because FFM is a preview API in JDK 21 and the downcall {@link MethodHandle#invoke}
+ * is signature-polymorphic — both are handled natively by javac (the {@code --enable-preview} class
+ * bit and the per-call-site descriptor), avoiding the cross-language pitfalls of calling these from
+ * Scala.
  *
- * <p>Boundary discipline mirrors the crate: memory is created and freed on the same side
- * ({@link #recorded} hands the {@code *mut c_char} straight back to {@code rift_free}); the handle
- * owns a Tokio runtime on its own threads, so the blocking downcalls are wrapped in
- * {@code ZIO.attemptBlocking} by the Scala caller. One bridge is safe to share across threads —
- * the engine is {@code Sync} and every input string is marshalled in a per-call confined arena.
+ * <p>Requires the C-ABI v2 (rift#343, first shipped in {@code librift_ffi} v0.9.0): the data plane
+ * ({@code rift_start/stop/create_imposter/replace_stubs/recorded/free}) plus the in-process admin
+ * plane ({@code rift_serve_admin}), per-imposter delete ({@code rift_delete_imposter}), build
+ * identity ({@code rift_build_info}), and thread-local error text ({@code rift_last_error}). All
+ * symbols are bound at {@link #start}, so a pre-v2 library fails fast there with a missing-symbol
+ * error rather than degrading silently — zio-bdd pins the v2 natives and does not support older Rift.
+ *
+ * <p>Boundary discipline mirrors the crate: memory is created and freed on the same side (returned
+ * {@code *mut c_char} buffers are handed straight back to {@code rift_free}; {@code rift_build_info}
+ * is the one static string that must NOT be freed); the handle owns a Tokio runtime on its own
+ * threads, so the blocking downcalls are wrapped in {@code ZIO.attemptBlocking} by the Scala caller.
+ * One bridge is safe to share across threads — the engine is {@code Sync} and every input string is
+ * marshalled in a per-call confined arena.
  *
  * <p>Errors are returned as the crate's sentinels (port {@code 0}, rc {@code -1}, null pointer),
- * never exceptions; a genuine FFM/link failure surfaces as a {@link RuntimeException} the caller
- * turns into a {@code MockError}.
+ * never exceptions; the library also records a thread-local reason ({@code rift_last_error}) that a
+ * failed call folds into its {@link RuntimeException} so the caller's {@code MockError} carries the
+ * engine-side message instead of "see engine tracing". A genuine FFM/link failure surfaces as a
+ * {@link RuntimeException} the caller turns into a {@code MockError}.
  */
 public final class RiftFfiBridge implements AutoCloseable {
 
@@ -39,8 +49,12 @@ public final class RiftFfiBridge implements AutoCloseable {
   private final MethodHandle free;
   private final MethodHandle stop;
 
-  // rift_delete_all is intentionally not bound: it is a global reset that would tear down sibling
-  // imposters, so the adapter destroys a single space via rift_replace_stubs([]) instead.
+  // v2 (rift#343): the in-process admin plane, per-imposter delete, build identity, thread-local error.
+  private final MethodHandle serveAdmin;
+  private final MethodHandle deleteImposter;
+  private final MethodHandle buildInfo;
+  private final MethodHandle lastError;
+
   private RiftFfiBridge(Arena arena, SymbolLookup lookup, MemorySegment handle) {
     this.arena = arena;
     this.handle = handle;
@@ -52,6 +66,14 @@ public final class RiftFfiBridge implements AutoCloseable {
         FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_SHORT));
     this.free = downcall(lookup, "rift_free", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
     this.stop = downcall(lookup, "rift_stop", FunctionDescriptor.ofVoid(ValueLayout.ADDRESS));
+    // v2 symbols are mandatory: binding them here makes a pre-v2 library fail fast at start with a
+    // missing-symbol error (rift_build_info being the canonical v2 marker).
+    this.buildInfo = downcall(lookup, "rift_build_info", FunctionDescriptor.of(ValueLayout.ADDRESS));
+    this.serveAdmin = downcall(lookup, "rift_serve_admin",
+        FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+    this.deleteImposter = downcall(lookup, "rift_delete_imposter",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_SHORT));
+    this.lastError = downcall(lookup, "rift_last_error", FunctionDescriptor.of(ValueLayout.ADDRESS));
   }
 
   /**
@@ -86,7 +108,7 @@ public final class RiftFfiBridge implements AutoCloseable {
       short port = (short) createImposter.invoke(handle, call.allocateUtf8String(configJson));
       return port & 0xFFFF;
     } catch (Throwable t) {
-      throw new RuntimeException("rift_create_imposter downcall failed", t);
+      throw failure("rift_create_imposter", t);
     }
   }
 
@@ -95,7 +117,7 @@ public final class RiftFfiBridge implements AutoCloseable {
     try (Arena call = Arena.ofConfined()) {
       return (int) replaceStubs.invoke(handle, (short) port, call.allocateUtf8String(stubsJson));
     } catch (Throwable t) {
-      throw new RuntimeException("rift_replace_stubs downcall failed", t);
+      throw failure("rift_replace_stubs", t);
     }
   }
 
@@ -106,32 +128,68 @@ public final class RiftFfiBridge implements AutoCloseable {
   public String recorded(int port) {
     try {
       MemorySegment result = (MemorySegment) recorded.invoke(handle, (short) port);
+      return readAndFree(result);
+    } catch (Throwable t) {
+      throw failure("rift_recorded", t);
+    }
+  }
+
+  /**
+   * Start the in-process admin API from an options JSON ({@code {"host":..,"port":..}}); returns the
+   * admin-info JSON ({@code {"adminPort":N,"adminUrl":"http://..","metricsPort":..}}). Throws with the
+   * engine's {@code rift_last_error} message on a null sentinel (bad JSON, bind failure, or a plane
+   * already serving — one plane per handle).
+   */
+  public String serveAdmin(String optionsJson) {
+    MemorySegment result;
+    try (Arena call = Arena.ofConfined()) {
+      // The returned buffer is engine-owned, independent of `call`, so reading it after the arena
+      // closes is safe — only the input string lives in `call`.
+      result = (MemorySegment) serveAdmin.invoke(handle, call.allocateUtf8String(optionsJson));
+    } catch (Throwable t) {
+      throw failure("rift_serve_admin", t);
+    }
+    String json;
+    try {
+      json = readAndFree(result);
+    } catch (Throwable t) {
+      throw failure("rift_serve_admin", t);
+    }
+    if (json == null) {
+      throw new IllegalStateException("rift_serve_admin returned null" + lastErrorSuffix());
+    }
+    return json;
+  }
+
+  /** Delete one imposter, freeing its port. Returns {@code 0} on success, {@code -1} on error. */
+  public int deleteImposter(int port) {
+    try {
+      return (int) deleteImposter.invoke(handle, (short) port);
+    } catch (Throwable t) {
+      throw failure("rift_delete_imposter", t);
+    }
+  }
+
+  /**
+   * The engine's build identity JSON ({@code {"version":..,"commit":..,"builtAt":..,"features":[..]}}).
+   * The pointer is a STATIC string owned by the library — it is read but never freed.
+   */
+  public String buildInfo() {
+    try {
+      MemorySegment result = (MemorySegment) buildInfo.invoke();
       if (result.address() == 0L) {
         return null;
       }
-      Throwable primary = null;
-      try {
-        return result.reinterpret(Long.MAX_VALUE).getUtf8String(0);
-      } catch (Throwable t) {
-        primary = t;
-        throw t;
-      } finally {
-        // Free the buffer either way, but never let a free failure mask the read failure.
-        try {
-          free.invoke(result);
-        } catch (Throwable t) {
-          if (primary != null) primary.addSuppressed(t);
-          else throw t;
-        }
-      }
+      return result.reinterpret(Long.MAX_VALUE).getUtf8String(0);
     } catch (Throwable t) {
-      throw new RuntimeException("rift_recorded downcall failed", t);
+      throw failure("rift_build_info", t);
     }
   }
 
   /**
    * Stop the engine ({@code rift_stop}) and release the native library. Not idempotent — call
-   * exactly once; the scoped layer guarantees a single release.
+   * exactly once; the scoped layer guarantees a single release. In v2 mode {@code rift_stop} also
+   * shuts the admin/metrics listeners down before the manager.
    */
   @Override
   public void close() {
@@ -150,5 +208,58 @@ public final class RiftFfiBridge implements AutoCloseable {
         else throw t;
       }
     }
+  }
+
+  // Read a returned *mut c_char (or null → Java null), freeing it via rift_free either way — never
+  // letting a free failure mask the read failure. Shared by recorded / serve_admin.
+  private String readAndFree(MemorySegment result) throws Throwable {
+    if (result.address() == 0L) {
+      return null;
+    }
+    Throwable primary = null;
+    try {
+      return result.reinterpret(Long.MAX_VALUE).getUtf8String(0);
+    } catch (Throwable t) {
+      primary = t;
+      throw t;
+    } finally {
+      try {
+        free.invoke(result);
+      } catch (Throwable t) {
+        if (primary != null) primary.addSuppressed(t);
+        else throw t;
+      }
+    }
+  }
+
+  /**
+   * The engine's thread-local last-error text ({@code rift_last_error}) recorded by a failed
+   * {@code rift_*} call on '''this''' thread, or {@code null} if none. Callers reading it after a
+   * returned sentinel (port {@code 0}, rc {@code -1}, null) MUST do so on the same thread as the
+   * failing call — the crate confines the error to that thread and clears it on read. Best-effort:
+   * never throws.
+   */
+  public String lastError() {
+    return lastErrorText();
+  }
+
+  // The thread-local last-error text from the engine (null when none). Reading it clears it on the
+  // crate side, and the buffer is freed via rift_free.
+  private String lastErrorText() {
+    try {
+      MemorySegment result = (MemorySegment) lastError.invoke();
+      return readAndFree(result);
+    } catch (Throwable t) {
+      return null; // best-effort diagnostics — never let error-reading mask the original failure
+    }
+  }
+
+  private String lastErrorSuffix() {
+    String msg = lastErrorText();
+    return (msg == null || msg.isEmpty()) ? "" : " (" + msg + ")";
+  }
+
+  private RuntimeException failure(String op, Throwable t) {
+    return new RuntimeException(op + " downcall failed" + lastErrorSuffix(), t);
   }
 }

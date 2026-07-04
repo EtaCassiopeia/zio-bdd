@@ -2,6 +2,8 @@ package zio.bdd.mock.rift.embedded
 
 import zio.*
 import zio.bdd.mock.{MockControl, MockError, Provisioning}
+import zio.http.Client
+import zio.json.ast.Json
 
 import java.nio.file.{Files, Path, StandardCopyOption}
 
@@ -20,9 +22,13 @@ import java.nio.file.{Files, Path, StandardCopyOption}
  *
  * Requires Project Panama FFM, a preview API on JDK 21: the host JVM must run
  * with `--enable-preview` (and `--enable-native-access` to silence the
- * restricted-method warning).
+ * restricted-method warning). Requires the C-ABI v2 (rift#343, `librift_ffi` ≥
+ * v0.9.0) — a pre-v2 library fails fast at start with a missing-symbol error.
  */
 object EmbeddedRift:
+
+  // The engine binds the in-process admin API on loopback with an OS-assigned port (rift#343).
+  private val serveAdminOptions: String = Json.Obj("host" -> Json.Str("127.0.0.1"), "port" -> Json.Num(0)).toString
 
   /**
    * True iff a `librift_ffi` resolves for the host (a bundled native resource,
@@ -32,20 +38,44 @@ object EmbeddedRift:
 
   /**
    * A scoped [[MockControl]] backed by the in-process Rift engine: `rift_start`
-   * on layer construction, `rift_stop` on close. Fails with
-   * [[MockError.ProvisionFailed]] when no native library resolves for the host,
-   * or it cannot be loaded.
+   * plus `rift_serve_admin` (the in-process admin plane) on layer construction,
+   * `rift_stop` on close. Self-contained — it builds its own loopback HTTP
+   * client for the admin plane, so the public requirement stays just
+   * [[Provisioning]]. Fails with [[MockError.ProvisionFailed]] when no native
+   * library resolves for the host, or it cannot be loaded.
    */
   def layer: ZLayer[Provisioning, MockError, MockControl] =
     ZLayer.scoped {
       for
-        prov    <- ZIO.service[Provisioning]
-        source  <- ZIO.fromEither(NativeLibrary.resolveSource)
-        path    <- loadablePath(source)
-        engine  <- RiftFfi.start(path.toString)
-        control <- EmbeddedRiftMockControl.make(engine, prov)
+        prov   <- ZIO.service[Provisioning]
+        engine <- startEngine
+        // Standing up the admin plane is part of constructing the backend, so a failure here is a
+        // ProvisionFailed (matching this layer's contract), not the raw CommunicationError.
+        adminInfo <-
+          engine
+            .serveAdmin(serveAdminOptions)
+            .mapError(e => MockError.ProvisionFailed(s"starting the embedded Rift admin plane: $e"))
+        client  <- adminClient
+        control <- EmbeddedRiftMockControl.make(engine, prov, EmbeddedRiftMockControl.Admin(adminInfo.adminUrl, client))
       yield control
     }
+
+  // Resolve the native library and start the engine, scoped (rift_start on acquire, rift_stop on
+  // close). Shared by `layer` and the live FFI spec (which drives the engine's admin plane directly).
+  private[embedded] def startEngine: ZIO[Scope, MockError, EmbeddedEngine] =
+    for
+      source <- ZIO.fromEither(NativeLibrary.resolveSource)
+      path   <- loadablePath(source)
+      engine <- RiftFfi.start(path.toString)
+    yield engine
+
+  // The loopback HTTP client for the in-process admin plane, owned by the layer's scope so the
+  // embedded adapter needs nothing from the environment but Provisioning (mirrors the container
+  // adapter's Client, but self-provided).
+  private def adminClient: ZIO[Scope, MockError, Client] =
+    Client.default.build
+      .map(_.get[Client])
+      .mapError(t => MockError.ProvisionFailed(s"building embedded Rift admin HTTP client: ${message(t)}"))
 
   // An override is already a real path; a bundled resource is extracted to a temp file (removed when
   // the JVM exits — the engine keeps the loaded library mapped, so the file is no longer needed).
@@ -67,3 +97,6 @@ object EmbeddedRift:
           val msg = Option(t.getMessage).filter(_.nonEmpty).fold("")(m => s": $m")
           MockError.ProvisionFailed(s"extracting bundled native '$resource': ${t.getClass.getSimpleName}$msg")
         }
+
+  private def message(t: Throwable): String =
+    Option(t.getMessage).getOrElse(t.getClass.getSimpleName)

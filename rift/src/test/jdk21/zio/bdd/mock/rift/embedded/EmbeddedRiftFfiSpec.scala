@@ -168,5 +168,79 @@ object EmbeddedRiftFfiSpec extends ZIOSpecDefault:
             result <- control.provision(MockSource.Dir(dir.toString)).either
           yield assertTrue(result.isLeft))
           .provide(Provisioning.live, EmbeddedRift.layer.mapError(asT))
+    },
+    test("v2: rift_serve_admin yields a loopback admin URL and rift_build_info a non-empty version") {
+      if !EmbeddedRift.available then ZIO.succeed(assertCompletes)
+      else
+        ZIO.scoped(
+          for
+            engine <- EmbeddedRift.startEngine.mapError(asT)
+            info   <- engine.serveAdmin("""{"host":"127.0.0.1","port":0}""").mapError(asT)
+            build  <- engine.buildInfo.mapError(asT)
+          yield assertTrue(
+            info.adminUrl.startsWith("http://127.0.0.1:"),
+            info.adminPort > 0,
+            build.version.nonEmpty
+          )
+        )
+    },
+    test("v2: capability set is all six and stateful scenarios round-trip over the in-process admin plane") {
+      if !EmbeddedRift.available then ZIO.succeed(assertCompletes)
+      else
+        val checkout =
+          ScenarioDef(
+            "checkout",
+            List(
+              StatefulRule(
+                ScenarioState.Started,
+                RequestMatch(method = Some(Method.Get), path = PathMatch.Exact("/step")),
+                ResponseDef(status = 200, body = Body.Text("one")),
+                thenState = Some(ScenarioState("Done"))
+              )
+            ),
+            initial = ScenarioState.Started
+          )
+        (for
+          control <- ZIO.service[MockControl]
+          space   <- control.provision(pingSource).mapError(asT).map(_.head)
+          ss      <- control.scenarios.mapError(u => new RuntimeException(s"Unsupported: $u"))
+          si      <- control.stateInspection.mapError(u => new RuntimeException(s"Unsupported: $u"))
+          _       <- ss.define(space, checkout).mapError(asT)
+          s0      <- si.currentState(space, "checkout").mapError(asT)
+          stepped <- SutClient.make(space).send(Method.Get, "/step")
+          s1      <- si.currentState(space, "checkout").mapError(asT)
+          _       <- ss.reset(space, "checkout").mapError(asT)
+          s2      <- si.currentState(space, "checkout").mapError(asT)
+          _       <- control.destroy(space).mapError(asT)
+        yield assertTrue(
+          control.capabilities == Set(
+            Capability.Faults,
+            Capability.Scripting,
+            Capability.ProxyRecord,
+            Capability.Templating,
+            Capability.StatefulScenarios,
+            Capability.StateInspection
+          ),
+          s0 == ScenarioState.Started,
+          stepped.status == 200 && stepped.body == "one",
+          s1 == ScenarioState("Done"), // serving /step advanced the FSM
+          s2 == ScenarioState.Started  // reset re-pinned the initial state
+        )).provide(Provisioning.live, EmbeddedRift.layer.mapError(asT))
+    },
+    test("v2: destroy frees the port via rift_delete_imposter — an immediate re-provision serves again") {
+      if !EmbeddedRift.available then ZIO.succeed(assertCompletes)
+      else
+        (for
+          control <- ZIO.service[MockControl]
+          first   <- control.provision(pingSource).mapError(asT).map(_.head)
+          r1      <- SutClient.make(first).send(Method.Get, "/ping")
+          _       <- control.destroy(first).mapError(asT)
+          second  <- control.provision(pingSource).mapError(asT).map(_.head)
+          r2      <- SutClient.make(second).send(Method.Get, "/ping")
+          _       <- control.destroy(second).mapError(asT)
+        yield assertTrue(
+          r1.status == 200 && r1.body == "pong",
+          r2.status == 200 && r2.body == "pong" // re-provision after destroy serves — no port leak
+        )).provide(Provisioning.live, EmbeddedRift.layer.mapError(asT))
     }
   ) @@ TestAspect.withLiveClock

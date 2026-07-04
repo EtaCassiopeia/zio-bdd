@@ -18,25 +18,31 @@ import zio.test.*
  *
  * `Matrix.conformant(embedded)` is the full acceptance condition for a suite:
  * with the library present, the core scenarios (which require no capability)
- * must PASS, the stub-based capability scenarios (faults/scripting/templating,
- * #185) must PASS against the live engine, and the stateful scenarios
- * SKIP-justified (embedded advertises no StatefulScenarios/StateInspection —
- * the C-ABI has no scenario-state endpoints); with the library absent, the
- * whole column is SKIPPED-unavailable (also conformant). So one assertion gates
- * each catalogue.
+ * must PASS, and every capability catalogue — the stub-based four
+ * (faults/scripting/templating, #185) and the stateful two (scenarios/state
+ * inspection, #193, over the v2 in-process admin plane) — must PASS against the
+ * live engine; with the library absent, the whole column is SKIPPED-unavailable
+ * (also conformant). So one assertion gates each catalogue.
  */
 object EmbeddedConformanceSpec extends ZIOSpecDefault:
 
   private def asT(e: MockError): Throwable = new RuntimeException(s"MockError: $e")
 
-  // The embedded adapter advertises the four stub-based capabilities (#185); StatefulScenarios
-  // and StateInspection stay out of scope (no scenario-state endpoints over the C-ABI). This must
-  // mirror EmbeddedRiftMockControl.capabilities so the harness runs the supported catalogues live.
+  // The v2 embedded adapter is capability-complete (all six) — the in-process admin plane (rift#343)
+  // reaches the scenario-state endpoints the C-ABI could not before. This must mirror
+  // EmbeddedRiftMockControl.capabilities so the harness runs every catalogue live.
   private val embedded =
     MockBackendUnderTest(
       "embedded",
       Provisioning.live >>> EmbeddedRift.layer.mapError(asT),
-      Set(Capability.Faults, Capability.Scripting, Capability.ProxyRecord, Capability.Templating),
+      Set(
+        Capability.Faults,
+        Capability.Scripting,
+        Capability.ProxyRecord,
+        Capability.Templating,
+        Capability.StatefulScenarios,
+        Capability.StateInspection
+      ),
       Isolation.PerInstance,
       available = EmbeddedRift.available
     )

@@ -2,7 +2,8 @@ package zio.bdd.mock.rift.embedded
 
 import zio.*
 import zio.bdd.mock.*
-import zio.bdd.mock.rift.RiftProtocol
+import zio.bdd.mock.rift.{RiftProtocol, RiftScenarioAdmin}
+import zio.http.Client
 import zio.json.*
 import zio.json.ast.Json
 
@@ -13,49 +14,58 @@ import zio.json.ast.Json
  *
  * It shares the Mountebank-compatible JSON codec ([[RiftProtocol]]) with the
  * container adapter — the FFI consumes the same imposter/stub model the admin
- * API does — so the wire fidelity is identical; only the transport differs (FFM
- * downcalls instead of HTTP).
+ * API does — so the wire fidelity is identical; only the transport differs.
  *
- * The FFI surface is intentionally small: create an imposter, replace all of
- * its stubs, read its recorded requests. So this adapter keeps each space's
- * ordered rules in a [[Ref]] and realises every rule mutation as a
- * whole-imposter `rift_replace_stubs` (first-match order: overlay prepends,
- * base appends). It is PerInstance only — one imposter per space on its own
- * OS-assigned localhost port (the host allocates a free port, the engine binds
- * it directly; no container port-mapping).
+ * Requires the C-ABI v2 (rift#343, `librift_ffi` ≥ v0.9.0): the engine starts
+ * the '''real''' admin API in-process on loopback
+ * ([[EmbeddedEngine.serveAdmin]]) over the same manager the FFI downcalls
+ * drive. So the adapter is "the container adapter minus Docker": the hot-path
+ * data plane stays FFI downcalls (`create_imposter`/`replace_stubs`/`recorded`,
+ * no HTTP hop), while the admin long tail — scenario pin/read/reset — routes
+ * over the loopback admin URL through the shared [[RiftScenarioAdmin]], exactly
+ * as the container adapter does. `destroy` frees the port via
+ * `rift_delete_imposter`. All six capabilities are advertised. (Older Rift is
+ * unsupported — a pre-v2 library fails fast at load, so there is no legacy
+ * tier.)
  *
- * The stub-based optional capabilities — [[Faults]], [[Scripting]],
- * [[ProxyRecord]], [[Templating]] — need no transport beyond
- * `rift_replace_stubs` (each is a special-response stub the engine serves
- * natively), so they are wired the same way the container adapter wires them
- * over the admin API: the capability stub is tracked in `imp.extras` and
- * re-registered ahead of the space's rules on every rebuild, so it wins
- * first-match and is removable via [[removeRule]]. [[StatefulScenarios]] and
- * [[StateInspection]] stay unsupported: they require the scenario-state
- * endpoints (pin/read/reset the initial state) the C-ABI does not expose. So
- * the embedded capability set is deliberately those four; the two stateful
- * capabilities negotiate a justified SKIP.
+ * The FFI surface for stubs is intentionally small: create an imposter, replace
+ * all of its stubs, read its recorded requests. So this adapter keeps each
+ * space's ordered rules in a [[Ref]] and realises every
+ * rule/scenario/capability mutation as a whole-imposter `rift_replace_stubs`
+ * (first-match order: capability stubs, then scenario stubs, then rules, then
+ * native base stubs). It is PerInstance only — one imposter per space on its
+ * own OS-assigned localhost port.
  */
 private[embedded] final case class EmbeddedRiftMockControl(
   engine: EmbeddedEngine,
   provisioning: Provisioning,
   spaces: Ref[Map[SpaceId, EmbeddedRiftMockControl.Imposter]],
-  ids: Ref[Int]
+  ids: Ref[Int],
+  admin: EmbeddedRiftMockControl.Admin
 ) extends MockControl:
 
   import EmbeddedRiftMockControl.Imposter
 
   def backendName: String = "embedded"
+
+  // The v2 in-process admin plane makes the embedded adapter capability-complete: all six.
   def capabilities: Set[Capability] =
-    Set(Capability.Faults, Capability.Scripting, Capability.ProxyRecord, Capability.Templating)
+    Set(
+      Capability.Faults,
+      Capability.Scripting,
+      Capability.ProxyRecord,
+      Capability.Templating,
+      Capability.StatefulScenarios,
+      Capability.StateInspection
+    )
 
   def provision(source: MockSource): IO[MockError, List[MockSpace]] =
     for
       sources <- provisioning.normalize(source)
       created <- Ref.make(List.empty[MockSpace])
       // Provision atomically: if a later source fails, tear down the spaces already stood up so a
-      // partial provision doesn't leave them serving (their bound ports are reclaimed only when the
-      // engine stops). The original failure propagates; a cleanup failure is logged, never masks it.
+      // partial provision doesn't leave them serving. The original failure propagates; a cleanup
+      // failure is logged, never masks it.
       spaces <- ZIO
                   .foreach(sources)(src => serve(src).tap(s => created.update(s :: _)))
                   .onError(_ => created.get.flatMap(ZIO.foreachDiscard(_)(s => destroy(s).ignoreLogged)))
@@ -80,7 +90,7 @@ private[embedded] final case class EmbeddedRiftMockControl(
                  case Priority.Base    => cur :+ (ruleId, rule)
         // Server-first, commit tracking on success — so a failed downcall never leaves the Ref
         // claiming a rule the engine didn't accept.
-        _ <- rebuild(imp, extras, next)
+        _ <- rebuildCurrent(imp, extras, next)
         _ <- imp.rules.set(next)
       yield ruleId
     }
@@ -94,10 +104,10 @@ private[embedded] final case class EmbeddedRiftMockControl(
         _ <-
           if rules.exists(_._1 == id) then
             val next = rules.filterNot(_._1 == id)
-            rebuild(imp, extras, next) *> imp.rules.set(next)
+            rebuildCurrent(imp, extras, next) *> imp.rules.set(next)
           else if extras.exists(_._1 == id) then
             val nextE = extras.filterNot(_._1 == id)
-            rebuild(imp, nextE, rules) *> imp.extras.set(nextE)
+            rebuildCurrent(imp, nextE, rules) *> imp.extras.set(nextE)
           else ZIO.fail(MockError.RuleNotFound(space.id, id))
       yield ()
     }
@@ -107,18 +117,16 @@ private[embedded] final case class EmbeddedRiftMockControl(
       for
         next   <- tagRules(rules)
         extras <- imp.extras.get
-        _      <- rebuild(imp, extras, next)
+        _      <- rebuildCurrent(imp, extras, next)
         _      <- imp.rules.set(next)
       yield ()
     }
 
   def destroy(space: MockSpace): IO[MockError, Unit] =
     withImposter(space) { imp =>
-      // The C-ABI has no per-imposter delete (only `rift_delete_all`, which would tear down sibling
-      // spaces), so destroy empties the imposter's stubs (it then serves only the 404 default) and
-      // drops local tracking — after which every op on this space fails SpaceNotFound. The bound
-      // port lingers until the engine stops; that is reclaimed when the scoped layer closes.
-      engine.replaceStubs(imp.port, "[]") *> spaces.update(_ - space.id)
+      // rift_delete_imposter frees the bound port immediately (an equal-port re-provision then
+      // succeeds); tracking is dropped so every later op on the space fails SpaceNotFound.
+      engine.deleteImposter(imp.port) *> spaces.update(_ - space.id)
     }
 
   def received(space: MockSpace): IO[MockError, List[RecordedRequest]] =
@@ -135,9 +143,9 @@ private[embedded] final case class EmbeddedRiftMockControl(
   def proxyRecord: IO[Unsupported, ProxyRecord] = ZIO.succeed(embeddedProxyRecord)
   def templating: IO[Unsupported, Templating]   = ZIO.succeed(embeddedTemplating)
 
-  // No scenario-state endpoints over the C-ABI (see the class doc), so these stay unsupported.
-  def scenarios: IO[Unsupported, StatefulScenarios]     = unsupported(Capability.StatefulScenarios)
-  def stateInspection: IO[Unsupported, StateInspection] = unsupported(Capability.StateInspection)
+  // Scenario/state route over the in-process admin plane (rift#343).
+  def scenarios: IO[Unsupported, StatefulScenarios]     = ZIO.succeed(embeddedScenarios)
+  def stateInspection: IO[Unsupported, StateInspection] = ZIO.succeed(embeddedStateInspection)
 
   // ===== Stub-based capabilities (#132/#185) ======================================
   // Each installs a special-response stub (`_rift.fault`, `_rift.script`, a Mountebank
@@ -171,10 +179,68 @@ private[embedded] final case class EmbeddedRiftMockControl(
         rules  <- imp.rules.get
         extras <- imp.extras.get
         next    = (ruleId, buildStub(ruleId)) +: extras
-        _      <- rebuild(imp, next, rules)
+        _      <- rebuildCurrent(imp, next, rules)
         _      <- imp.extras.set(next)
       yield ruleId
     }
+
+  // ===== StatefulScenarios + StateInspection (v2, #131/#193) ======================
+  // The v2 in-process admin plane runs over the same ImposterManager the FFI downcalls drive
+  // (rift#343), so a stateful stub registered via rift_replace_stubs is visible to the admin
+  // scenario endpoints, and pinning state over loopback HTTP affects the FFI-served imposter. The
+  // stateful stubs are tracked (imp.scenarioStubs) so a later rule/capability rebuild preserves
+  // them; the state pin/read reuses RiftScenarioAdmin (shared with the container adapter). flowId =
+  // the imposter port (PerInstance), matching how requests resolve their state slice.
+
+  private val embeddedScenarios: StatefulScenarios = new StatefulScenarios:
+    def define(space: MockSpace, sc: ScenarioDef): IO[MockError, Unit] =
+      withImposter(space) { imp =>
+        val newStubs =
+          sc.rules.map(r =>
+            RiftProtocol.statefulStub(sc.name, r.whenState, r.thenState, MockRule(r.request, r.respond))
+          )
+        for
+          cur    <- imp.scenarioStubs.get
+          extras <- imp.extras.get
+          rules  <- imp.rules.get
+          nextS   = cur ++ newStubs
+          // Ordering mirrors the container adapter's piDefine (server-first): register the stubs,
+          // commit the stub-tracking Ref (so a later rebuild preserves them), pin the initial state,
+          // then commit the scenarios map. Like the container, a re-define of an existing name appends
+          // rather than replaces — provision a fresh space per scenario (as the conformance does).
+          _ <- rebuildWith(imp, extras, nextS, rules)
+          _ <- imp.scenarioStubs.set(nextS)
+          _ <- putScenarioState(imp, sc.name, sc.initial)
+          _ <- imp.scenarios.update(_ + (sc.name -> sc.initial))
+        yield ()
+      }
+    def reset(space: MockSpace, name: String): IO[MockError, Unit] =
+      withImposter(space) { imp =>
+        imp.scenarios.get.flatMap(_.get(name) match
+          case Some(initial) => putScenarioState(imp, name, initial)
+          case None          => ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${space.id.value}"))
+        )
+      }
+
+  private val embeddedStateInspection: StateInspection = new StateInspection:
+    def currentState(space: MockSpace, name: String): IO[MockError, ScenarioState] =
+      withImposter(space) { imp =>
+        RiftScenarioAdmin.readState(admin.client, admin.url, imp.port, imp.port.toString, name).flatMap {
+          case Some(s) => ZIO.succeed(ScenarioState(s))
+          case None    => ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${space.id.value}"))
+        }
+      }
+    def setState(space: MockSpace, name: String, to: ScenarioState): IO[MockError, Unit] =
+      withImposter(space) { imp =>
+        imp.scenarios.get.flatMap(s =>
+          if s.contains(name) then putScenarioState(imp, name, to)
+          else ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${space.id.value}"))
+        )
+      }
+
+  // flowId = the imposter port (PerInstance): the slice a request resolves its scenario state to.
+  private def putScenarioState(imp: Imposter, name: String, state: ScenarioState): IO[MockError, Unit] =
+    RiftScenarioAdmin.putState(admin.client, admin.url, imp.port, imp.port.toString, name, state)
 
   // ---------------------------------------------------------------------------
 
@@ -189,10 +255,12 @@ private[embedded] final case class EmbeddedRiftMockControl(
       _ <- ZIO.unless(bound == port)(
              ZIO.fail(MockError.ProvisionFailed(s"embedded Rift bound port $bound but $port was requested"))
            )
-      rules  <- Ref.make(built.tagged)
-      extras <- Ref.make(Vector.empty[(RuleId, Json)])
-      id      = SpaceId(s"${src.name}-$port")
-      _      <- spaces.update(_.updated(id, Imposter(port, rules, extras, built.nativeStubs)))
+      rules     <- Ref.make(built.tagged)
+      extras    <- Ref.make(Vector.empty[(RuleId, Json)])
+      scenStubs <- Ref.make(Vector.empty[Json])
+      scenarios <- Ref.make(Map.empty[String, ScenarioState])
+      id         = SpaceId(s"${src.name}-$port")
+      _         <- spaces.update(_.updated(id, Imposter(port, rules, extras, scenStubs, scenarios, built.nativeStubs)))
     yield MockSpace(s"http://localhost:$port", identity, id)
 
   private def withImposter[A](space: MockSpace)(f: Imposter => IO[MockError, A]): IO[MockError, A] =
@@ -204,8 +272,7 @@ private[embedded] final case class EmbeddedRiftMockControl(
   // Build the create-imposter body for `src`, the portable rules to track, and the native base
   // stubs to preserve. A DSL source's rules are each tagged with a fresh id and tracked; a raw
   // imposter document's own stubs aren't portable rules, so they are kept verbatim as a base layer
-  // that every later `rift_replace_stubs` rebuild re-registers beneath the tracked rules — so a
-  // mutation (e.g. an overlay) on a natively-provisioned space doesn't drop its native stubs.
+  // that every later `rift_replace_stubs` rebuild re-registers beneath the tracked rules.
   private def buildImposter(port: Int, src: NormalizedSource): IO[MockError, EmbeddedRiftMockControl.Built] =
     src.payload match
       case SourcePayload.Rules(rules) =>
@@ -234,36 +301,51 @@ private[embedded] final case class EmbeddedRiftMockControl(
   private def withIds(tagged: Vector[(RuleId, MockRule)]): List[MockRule] =
     tagged.map((rid, r) => r.copy(id = Some(rid))).toList
 
-  // Re-register a space's whole stub list via `rift_replace_stubs`: the tracked capability stubs
-  // (faults/script/proxy/template) first so they win first-match, then the tracked portable rules
-  // in first-match order, then the native base stubs (so an overlay rule shadows a native stub).
-  private def rebuild(
+  // Re-register a space's whole stub list via `rift_replace_stubs`, first-match order: the tracked
+  // capability stubs (faults/script/proxy/template), then the scenario stubs, then the portable
+  // rules, then the native base stubs. `rebuildCurrent` reads the current scenario stubs; `rebuildWith`
+  // takes them explicitly so `define` can rebuild-then-commit server-first.
+  private def rebuildCurrent(
     imp: Imposter,
     extras: Vector[(RuleId, Json)],
     tracked: Vector[(RuleId, MockRule)]
   ): IO[MockError, Unit] =
-    val stubs = extras.map(_._2) ++ withIds(tracked).map(RiftProtocol.stub) ++ imp.nativeStubs
+    imp.scenarioStubs.get.flatMap(sc => rebuildWith(imp, extras, sc, tracked))
+
+  private def rebuildWith(
+    imp: Imposter,
+    extras: Vector[(RuleId, Json)],
+    scenarioStubs: Vector[Json],
+    tracked: Vector[(RuleId, MockRule)]
+  ): IO[MockError, Unit] =
+    val stubs = extras.map(_._2) ++ scenarioStubs ++ withIds(tracked).map(RiftProtocol.stub) ++ imp.nativeStubs
     engine.replaceStubs(imp.port, Json.Arr(stubs*).toJson)
 
   private def freshId: UIO[RuleId]                  = ids.updateAndGet(_ + 1).map(n => RuleId(s"r$n"))
   private def freshIds(n: Int): UIO[Vector[RuleId]] = ZIO.foreach(0 until n)(_ => freshId).map(_.toVector)
 
-  private def unsupported[A](c: Capability): IO[Unsupported, A] = ZIO.fail(Unsupported(c, backendName))
-
 private[embedded] object EmbeddedRiftMockControl:
 
   /**
+   * Where the v2 in-process admin plane is reachable, plus the HTTP client to
+   * reach it.
+   */
+  final case class Admin(url: String, client: Client)
+
+  /**
    * A live imposter: its bound port, the ordered portable rules tracked for
-   * `rift_replace_stubs`, the pre-built capability stubs (#132/#185: fault /
-   * script / proxy / template) re-registered ahead of the rules on every
-   * rebuild, and the native base stubs (from a raw imposter document)
-   * re-registered beneath the tracked rules — both empty for a plain
-   * DSL-provisioned space with no capability injected.
+   * `rift_replace_stubs`, the pre-built capability stubs (#132/#185) and
+   * scenario stubs (#193) re-registered ahead of the rules on every rebuild,
+   * the defined scenarios' initial states (for reset), and the native base
+   * stubs (from a raw imposter document) re-registered beneath the tracked
+   * rules.
    */
   final case class Imposter(
     port: Int,
     rules: Ref[Vector[(RuleId, MockRule)]],
     extras: Ref[Vector[(RuleId, Json)]],
+    scenarioStubs: Ref[Vector[Json]],
+    scenarios: Ref[Map[String, ScenarioState]],
     nativeStubs: Vector[Json]
   )
 
@@ -273,8 +355,8 @@ private[embedded] object EmbeddedRiftMockControl:
    */
   final case class Built(configJson: String, tagged: Vector[(RuleId, MockRule)], nativeStubs: Vector[Json])
 
-  def make(engine: EmbeddedEngine, provisioning: Provisioning): UIO[MockControl] =
+  def make(engine: EmbeddedEngine, provisioning: Provisioning, admin: Admin): UIO[MockControl] =
     for
       spaces <- Ref.make(Map.empty[SpaceId, Imposter])
       ids    <- Ref.make(0)
-    yield EmbeddedRiftMockControl(engine, provisioning, spaces, ids)
+    yield EmbeddedRiftMockControl(engine, provisioning, spaces, ids, admin)
