@@ -20,10 +20,11 @@ import java.nio.file.{Files, Path, StandardCopyOption}
  * for the host, so a harness can park the backend (rather than fail) on an
  * unsupported platform.
  *
- * Requires Project Panama FFM, a preview API on JDK 21: the host JVM must run
- * with `--enable-preview` (and `--enable-native-access` to silence the
- * restricted-method warning). Requires the C-ABI v2 (rift#343, `librift_ffi` ≥
- * v0.9.0) — a pre-v2 library fails fast at start with a missing-symbol error.
+ * Requires the stable Project Panama FFM API (JEP 454, final in JDK 22), so the
+ * host JVM must be **JDK 22+** and run with `--enable-native-access` (to
+ * silence the restricted-method warning). Requires the C-ABI v2 (rift#343,
+ * `librift_ffi` ≥ v0.9.0) — a pre-v2 library fails fast at start with a
+ * missing-symbol error.
  */
 object EmbeddedRift:
 

@@ -9,10 +9,15 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+      # Build on JDK 22: FFM is finalized in JDK 22 (JEP 454), so the embedded provider
+      # (zio-bdd-rift-embedded) + its natives jar are aggregated and published from here. The
+      # container/core modules stay portable — scalac emits Java 8 bytecode regardless of the build
+      # JDK, and the JDK-11 CI `build` job guards their JDK-11 API compatibility. So one release job
+      # publishes both the JDK-11 stack and the JDK-22 embedded artifact.
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: 11
+          java-version: 22
           cache: sbt
       - uses: sbt/setup-sbt@v1
       - run: sbt ci-release

@@ -11,11 +11,12 @@ import java.nio.file.Path;
 
 /**
  * Project Panama (FFM) bindings to the {@code librift_ffi} C-ABI: an opaque handle + JSON in / JSON
- * out over the Rift engine, so {@code MockControl.embedded} can drive Rift in-process with no Docker.
- * Authored in Java because FFM is a preview API in JDK 21 and the downcall {@link MethodHandle#invoke}
- * is signature-polymorphic — both are handled natively by javac (the {@code --enable-preview} class
- * bit and the per-call-site descriptor), avoiding the cross-language pitfalls of calling these from
- * Scala.
+ * out over the Rift engine, so the embedded provider can drive Rift in-process with no Docker.
+ * Compiled against the '''stable''' Foreign Function &amp; Memory API (JEP 454, final in JDK 22), so this
+ * module requires JDK 22+ at runtime (plus {@code --enable-native-access}) — no {@code --enable-preview},
+ * and the class is not version-locked to a single JDK. Authored in Java because the downcall
+ * {@link MethodHandle#invoke} is signature-polymorphic (handled natively by javac per call site),
+ * avoiding the cross-language pitfalls of calling these from Scala.
  *
  * <p>Requires the C-ABI v2 (rift#343, first shipped in {@code librift_ffi} v0.9.0): the data plane
  * ({@code rift_start/stop/create_imposter/replace_stubs/recorded/free}) plus the in-process admin
@@ -105,7 +106,7 @@ public final class RiftFfiBridge implements AutoCloseable {
   /** Create an imposter from a JSON config. Returns its bound port, or {@code 0} on any error. */
   public int createImposter(String configJson) {
     try (Arena call = Arena.ofConfined()) {
-      short port = (short) createImposter.invoke(handle, call.allocateUtf8String(configJson));
+      short port = (short) createImposter.invoke(handle, call.allocateFrom(configJson));
       return port & 0xFFFF;
     } catch (Throwable t) {
       throw failure("rift_create_imposter", t);
@@ -115,7 +116,7 @@ public final class RiftFfiBridge implements AutoCloseable {
   /** Replace all stubs on {@code port} from a JSON array. Returns {@code 0} on success, {@code -1} on error. */
   public int replaceStubs(int port, String stubsJson) {
     try (Arena call = Arena.ofConfined()) {
-      return (int) replaceStubs.invoke(handle, (short) port, call.allocateUtf8String(stubsJson));
+      return (int) replaceStubs.invoke(handle, (short) port, call.allocateFrom(stubsJson));
     } catch (Throwable t) {
       throw failure("rift_replace_stubs", t);
     }
@@ -145,7 +146,7 @@ public final class RiftFfiBridge implements AutoCloseable {
     try (Arena call = Arena.ofConfined()) {
       // The returned buffer is engine-owned, independent of `call`, so reading it after the arena
       // closes is safe — only the input string lives in `call`.
-      result = (MemorySegment) serveAdmin.invoke(handle, call.allocateUtf8String(optionsJson));
+      result = (MemorySegment) serveAdmin.invoke(handle, call.allocateFrom(optionsJson));
     } catch (Throwable t) {
       throw failure("rift_serve_admin", t);
     }
@@ -180,7 +181,7 @@ public final class RiftFfiBridge implements AutoCloseable {
       if (result.address() == 0L) {
         return null;
       }
-      return result.reinterpret(Long.MAX_VALUE).getUtf8String(0);
+      return result.reinterpret(Long.MAX_VALUE).getString(0);
     } catch (Throwable t) {
       throw failure("rift_build_info", t);
     }
@@ -218,7 +219,7 @@ public final class RiftFfiBridge implements AutoCloseable {
     }
     Throwable primary = null;
     try {
-      return result.reinterpret(Long.MAX_VALUE).getUtf8String(0);
+      return result.reinterpret(Long.MAX_VALUE).getString(0);
     } catch (Throwable t) {
       primary = t;
       throw t;

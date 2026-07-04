@@ -48,12 +48,12 @@ jobs:
           RIFT_IT: "1"
         run: sbt "rift/testOnly zio.bdd.mock.rift.RiftContainerSpec" "conformance/test"
 
-  # MockControl.embedded (#133) drives Rift in-process over librift_ffi via Panama FFM, a preview
-  # API that exists only on JDK 21+. The project baseline is JDK 11, so the embedded sources are
-  # gated to src/{main,test}/jdk21 (compiled only on a 21+ JDK) and exercised here on a dedicated
-  # JDK 21 runner. No Docker: the in-process engine binds localhost ports directly.
+  # The embedded provider (#133/#193) drives Rift in-process over librift_ffi via the stable Panama
+  # FFM API (JEP 454), finalized in JDK 22. It ships as a separate `zio-bdd-rift-embedded` artifact
+  # requiring JDK 22+, so it's aggregated only on a 22+ JDK and exercised here on a JDK 22 runner
+  # (validating the minimum supported JDK). No Docker: the in-process engine binds localhost ports.
   embedded:
-    name: Embedded FFM provider (JDK 21)
+    name: Embedded FFM provider (JDK 22)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -62,7 +62,7 @@ jobs:
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: 21
+          java-version: 22
           cache: sbt
       - uses: sbt/setup-sbt@v1
       # librift_ffi dynamically links LuaJIT (the Lua scripting engine), so the shared library can't
@@ -71,10 +71,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libluajit-5.1-dev
       # The librift_ffi cdylibs are bundled by the zio-bdd-rift-embedded-natives jar (a test dep of
       # the embedded suites), downloaded + checksum-verified by its resourceGenerator; the loader
-      # extracts + loads the host's lib from the classpath out-of-the-box — no -Drift.ffi.lib. The
-      # forked test JVMs run with --enable-preview + --enable-native-access (embeddedNativeSettings).
-      - name: Embedded smoke + portable conformance against MockControl.embedded
+      # extracts + loads the host's lib from the classpath out-of-the-box — no -Drift.ffi.lib. Stable
+      # FFM needs no --enable-preview; the forked test JVMs run with --enable-native-access only.
+      - name: Embedded provider tests + portable conformance (stable FFM, JDK 22+)
         run: >-
           sbt
-          "rift/testOnly zio.bdd.mock.rift.embedded.EmbeddedRiftFfiSpec zio.bdd.mock.rift.embedded.NativeLibrarySpec"
+          "riftEmbedded/test"
           "conformance/testOnly zio.bdd.mock.conformance.EmbeddedConformanceSpec"
