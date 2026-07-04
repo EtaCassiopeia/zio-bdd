@@ -7,16 +7,23 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.nio.file.Path;
 
 /**
  * Project Panama (FFM) bindings to the {@code librift_ffi} C-ABI: an opaque handle + JSON in / JSON
  * out over the Rift engine, so the embedded provider can drive Rift in-process with no Docker.
- * Compiled against the '''stable''' Foreign Function &amp; Memory API (JEP 454, final in JDK 22), so this
- * module requires JDK 22+ at runtime (plus {@code --enable-native-access}) — no {@code --enable-preview},
- * and the class is not version-locked to a single JDK. Authored in Java because the downcall
- * {@link MethodHandle#invoke} is signature-polymorphic (handled natively by javac per call site),
- * avoiding the cross-language pitfalls of calling these from Scala.
+ * Authored in Java because the downcall {@link MethodHandle#invoke} is signature-polymorphic (handled
+ * natively by javac per call site), avoiding the cross-language pitfalls of calling these from Scala.
+ *
+ * <p>ONE source, published as two JDK-specific artifacts: on JDK 21 FFM is a preview API (compiled
+ * {@code --release 21 --enable-preview} → runs only on 21 with {@code --enable-preview}); on JDK 22 it
+ * is finalized (JEP 454, compiled {@code --release 22} → runs on 22+). The only API difference is two
+ * renamed methods ({@code allocateUtf8String}→{@code allocateFrom}, {@code getUtf8String}→
+ * {@code getString}), which this class resolves by name at load time (see {@link #resolveRenamed}) so
+ * the identical source compiles and runs against both generations. Every variant needs
+ * {@code --enable-native-access}.
  *
  * <p>Requires the C-ABI v2 (rift#343, first shipped in {@code librift_ffi} v0.9.0): the data plane
  * ({@code rift_start/stop/create_imposter/replace_stubs/recorded/free}) plus the in-process admin
@@ -41,6 +48,31 @@ import java.nio.file.Path;
 public final class RiftFfiBridge implements AutoCloseable {
 
   private static final Linker LINKER = Linker.nativeLinker();
+
+  // The two FFM string helpers renamed when the API was finalized in JDK 22 (JEP 454):
+  //   allocateUtf8String(String) -> allocateFrom(String)   (marshal a Java String to a C string)
+  //   getUtf8String(long)        -> getString(long)         (read a null-terminated C string)
+  // Resolved by name at class load — stable name first, preview name as fallback — so this single
+  // source compiles under both --release 22 and --release 21 --enable-preview and runs on either.
+  private static final MethodHandle ALLOC_STRING = resolveRenamed(
+      Arena.class, MethodType.methodType(MemorySegment.class, String.class), "allocateFrom", "allocateUtf8String");
+  private static final MethodHandle READ_STRING = resolveRenamed(
+      MemorySegment.class, MethodType.methodType(String.class, long.class), "getString", "getUtf8String");
+
+  private static MethodHandle resolveRenamed(Class<?> owner, MethodType type, String stableName, String previewName) {
+    MethodHandles.Lookup lookup = MethodHandles.lookup();
+    try {
+      return lookup.findVirtual(owner, stableName, type);
+    } catch (NoSuchMethodException | IllegalAccessException stable) {
+      try {
+        return lookup.findVirtual(owner, previewName, type);
+      } catch (NoSuchMethodException | IllegalAccessException preview) {
+        throw new ExceptionInInitializerError(
+            "librift_ffi bridge: neither " + owner.getName() + "." + stableName + " (JDK 22+) nor " + previewName
+                + " (JDK 21) is available — unsupported FFM runtime");
+      }
+    }
+  }
 
   private final Arena arena;
   private final MemorySegment handle;
@@ -106,7 +138,7 @@ public final class RiftFfiBridge implements AutoCloseable {
   /** Create an imposter from a JSON config. Returns its bound port, or {@code 0} on any error. */
   public int createImposter(String configJson) {
     try (Arena call = Arena.ofConfined()) {
-      short port = (short) createImposter.invoke(handle, call.allocateFrom(configJson));
+      short port = (short) createImposter.invoke(handle, (MemorySegment) ALLOC_STRING.invoke(call, configJson));
       return port & 0xFFFF;
     } catch (Throwable t) {
       throw failure("rift_create_imposter", t);
@@ -116,7 +148,7 @@ public final class RiftFfiBridge implements AutoCloseable {
   /** Replace all stubs on {@code port} from a JSON array. Returns {@code 0} on success, {@code -1} on error. */
   public int replaceStubs(int port, String stubsJson) {
     try (Arena call = Arena.ofConfined()) {
-      return (int) replaceStubs.invoke(handle, (short) port, call.allocateFrom(stubsJson));
+      return (int) replaceStubs.invoke(handle, (short) port, (MemorySegment) ALLOC_STRING.invoke(call, stubsJson));
     } catch (Throwable t) {
       throw failure("rift_replace_stubs", t);
     }
@@ -146,7 +178,7 @@ public final class RiftFfiBridge implements AutoCloseable {
     try (Arena call = Arena.ofConfined()) {
       // The returned buffer is engine-owned, independent of `call`, so reading it after the arena
       // closes is safe — only the input string lives in `call`.
-      result = (MemorySegment) serveAdmin.invoke(handle, call.allocateFrom(optionsJson));
+      result = (MemorySegment) serveAdmin.invoke(handle, (MemorySegment) ALLOC_STRING.invoke(call, optionsJson));
     } catch (Throwable t) {
       throw failure("rift_serve_admin", t);
     }
@@ -181,7 +213,7 @@ public final class RiftFfiBridge implements AutoCloseable {
       if (result.address() == 0L) {
         return null;
       }
-      return result.reinterpret(Long.MAX_VALUE).getString(0);
+      return (String) READ_STRING.invoke(result.reinterpret(Long.MAX_VALUE), 0L);
     } catch (Throwable t) {
       throw failure("rift_build_info", t);
     }
@@ -219,7 +251,7 @@ public final class RiftFfiBridge implements AutoCloseable {
     }
     Throwable primary = null;
     try {
-      return result.reinterpret(Long.MAX_VALUE).getString(0);
+      return (String) READ_STRING.invoke(result.reinterpret(Long.MAX_VALUE), 0L);
     } catch (Throwable t) {
       primary = t;
       throw t;

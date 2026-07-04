@@ -52,8 +52,12 @@ jobs:
   # FFM API (JEP 454), finalized in JDK 22. It ships as a separate `zio-bdd-rift-embedded` artifact
   # requiring JDK 22+, so it's aggregated only on a 22+ JDK and exercised here on a JDK 22 runner
   # (validating the minimum supported JDK). No Docker: the in-process engine binds localhost ports.
-  embedded:
-    name: Embedded FFM provider (JDK 22)
+  # The librift_ffi cdylibs are bundled by the zio-bdd-rift-embedded-natives jar (a test dep of the
+  # embedded suites), downloaded + checksum-verified by its resourceGenerator; the loader extracts +
+  # loads the host's lib from the classpath out-of-the-box — no -Drift.ffi.lib. librift_ffi dynamically
+  # links LuaJIT, so it must be installed to dlopen the library (matches Rift's own FFI CI).
+  embedded-stable:
+    name: Embedded FFM provider — stable (JDK 22)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -65,16 +69,32 @@ jobs:
           java-version: 22
           cache: sbt
       - uses: sbt/setup-sbt@v1
-      # librift_ffi dynamically links LuaJIT (the Lua scripting engine), so the shared library can't
-      # be dlopen'd without it present — matches the Rift project's own FFI CI.
       - name: Install LuaJIT
         run: sudo apt-get update && sudo apt-get install -y libluajit-5.1-dev
-      # The librift_ffi cdylibs are bundled by the zio-bdd-rift-embedded-natives jar (a test dep of
-      # the embedded suites), downloaded + checksum-verified by its resourceGenerator; the loader
-      # extracts + loads the host's lib from the classpath out-of-the-box — no -Drift.ffi.lib. Stable
-      # FFM needs no --enable-preview; the forked test JVMs run with --enable-native-access only.
-      - name: Embedded provider tests + portable conformance (stable FFM, JDK 22+)
+      # Stable FFM needs no --enable-preview; the forked test JVM runs with --enable-native-access only.
+      - name: Stable embedded tests + portable conformance
         run: >-
           sbt
           "riftEmbedded/test"
           "conformance/testOnly zio.bdd.mock.conformance.EmbeddedConformanceSpec"
+
+  # The JDK-21 preview variant (zio-bdd-rift-embedded-jdk21): same sources, FFM as a preview API, so the
+  # forked test JVM runs with --enable-preview + --enable-native-access. On JDK 21 the root aggregates
+  # only this variant, so it is driven explicitly.
+  embedded-preview:
+    name: Embedded FFM provider — preview (JDK 21)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: sbt
+      - uses: sbt/setup-sbt@v1
+      - name: Install LuaJIT
+        run: sudo apt-get update && sudo apt-get install -y libluajit-5.1-dev
+      - name: Preview embedded tests
+        run: sbt "riftEmbedded21/test"

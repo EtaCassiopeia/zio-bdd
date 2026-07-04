@@ -61,40 +61,51 @@ def downloadRiftAsset(version: String, asset: String, out: File, log: sbt.util.L
   out
 }
 
-// The major version of the JDK building this project. FFM (java.lang.foreign) is finalized in JDK 22
-// (JEP 454) and preview/absent before it, so the embedded Rift provider (the `riftEmbedded` module)
-// compiles against the stable API and builds only on JDK 22+. The project baseline stays JDK 11 for
-// everything else (core + the container adapter): on a < 22 JDK the embedded module and its natives
-// are simply not aggregated, so the JDK-11 build and the published JDK-11 artifacts are unaffected.
-// A dedicated JDK-22+ CI job and the release build/publish the embedded artifacts.
+// The major version of the JDK building this project. FFM (java.lang.foreign) drives the embedded
+// Rift provider; it is a PREVIEW API on JDK 21 (JEP 442) and FINALIZED on JDK 22 (JEP 454). Because a
+// class that touches FFM is version-locked at the class-file level (a preview-21 class loads only on
+// 21; a stable-22 class only on 22+), the embedded provider ships as TWO artifacts from one shared
+// source (rift-embedded/src, see the bridge's reflective shim): `zio-bdd-rift-embedded-jdk21` built on
+// JDK 21 and `zio-bdd-rift-embedded` built on JDK 22+. The container adapter + core stay JDK-11 and
+// are unaffected — on a JDK that can't build a given variant it is simply not aggregated.
 def jdkMajor: Int = {
   val raw = sys.props.getOrElse("java.specification.version", "11")
   val s   = if (raw.startsWith("1.")) raw.substring(2) else raw
   s.takeWhile(_.isDigit) match { case "" => 11; case d => d.toInt }
 }
-lazy val ffmEnabled: Boolean = jdkMajor >= 22
+lazy val previewFfm: Boolean = jdkMajor == 21     // the JDK-21 preview variant builds/publishes here
+lazy val stableFfm: Boolean  = jdkMajor >= 22     // the JDK-22+ stable variant + full stack build here
+lazy val ffmAny: Boolean     = jdkMajor >= 21     // either variant → the natives jar is needed
 
-// Runtime flags the embedded suites' forked test JVM needs: stable FFM is NOT preview, so only
-// --enable-native-access (which downgrades the restricted-method warning) — no --enable-preview.
-// The native library is on the test classpath via the embeddedNatives test dependency (the loader
-// extracts + loads it — no -Drift.ffi.lib needed).
+// Forked-test-JVM flags for the embedded suites. Both variants need --enable-native-access (downgrades
+// the restricted-method warning); the JDK-21 preview variant additionally needs --enable-preview to
+// load its preview-compiled bridge. The native library is on the test classpath via the embeddedNatives
+// test dependency (the loader extracts + loads it — no -Drift.ffi.lib needed).
 lazy val embeddedTestJvmSettings: Seq[Def.Setting[_]] = Seq(
   Test / fork := true,
   Test / javaOptions += "--enable-native-access=ALL-UNNAMED"
+)
+lazy val embeddedPreviewTestJvmSettings: Seq[Def.Setting[_]] = Seq(
+  Test / fork := true,
+  Test / javaOptions ++= Seq("--enable-preview", "--enable-native-access=ALL-UNNAMED")
 )
 
 // The bundled per-platform natives (#134): a pure-resources jar that packages the librift_ffi
 // cdylibs (downloaded + checksum-verified at build time) so the embedded provider loads them from
 // the classpath out-of-the-box. No Scala/Java code (JDK-agnostic), published as
-// `zio-bdd-rift-embedded-natives`. The download is gated on a 22+ JDK (where embedded is built/used),
-// so the JDK-11 build never pulls the ~60MB native artifacts; the JDK-22+ release publishes them.
+// `zio-bdd-rift-embedded-natives`. JDK-agnostic (same cdylibs serve both embedded variants), so the
+// download is gated on any FFM-capable JDK (21+); the JDK-11 build never pulls the ~60MB natives.
+// Published once, from the JDK-22 stable release job (skipped on the JDK-21 preview job).
 lazy val embeddedNatives = (project in file("embedded-natives"))
   .settings(
     name             := "zio-bdd-rift-embedded-natives",
     crossPaths       := false,
     autoScalaLibrary := false,
+    // The natives jar is published only by the JDK-22 job; the JDK-21 preview job skips it (avoids a
+    // duplicate publish of the same coordinates).
+    publish / skip := previewFfm,
     Compile / resourceGenerators ++= (
-      if (!ffmEnabled) Nil
+      if (!ffmAny) Nil
       else
         Seq(Def.task {
           val log = streams.value.log
@@ -197,11 +208,18 @@ lazy val mimaSettings = Seq(
   )
 )
 
-// The embedded provider + its natives are aggregated (built, tested, published) only on a 22+ JDK;
-// on the JDK-11 baseline they're absent, so the default build and release publish container-only.
+// What the root aggregates — i.e. what `test`/`publishSigned`/`ci-release` operate on — depends on
+// the build JDK, so each release job publishes exactly its slice with a standard `ci-release` (no
+// per-module publish/skip juggling):
+//   - JDK 22+ (stableFfm): the full stack + the stable embedded variant + the natives jar.
+//   - JDK 21   (previewFfm): ONLY the JDK-21 preview embedded variant (its rift/mock/natives deps are
+//                            compiled but not published here — they ship from the JDK-22 job).
+//   - JDK < 21: container/core only (the JDK-11 baseline, embedded absent).
+// (Consequence: a bare `sbt test` on JDK 21 builds only the preview variant; run the container stack
+// on JDK 11/17 or the stable embedded stack on JDK 22+. CI drives each variant with an explicit job.)
 lazy val aggregatedProjects: Seq[Project] =
-  Seq(core, gherkin, mock, rift, wiremock, conformance) ++
-    (if (ffmEnabled) Seq(riftEmbedded, embeddedNatives) else Seq.empty)
+  if (previewFfm) Seq(riftEmbedded21)
+  else Seq(core, gherkin, mock, rift, wiremock, conformance) ++ (if (stableFfm) Seq(riftEmbedded, embeddedNatives) else Seq.empty)
 
 lazy val root = (project in file("."))
   .aggregate(aggregatedProjects.map(p => LocalProject(p.id)): _*)
@@ -282,22 +300,23 @@ lazy val rift = Project("rift", file("rift"))
     mimaPreviousArtifacts := Set.empty
   )
 
-// Embedded Rift provider (#133/#193): drives the Rift engine in-process over librift_ffi via the
-// stable Panama FFM API (JEP 454), so no Docker. A SEPARATE published artifact
-// (`zio-bdd-rift-embedded`) from the container adapter because it requires JDK 22+ (FFM) + the native
-// library — keeping `zio-bdd-rift` and core on the JDK-11 baseline. Built only on a 22+ JDK; on a
-// < 22 JDK it is absent from the aggregate (so it is neither compiled nor published there).
+// Embedded Rift provider (#133/#193): drives the Rift engine in-process over librift_ffi via Panama
+// FFM, so no Docker. A SEPARATE published artifact from the container adapter because it needs FFM
+// (JDK 21/22+) + the native library — keeping `zio-bdd-rift` and core on the JDK-11 baseline. Ships as
+// two variants from ONE shared source (rift-embedded/src): the STABLE variant below (JDK 22+, no
+// preview) and the PREVIEW variant (`riftEmbedded21`, JDK 21) just after. Each is built/aggregated
+// only on the JDK that can produce it.
+lazy val embeddedDeps: Seq[ModuleID] =
+  commonDependencies ++ Seq("dev.zio" %% "zio-http" % "3.2.0", "dev.zio" %% "zio-json" % "0.7.3")
+
+// Both variants share these project deps. test->test on rift: the embedded capabilities spec reuses
+// rift's FakeRift admin-API double (a test source) to stand in for the in-process admin plane, exactly
+// as it did when embedded lived in `rift`.
 lazy val riftEmbedded = Project("riftEmbedded", file("rift-embedded"))
-  // test->test: the embedded capabilities spec reuses rift's FakeRift admin-API double (a test source)
-  // to stand in for the in-process admin plane, exactly as it did when embedded lived inside `rift`.
   .dependsOn(rift % "compile->compile;test->test", mock, embeddedNatives % Test)
   .settings(
     name := "zio-bdd-rift-embedded",
-    libraryDependencies ++= commonDependencies,
-    libraryDependencies ++= Seq(
-      "dev.zio" %% "zio-http" % "3.2.0",
-      "dev.zio" %% "zio-json" % "0.7.3"
-    ),
+    libraryDependencies ++= embeddedDeps,
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
     // The Java FFM bridge compiles against the stable Foreign Function & Memory API (JEP 454, JDK 22).
     // No --enable-preview: the resulting class is a normal JDK-22 class, not version-locked to one JDK.
@@ -305,6 +324,27 @@ lazy val riftEmbedded = Project("riftEmbedded", file("rift-embedded"))
     mimaPreviousArtifacts := Set.empty
   )
   .settings(embeddedTestJvmSettings)
+
+// The JDK-21 PREVIEW variant of the embedded provider — the exact same sources as `riftEmbedded`
+// (shared via source-dir overrides; only the FFM compile target differs), compiled
+// `--release 21 --enable-preview`. Its bridge is a preview-21 class that loads only on JDK 21 (with
+// --enable-preview); the reflective shim in RiftFfiBridge binds the preview-named FFM methods. Built
+// and published as `zio-bdd-rift-embedded-jdk21` only on JDK 21.
+lazy val riftEmbedded21 = Project("riftEmbedded21", file("rift-embedded-jdk21"))
+  .dependsOn(rift % "compile->compile;test->test", mock, embeddedNatives % Test)
+  .settings(
+    name := "zio-bdd-rift-embedded-jdk21",
+    libraryDependencies ++= embeddedDeps,
+    testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
+    // Share riftEmbedded's sources verbatim — do not duplicate the bridge/adapter.
+    Compile / scalaSource := (ThisBuild / baseDirectory).value / "rift-embedded" / "src" / "main" / "scala",
+    Compile / javaSource  := (ThisBuild / baseDirectory).value / "rift-embedded" / "src" / "main" / "java",
+    Test / scalaSource    := (ThisBuild / baseDirectory).value / "rift-embedded" / "src" / "test" / "scala",
+    // Preview FFM: the bridge is compiled --release 21 --enable-preview (preview-locked to JDK 21).
+    javacOptions ++= Seq("--release", "21", "--enable-preview"),
+    mimaPreviousArtifacts := Set.empty
+  )
+  .settings(embeddedPreviewTestJvmSettings)
 
 // WireMock adapter (#122): the in-process, pure-JVM, zero-Docker provider with
 // Correlated isolation by default. Implements the portable MockControl SPI over
@@ -335,10 +375,11 @@ lazy val conformance = {
       publish / skip        := true, // a test harness, not a published artifact
       mimaPreviousArtifacts := Set.empty
     )
-  // On a 22+ JDK the portable conformance suite also runs against the embedded provider: add the
-  // gated test source (EmbeddedConformanceSpec, src/test/jdk22), the native-access test JVM, and the
-  // rift-embedded + natives dependencies. On a < 22 JDK none of this is added (embedded is absent).
-  if (ffmEnabled)
+  // On a 22+ JDK the portable conformance suite also runs against the (stable) embedded provider: add
+  // the gated test source (EmbeddedConformanceSpec, src/test/jdk22), the native-access test JVM, and
+  // the rift-embedded + natives dependencies. On JDK < 22 none of this is added — the preview variant
+  // is verified by riftEmbedded21's own suite, so conformance stays wired to the stable variant only.
+  if (stableFfm)
     base
       .dependsOn(riftEmbedded, embeddedNatives % Test)
       .settings(
