@@ -575,3 +575,4 @@ WhenS("transfer " / bigDecimal / " from " / string) { s => (amount: BigDecimal, 
 | Capture state before an operation for comparison | `withSnapshot(_.field) { before => ... }` |
 | Run setup before every scenario | `beforeScenario { _ => ... }` |
 | Run setup only for tagged scenarios | `beforeScenarioTagged("tag") { meta => ... }` |
+| Mock an HTTP dependency in a scenario | See the [Mock Cookbook](mock-cookbook.md) — stand up a backend, `MockSteps`, `@mock(...)` fixtures, faults |

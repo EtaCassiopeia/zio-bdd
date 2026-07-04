@@ -36,11 +36,27 @@ New to zio-bdd?  Read in this order:
 
 ---
 
+## Mocking
+
+Portable HTTP mocking — write a scenario once and run it across Rift (container **and** no-Docker
+embedded FFM) and WireMock, negotiating capabilities per backend.
+
+| Document | What it covers |
+|----------|----------------|
+| [Mocking Overview](mocking.md) | The portable `MockControl` SPI, `MockSpace` + isolation (PerInstance/Correlated), the request/response model, `MockSource` variants |
+| [Mock DSL](mock-dsl.md) | The `zio.bdd.mock.dsl.*` builder — matching requests, building responses, rule precedence, the stateful-scenario builder, raw JSON sources |
+| [Mock Adapters](mock-adapters.md) | Rift (`managed`/`connect`), WireMock, and the **embedded FFM** provider (JDK 21/22 matrix + artifacts, LuaJIT); the capability × adapter matrix; choosing one |
+| [Mock Gherkin Integration](mock-gherkin.md) | `MockSteps` mixin, the `@mock(name)` tag + `MockFixtures`, the catalog pattern, `Stage` |
+| [Mock Advanced](mock-advanced.md) | Capability accessors (faults, scenarios, state inspection, scripting, proxy/record, templating), the `provisionNative` escape hatch, capability negotiation |
+
+---
+
 ## Guides
 
 | Document | Use when |
 |----------|----------|
 | [Cookbook](cookbook.md) | You have a specific task: structuring a multi-module suite, passing data between steps, writing HTTP tests, date-relative parameters, soft assertions, selective tagging |
+| [Mock Cookbook](mock-cookbook.md) | You want mocking recipes: stand up a backend as a layer, a portable `MockSteps` scenario, `@mock(...)` fixtures, injecting faults across adapters |
 | [Troubleshooting](troubleshooting.md) | Something is wrong: compiler errors, startup failures, state not updating, missing step definitions, timeouts |
 | [Migrating from Cucumber](migrating.md) | You are converting a Cucumber-JVM + cucumber-scala suite to zio-bdd |
 
