@@ -4,6 +4,48 @@ All notable changes to zio-bdd are documented here.
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-07-04
+
+### Added
+
+- **`allMocks` static catalog discovery** — `MockSteps` now exposes an overridable
+  `mockCatalog: Map[String, MockSource]` and a pure, reflectively-callable
+  `allMocks: List[MockSummary]` (`name` + `sourceKind`, name-sorted), mirroring
+  `ZIOSteps.allDefinitions`. Editor tooling (LSP / IntelliJ) can read a suite's `@mock(name)`
+  catalog from a no-arg-constructed instance with no live mock backend, to offer completion and
+  unknown-name diagnostics. (#204)
+- **rift-embedded Correlated (space-based) isolation** — the embedded FFM provider gains the
+  Correlated isolation model (a shared imposter keyed by correlation id), matching the container
+  and WireMock adapters. (#203)
+
+### Fixed
+
+- **Core artifacts no longer require Java 22** — the published non-FFM modules (`zio-bdd`,
+  `zio-bdd-gherkin`, `zio-bdd-mock`, `zio-bdd-rift`, `zio-bdd-wiremock`) now pin `-release:11`, so
+  their bytecode is class 55 and loadable on Java 11+ regardless of the JDK that cuts the release.
+  1.2.0 was accidentally published as class-66 (Java 22) bytecode that even JDK 21 could not load.
+  The FFM/embedded modules keep their JDK 21/22 split. (#205)
+
+### Changed
+
+- Bumped the pinned Rift release to v0.9.1. (#209)
+
+## [1.2.0] — 2026-07-04
+
+### Added
+
+- **Portable MockControl SPI** — a backend-neutral mocking API (`MockControl`, `MockSource`, the
+  canonical request/response model, fail-fast capability negotiation) with a fluent DSL,
+  `@mock(name)` / `@flags` scenario fixtures, the `MockSteps[R, S]` mixin, and SUT base-URL
+  injection for share-nothing isolation.
+- **Adapters** — Rift (container, via testcontainers) and in-process WireMock, plus an embedded
+  in-process Rift provider over Panama FFM (`MockControl.embedded`, JDK-21 preview / JDK-22 stable
+  variants with bundled native libraries).
+- **Capabilities** — Faults, StatefulScenarios + StateInspection, Scripting, ProxyRecord, and
+  Templating, verified by a conformance harness + matrix runner across adapters.
+
+## [1.1.0] — 2026-06-26
+
 ### Added
 
 - **Property-based testing (Mode P)** — `@property(samples=N, seed=S, shrink=true, ...)` on a

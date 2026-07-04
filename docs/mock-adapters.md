@@ -9,7 +9,7 @@ pick one.
 
 ## 1. The three backends at a glance
 
-| Adapter | Coordinates (1.2.0) | Docker? | JDK | Isolation default | Capabilities |
+| Adapter | Coordinates (1.3.0) | Docker? | JDK | Isolation default | Capabilities |
 |---|---|---|---|---|---|
 | Rift container | `zio-bdd-rift` | yes (testcontainers) | 11+ | PerInstance | all six |
 | WireMock | `zio-bdd-wiremock` | no | 11+ | Correlated (via `.correlated`) | Faults, StatefulScenarios, StateInspection only |
@@ -38,7 +38,7 @@ against it fails with `Unsupported` (§3 below, and see
 ## 2. Rift container (`zio-bdd-rift`)
 
 ```scala
-"io.github.etacassiopeia" %% "zio-bdd-rift" % "1.2.0"
+"io.github.etacassiopeia" %% "zio-bdd-rift" % "1.3.0"
 ```
 
 Two entry points, both requiring a zio-http `Client` and a `Provisioning` in
@@ -97,7 +97,7 @@ See [layers](layers.md) for how this composes into a suite's `environment`.
 ## 3. WireMock (`zio-bdd-wiremock`)
 
 ```scala
-"io.github.etacassiopeia" %% "zio-bdd-wiremock" % "1.2.0"
+"io.github.etacassiopeia" %% "zio-bdd-wiremock" % "1.3.0"
 ```
 
 In-process, no Docker, runs on JDK 11+. Only requires `Provisioning`:
@@ -145,15 +145,15 @@ published as **two variants built from the same source**, and you pick
 exactly one for your build's JDK:
 
 ```scala
-"io.github.etacassiopeia" %% "zio-bdd-rift-embedded"       % "1.2.0" // JDK 22+ (stable FFM)
-"io.github.etacassiopeia" %% "zio-bdd-rift-embedded-jdk21" % "1.2.0" // JDK 21   (preview FFM)
+"io.github.etacassiopeia" %% "zio-bdd-rift-embedded"       % "1.3.0" // JDK 22+ (stable FFM)
+"io.github.etacassiopeia" %% "zio-bdd-rift-embedded-jdk21" % "1.3.0" // JDK 21   (preview FFM)
 ```
 
 Both additionally need the native library on the classpath (or an explicit
 override), and neither is scala-versioned — note the single `%`, not `%%`:
 
 ```scala
-"io.github.etacassiopeia" % "zio-bdd-rift-embedded-natives" % "1.2.0" % Test
+"io.github.etacassiopeia" % "zio-bdd-rift-embedded-natives" % "1.3.0" % Test
 ```
 
 `zio-bdd-rift-embedded-natives` bundles the per-platform `librift_ffi`
