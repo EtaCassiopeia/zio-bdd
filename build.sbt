@@ -14,7 +14,11 @@ import java.security.MessageDigest
 // preview API on JDK 21, so the embedded code stays JDK-21-gated; see embeddedNativeSettings.)
 // NOTE: build.sbt is compiled with the Scala 2.12 dialect — keep these blocks 2.12-compatible.
 
-val riftNativesVersion = "0.9.0"
+// Single source of truth for the pinned Rift release (#195). Both the FFI natives (riftNativesVersion,
+// downloaded into the embedded-natives jar) and the container image tag (Rift.DefaultImage, via the
+// generated RiftBuildInfo below) derive from it, so a version bump touches exactly one line.
+val riftVersion        = "0.9.0"
+val riftNativesVersion = riftVersion
 
 // The (os, arch, ext) cdylibs bundled into the natives jar — linux/macOS × x86_64/aarch64 (#134).
 val riftNativeTriples: Seq[(String, String, String)] = Seq(
@@ -262,6 +266,22 @@ lazy val rift = {
         "com.dimafeng" %% "testcontainers-scala-core"  % "0.41.4"
       ),
       testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
+      // Generate RiftBuildInfo from `riftVersion` (the single source of truth, #195) so Rift.DefaultImage
+      // derives its image tag from the same val the FFI natives version does — no hand-maintained literal.
+      Compile / sourceGenerators += Def.task {
+        val out = (Compile / sourceManaged).value / "zio" / "bdd" / "mock" / "rift" / "RiftBuildInfo.scala"
+        IO.write(
+          out,
+          s"""package zio.bdd.mock.rift
+             |
+             |// GENERATED from `riftVersion` in build.sbt (#195) — do not edit. The single source of truth
+             |// for the pinned Rift release; Rift.DefaultImage and the FFI natives version both derive from it.
+             |private[rift] object RiftBuildInfo:
+             |  val riftVersion: String = "$riftVersion"
+             |""".stripMargin
+        )
+        Seq(out)
+      }.taskValue,
       // The embedded adapter (#133) lives in JDK-21-only source dirs (src/{main,test}/jdk21) and is
       // compiled with --release 21 --enable-preview — added by embeddedNativeSettings only on a 21+ JDK,
       // so on the JDK-11 baseline the rift module builds (and publishes) without the FFM bridge.

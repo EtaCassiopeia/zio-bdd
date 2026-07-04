@@ -52,13 +52,13 @@ object RiftMode:
  */
 object Rift:
 
-  // Pinned to v0.9.0. Floor is v0.8.0: the adapter emits the flat
-  // `_rift.flowState.flowIdSource` shape (EtaCassiopeia/rift#266, #268), which
-  // Rift only reads from v0.8.0 on — earlier images expect the dropped
-  // `mountebankStateMapping` wrapper and return 404/empty on the correlated
-  // path. v0.8.0 also carries the v0.4.0 correlated-isolation endpoints (#223)
-  // and the v0.2.0 keep-alive teardown fix (#207).
-  val DefaultImage: String     = "zainalpour/rift-proxy:v0.9.0"
+  // The version is `riftVersion` in build.sbt (the single source of truth, #195), surfaced here via
+  // the generated RiftBuildInfo so the image tag and the FFI natives version never drift apart.
+  // Floor is v0.8.0: the adapter emits the flat `_rift.flowState.flowIdSource` shape
+  // (EtaCassiopeia/rift#266, #268), which Rift only reads from v0.8.0 on — earlier images expect the
+  // dropped `mountebankStateMapping` wrapper and return 404/empty on the correlated path. v0.8.0 also
+  // carries the v0.4.0 correlated-isolation endpoints (#223) and the v0.2.0 keep-alive teardown fix (#207).
+  val DefaultImage: String     = s"zainalpour/rift-proxy:v${RiftBuildInfo.riftVersion}"
   val DefaultAdminPort: Int    = 2525
   val DefaultImposterBase: Int = 4545
   val DefaultPoolSize: Int     = 16
