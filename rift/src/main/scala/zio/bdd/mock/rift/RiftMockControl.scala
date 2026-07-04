@@ -279,24 +279,17 @@ private[rift] final case class RiftMockControl(
       else ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${spaceId.value}"))
     )
 
+  // The scenario pin/read calls are shared with the embedded adapter (RiftScenarioAdmin) so both
+  // reach the byte-identical admin endpoints from one implementation; readState maps the shared
+  // `Option` to this adapter's space-scoped InvalidDefinition on an undeclared scenario.
   private def putState(port: Int, flowId: String, name: String, state: ScenarioState): IO[MockError, Unit] =
-    for
-      u   <- url(s"/imposters/$port/scenarios/${enc(name)}/state")
-      body = Json.Obj("state" -> Json.Str(state.value), "flowId" -> Json.Str(flowId))
-      res <- send(jsonRequest(HttpMethod.PUT, u, body))
-      _   <- expectSuccess(s"set scenario '$name' state on imposter $port", res)
-    yield ()
+    RiftScenarioAdmin.putState(client, endpoint.adminBase, port, flowId, name, state)
 
   private def readState(port: Int, flowId: String, spaceId: SpaceId, name: String): IO[MockError, ScenarioState] =
-    for
-      u    <- url(s"/imposters/$port/scenarios?flowId=${enc(flowId)}")
-      res  <- send(Request(method = HttpMethod.GET, url = u))
-      body <- expectSuccess(s"read scenarios for imposter $port", res)
-      st   <- ZIO.fromEither(RiftProtocol.parseScenarioState(body, name)).mapError(MockError.CommunicationError(_))
-      out <- st match
-               case Some(s) => ZIO.succeed(ScenarioState(s))
-               case None    => ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${spaceId.value}"))
-    yield out
+    RiftScenarioAdmin.readState(client, endpoint.adminBase, port, flowId, name).flatMap {
+      case Some(s) => ZIO.succeed(ScenarioState(s))
+      case None    => ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${spaceId.value}"))
+    }
 
   // ---------------------------------------------------------------------------
 
