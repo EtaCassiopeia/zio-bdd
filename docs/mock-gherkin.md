@@ -126,6 +126,27 @@ entry from being `MockSource.Json(raw)`, `.Resource(path)`, `.File(path)`, or
 `.Dir(path)` instead of `.Dsl(...)` — the catalog only fixes the *name*, not
 the source kind.
 
+### Static discovery for tooling (`allMocks`)
+
+Override `MockSteps.mockCatalog` on the suite to declare the catalog once, then
+reference it when wiring the scenario fixtures — the same map drives live
+provisioning *and* becomes statically discoverable:
+
+```scala
+object MySuite extends ZIOSteps[MockControl, S] with MockSteps[MockControl, S]:
+  override def mockCatalog: Map[String, MockSource] = Catalog.entries
+  override def scenarioLayer = MockFixtures.scenario(meta, mockCatalog)
+```
+
+`MockSteps.allMocks` then returns a `List[MockSummary]` (each `name` +
+`sourceKind`, name-sorted) — the catalog counterpart of `ZIOSteps.allDefinitions`
+([step discovery](step-dsl.md)). Like `allDefinitions`, it is a pure reflection
+target the editor tooling (LSP server, IntelliJ plugin) reads from a
+no-arg-constructed suite instance with **no** live mock backend — provisioning
+nothing — so it can offer `@mock(name)` completion and unknown-name diagnostics.
+It is backend-agnostic: identical whether the suite runs on Rift container, Rift
+embedded, or WireMock.
+
 ---
 
 ## 4. `Stage` for mock data

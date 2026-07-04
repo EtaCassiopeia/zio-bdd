@@ -46,6 +46,32 @@ final case class MockResponse(status: Int, body: String, headers: Headers)
  */
 trait MockSteps[R, S] { self: ZIOSteps[R & MockControl, S] =>
 
+  /**
+   * The `@mock(name)` catalog: the named [[MockSource]] entries this suite can
+   * deploy. Override it to declare the suite's catalog once, then reference it
+   * when wiring the scenario fixtures (e.g. `MockFixtures.scenario(meta,
+   * mockCatalog)`).
+   *
+   * Declaring it here — rather than only inline at layer-construction time —
+   * makes the catalog statically discoverable via [[allMocks]], so editor
+   * tooling can offer completion and unknown-name diagnostics for `@mock(...)`
+   * tags. Pure data: reading it provisions nothing.
+   */
+  def mockCatalog: Map[String, MockSource] = Map.empty
+
+  /**
+   * A static summary of every [[mockCatalog]] entry, for tooling discovery of
+   * `@mock(name)` tags — the catalog counterpart of `ZIOSteps.allDefinitions`.
+   *
+   * Reflectively callable from a no-arg-constructed suite instance without any
+   * live mock backend: it only reads the pure [[mockCatalog]] map and never
+   * provisions a space. Backend-agnostic — identical whether the suite runs on
+   * Rift container, Rift embedded, or WireMock. Ordered by `name` so tooling
+   * gets a stable list (the underlying map has no defined order).
+   */
+  def allMocks: List[MockSummary] =
+    mockCatalog.toList.sortBy(_._1).map { case (name, source) => MockSummary(name, source.productPrefix) }
+
   Given("a mock space returning " / int / " " / string / " at " / string) { (status: Int, body: String, path: String) =>
     for
       spaces <- mock(_.provision(MockSource.Dsl(MockSpec(List(ruleFor(status, body, path))))))
