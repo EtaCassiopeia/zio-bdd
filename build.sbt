@@ -143,6 +143,17 @@ inThisBuild(
   )
 )
 
+// Java-version floor for the published NON-FFM modules (#205). Without a pinned `-release`, Scala 3
+// targets the build JDK's class-file version, so a release cut on JDK 22 produced class-66 bytecode
+// that even JDK 21 cannot load. These modules use no Java-22 API (the container adapter + core are
+// JDK-11 by design, see the FFM note above), so pin class 55 — loadable on Java 11+ — regardless of
+// the JDK that cuts the release. The FFM/embedded modules are deliberately NOT given this floor: they
+// are version-locked to JDK 21/22 by their own `--release` and must stay so.
+lazy val javaFloorSettings: Seq[Def.Setting[_]] = Seq(
+  Compile / scalacOptions += "-release:11",
+  Compile / javacOptions ++= Seq("--release", "11")
+)
+
 lazy val commonDependencies = Seq(
   "dev.zio" %% "zio"                   % "2.1.17",
   "dev.zio" %% "zio-schema"            % "1.6.6",
@@ -244,6 +255,7 @@ lazy val core = (project in file("core"))
     ),
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
     stepMethodGeneratorSettings,
+    javaFloorSettings,
     mimaSettings
   )
 
@@ -251,6 +263,7 @@ lazy val gherkin = (project in file("gherkin"))
   .settings(
     name := "zio-bdd-gherkin",
     libraryDependencies ++= commonDependencies,
+    javaFloorSettings,
     mimaSettings
   )
 
@@ -261,6 +274,7 @@ lazy val mock = (project in file("mock"))
     name := "zio-bdd-mock",
     libraryDependencies ++= commonDependencies,
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
+    javaFloorSettings,
     // Not yet published as a 1.x artifact — no binary-compat baseline to check against.
     mimaPreviousArtifacts := Set.empty
   )
@@ -296,6 +310,7 @@ lazy val rift = Project("rift", file("rift"))
       )
       Seq(out)
     }.taskValue,
+    javaFloorSettings,
     // Not yet published as a 1.x artifact — no binary-compat baseline to check against.
     mimaPreviousArtifacts := Set.empty
   )
@@ -358,6 +373,7 @@ lazy val wiremock = (project in file("wiremock"))
       "org.wiremock" % "wiremock" % "3.9.2"
     ),
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
+    javaFloorSettings,
     // Not yet published as a 1.x artifact — no binary-compat baseline to check against.
     mimaPreviousArtifacts := Set.empty
   )
