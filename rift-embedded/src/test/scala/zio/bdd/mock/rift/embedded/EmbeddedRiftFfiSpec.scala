@@ -2,6 +2,7 @@ package zio.bdd.mock.rift.embedded
 
 import zio.*
 import zio.bdd.mock.*
+import zio.bdd.mock.rift.RiftMode
 import zio.test.*
 
 import java.nio.file.{Files, Path}
@@ -242,5 +243,44 @@ object EmbeddedRiftFfiSpec extends ZIOSpecDefault:
           r1.status == 200 && r1.body == "pong",
           r2.status == 200 && r2.body == "pong" // re-provision after destroy serves — no port leak
         )).provide(Provisioning.live, EmbeddedRift.layer.mapError(asT))
+    },
+    test("v2 Correlated: two spaces share ONE imposter but are isolated; destroy(A) leaves B intact") {
+      if !EmbeddedRift.available then ZIO.succeed(assertCompletes)
+      else
+        val srcA = MockSource.Dsl(
+          MockSpec(
+            List(MockRule(RequestMatch(path = PathMatch.Exact("/a")), ResponseDef(status = 200, body = Body.Text("A"))))
+          )
+        )
+        val srcB = MockSource.Dsl(
+          MockSpec(
+            List(MockRule(RequestMatch(path = PathMatch.Exact("/b")), ResponseDef(status = 200, body = Body.Text("B"))))
+          )
+        )
+        (for
+          control <- ZIO.service[MockControl]
+          a       <- control.provision(srcA).mapError(asT).map(_.head)
+          b       <- control.provision(srcB).mapError(asT).map(_.head)
+          // Correlated: both spaces live on the same shared imposter (same baseUri); isolation is by
+          // the header space.inject stamps (SutClient applies it), not by a per-space port.
+          aOnA <- SutClient.make(a).send(Method.Get, "/a")
+          bOnB <- SutClient.make(b).send(Method.Get, "/b")
+          // received is space-scoped by flowId: A's space saw only A's own /a; B's /b (B's flowId) is
+          // excluded. Checked before A probes /b so recA reflects A's own traffic only.
+          recA <- control.received(a).mapError(asT)
+          // stub isolation: A's space has no /b stub → 404 (A cannot see B's stub on the shared imposter)
+          aOnB           <- SutClient.make(a).send(Method.Get, "/b")
+          _              <- control.destroy(a).mapError(asT)
+          bAfterDestroyA <- SutClient.make(b).send(Method.Get, "/b") // B must still serve
+          _              <- control.destroy(b).mapError(asT)
+        yield assertTrue(
+          control.isolation == Isolation.Correlated,
+          a.baseUri == b.baseUri, // one shared imposter
+          aOnA.status == 200 && aOnA.body == "A",
+          bOnB.status == 200 && bOnB.body == "B",
+          recA.exists(_.uri == "/a") && !recA.exists(_.uri == "/b"), // cross-space received isolation
+          aOnB.status == 404,                                        // stub isolation: no /b in A's space
+          bAfterDestroyA.status == 200 && bAfterDestroyA.body == "B" // destroy(A) tore down only A's space
+        )).provide(Provisioning.live, EmbeddedRift.layer(RiftMode.correlated).mapError(asT))
     }
   ) @@ TestAspect.withLiveClock

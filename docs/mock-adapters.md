@@ -13,7 +13,7 @@ pick one.
 |---|---|---|---|---|---|
 | Rift container | `zio-bdd-rift` | yes (testcontainers) | 11+ | PerInstance | all six |
 | WireMock | `zio-bdd-wiremock` | no | 11+ | Correlated (via `.correlated`) | Faults, StatefulScenarios, StateInspection only |
-| Rift embedded | `zio-bdd-rift-embedded` / `zio-bdd-rift-embedded-jdk21` | no (FFM) | 22+ / 21 | PerInstance | all six |
+| Rift embedded | `zio-bdd-rift-embedded` / `zio-bdd-rift-embedded-jdk21` | no (FFM) | 22+ / 21 | PerInstance (default) / Correlated | all six |
 
 ### Capability × adapter matrix
 
@@ -221,6 +221,25 @@ val mockControl: ZLayer[Any, Throwable, MockControl] =
 Unlike the container adapter, `EmbeddedRift.layer` needs only `Provisioning`
 in its environment — it builds its own loopback admin client internally, so
 no `Client` layer is required.
+
+Like the container adapter, the embedded provider supports **both isolation
+modes** — pass a `RiftMode`:
+
+```scala
+import zio.bdd.mock.rift.RiftMode
+
+// PerInstance (default): one imposter per space on its own OS-assigned port
+val perInstance = Provisioning.live >>> EmbeddedRift.layer                       // == EmbeddedRift.layer(RiftMode.PerInstance)
+// Correlated: all spaces share ONE imposter, isolated by a per-space correlation
+// header (like WireMock.correlated) — cheaper under heavy scenario-parallelism
+val correlated  = Provisioning.live >>> EmbeddedRift.layer(RiftMode.correlated)
+```
+
+In `Correlated` mode `isolation` reports `Isolation.Correlated`, each space's
+stubs and `received` are scoped by its `flowId`, and `destroy` tears down just
+that space — behaviour identical to the container adapter's Correlated mode. As
+there, Correlated needs portable rule sources (`MockSource.Dsl`); a raw imposter
+document is `PerInstance`-only via `provisionNative`.
 
 ---
 

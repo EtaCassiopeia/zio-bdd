@@ -431,7 +431,8 @@ private[rift] final case class RiftMockControl(
       val act = priority match
         // Base appends (Rift's space POST appends).
         case Priority.Base =>
-          postSpaceStub(cs.port, cs.flowId, rule.copy(id = Some(ruleId))) *> cs.rules.update(_ :+ tagged)
+          RiftCorrelatedSpace.postStub(client, endpoint.adminBase, cs.port, cs.flowId, rule.copy(id = Some(ruleId))) *>
+            cs.rules.update(_ :+ tagged)
         // Overlay must be first-match — rebuild with the prepended set.
         case Priority.Overlay =>
           cs.rules.get.flatMap(cur => rebuildSpaceWith(cs, tagged +: cur) *> cs.rules.set(tagged +: cur))
@@ -463,12 +464,7 @@ private[rift] final case class RiftMockControl(
     deleteSpace(cs.port, cs.flowId) *> correlated.update(_ - spaceId)
 
   private def corrReceived(cs: CorrSpace): IO[MockError, List[RecordedRequest]] =
-    for
-      u    <- url(s"/imposters/${cs.port}/requests?match=${enc(s"header:${cs.header}=${cs.flowId}")}")
-      res  <- send(Request(method = HttpMethod.GET, url = u))
-      body <- expectSuccess(s"read filtered requests for space ${cs.flowId}", res)
-      recs <- ZIO.fromEither(RiftProtocol.parseRequestsArray(body)).mapError(MockError.CommunicationError(_))
-    yield recs
+    RiftCorrelatedSpace.received(client, endpoint.adminBase, cs.port, cs.flowId, cs.header)
 
   // rift#223 has no per-stub-in-space delete: re-register the space's stubs after a
   // whole-space teardown. Server-first — the caller commits tracking only on success.
@@ -493,62 +489,17 @@ private[rift] final case class RiftMockControl(
     faults: Vector[(RuleId, RequestMatch, FaultKind)],
     rules: Vector[(RuleId, MockRule)]
   ): IO[MockError, Unit] =
-    deleteSpace(cs.port, cs.flowId) *>
-      registerRawStubs(cs.port, cs.flowId, extras) *>
-      registerFaultStubs(cs.port, cs.flowId, faults) *>
-      registerStubs(cs.port, cs.flowId, rules)
-
-  private def registerRawStubs(port: Int, flowId: String, extras: Vector[(RuleId, Json)]): IO[MockError, Unit] =
-    ZIO.foreachDiscard(extras)((_, stub) => postSpaceRawStub(port, flowId, stub))
-
-  private def postSpaceRawStub(port: Int, flowId: String, stub: Json): IO[MockError, Unit] =
-    for
-      u   <- url(s"/imposters/$port/spaces/${enc(flowId)}/stubs")
-      res <- send(jsonRequest(HttpMethod.POST, u, stub))
-      _   <- expectSuccess(s"add capability stub to $flowId", res)
-    yield ()
-
-  private def registerFaultStubs(
-    port: Int,
-    flowId: String,
-    faults: Vector[(RuleId, RequestMatch, FaultKind)]
-  ): IO[MockError, Unit] =
-    ZIO.foreachDiscard(faults)((rid, m, fault) => postSpaceFaultStub(port, flowId, m, fault, rid))
-
-  private def postSpaceFaultStub(
-    port: Int,
-    flowId: String,
-    m: RequestMatch,
-    fault: FaultKind,
-    id: RuleId
-  ): IO[MockError, Unit] =
-    for
-      u   <- url(s"/imposters/$port/spaces/${enc(flowId)}/stubs")
-      res <- send(jsonRequest(HttpMethod.POST, u, RiftProtocol.faultStub(m, fault, id)))
-      _   <- expectSuccess(s"add fault stub to $flowId", res)
-    yield ()
+    RiftCorrelatedSpace.rebuild(client, endpoint.adminBase, cs.port, cs.flowId, extras, faults, rules)
 
   // Assign each rule a fresh id, keyed for tracking + re-registration under a space.
   private def tagRules(rules: List[MockRule]): UIO[Vector[(RuleId, MockRule)]] =
     freshIds(rules.size).map(ids => rules.zip(ids).map((r, rid) => (rid, r)).toVector)
 
   private def registerStubs(port: Int, flowId: String, rules: Vector[(RuleId, MockRule)]): IO[MockError, Unit] =
-    ZIO.foreachDiscard(rules)((rid, rule) => postSpaceStub(port, flowId, rule.copy(id = Some(rid))))
-
-  private def postSpaceStub(port: Int, flowId: String, rule: MockRule): IO[MockError, Unit] =
-    for
-      u   <- url(s"/imposters/$port/spaces/${enc(flowId)}/stubs")
-      res <- send(jsonRequest(HttpMethod.POST, u, RiftProtocol.stub(rule)))
-      _   <- expectSuccess(s"add space stub to $flowId", res)
-    yield ()
+    RiftCorrelatedSpace.registerStubs(client, endpoint.adminBase, port, flowId, rules)
 
   private def deleteSpace(port: Int, flowId: String): IO[MockError, Unit] =
-    for
-      u   <- url(s"/imposters/$port/spaces/${enc(flowId)}")
-      res <- send(Request(method = HttpMethod.DELETE, url = u))
-      // A 404 means the space is already gone — teardown is idempotent.
-      _ <- ZIO.unless(res._1 == 404)(expectSuccess(s"teardown space $flowId", res))
-    yield ()
+    RiftCorrelatedSpace.deleteSpace(client, endpoint.adminBase, port, flowId)
 
   private def rulesOf(src: NormalizedSource): IO[MockError, List[MockRule]] =
     src.payload match

@@ -2,6 +2,7 @@ package zio.bdd.mock.rift.embedded
 
 import zio.*
 import zio.bdd.mock.{MockControl, MockError, Provisioning}
+import zio.bdd.mock.rift.RiftMode
 import zio.http.Client
 import zio.json.ast.Json
 
@@ -40,14 +41,24 @@ object EmbeddedRift:
   def available: Boolean = NativeLibrary.available
 
   /**
-   * A scoped [[MockControl]] backed by the in-process Rift engine: `rift_start`
-   * plus `rift_serve_admin` (the in-process admin plane) on layer construction,
-   * `rift_stop` on close. Self-contained — it builds its own loopback HTTP
-   * client for the admin plane, so the public requirement stays just
-   * [[Provisioning]]. Fails with [[MockError.ProvisionFailed]] when no native
-   * library resolves for the host, or it cannot be loaded.
+   * A scoped [[MockControl]] backed by the in-process Rift engine, PerInstance
+   * isolation (own port per space). See the `mode` overload below for
+   * Correlated.
    */
-  def layer: ZLayer[Provisioning, MockError, MockControl] =
+  def layer: ZLayer[Provisioning, MockError, MockControl] = layer(RiftMode.PerInstance)
+
+  /**
+   * A scoped [[MockControl]] backed by the in-process Rift engine, in the given
+   * isolation `mode` (#203 adds Correlated — mirroring the container adapter,
+   * but the shared imposter is FFI-created/-destroyed rather than
+   * HTTP-managed): `rift_start` plus `rift_serve_admin` (the in-process admin
+   * plane) on layer construction, `rift_stop` (and, in Correlated mode, the
+   * shared imposter's teardown) on close. Self-contained — it builds its own
+   * loopback HTTP client for the admin plane, so the public requirement stays
+   * just [[Provisioning]]. Fails with [[MockError.ProvisionFailed]] when no
+   * native library resolves for the host, or it cannot be loaded.
+   */
+  def layer(mode: RiftMode): ZLayer[Provisioning, MockError, MockControl] =
     ZLayer.scoped {
       for
         prov   <- ZIO.service[Provisioning]
@@ -58,8 +69,13 @@ object EmbeddedRift:
           engine
             .serveAdmin(serveAdminOptions)
             .mapError(e => MockError.ProvisionFailed(s"starting the embedded Rift admin plane: $e"))
-        client  <- adminClient
-        control <- EmbeddedRiftMockControl.make(engine, prov, EmbeddedRiftMockControl.Admin(adminInfo.adminUrl, client))
+        client <- adminClient
+        control <- EmbeddedRiftMockControl.make(
+                     engine,
+                     prov,
+                     EmbeddedRiftMockControl.Admin(adminInfo.adminUrl, client),
+                     mode
+                   )
       yield control
     }
 
