@@ -147,14 +147,17 @@ object LogCollectorSpec extends ZIOSpecDefault {
     ),
     suite("Logger augmentation")(
       test("ZIO.log* calls do not throw even if collection fails") {
-        // The .ignore ensures logging never kills a fiber
-        ZIO
-          .logAnnotate("scenarioId", "x") {
-            ZIO.logAnnotate("stepId", "y") {
-              ZIO.logInfo("safe log") *> ZIO.succeed(assertCompletes)
-            }
-          }
-          .provide(LogCollector.live(debugConfig))
+        // The custom logger's collection is `.ignore`d, so logging never kills a fiber. Depend on the
+        // LogCollector service explicitly — the layer installs that logger, so it's a real dependency
+        // here (not an unused, over-provided layer), even though this test only asserts logging is safe.
+        (for
+          _ <- ZIO.service[LogCollector]
+          _ <- ZIO.logAnnotate("scenarioId", "x") {
+                 ZIO.logAnnotate("stepId", "y") {
+                   ZIO.logInfo("safe log")
+                 }
+               }
+        yield assertCompletes).provide(LogCollector.live(debugConfig))
       }
     )
   )

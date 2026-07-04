@@ -13,20 +13,20 @@ object StepRegistrySpec extends ZIOSpecDefault with DefaultTypedExtractor {
   private val givenUser = makeStep(
     StepType.GivenStep,
     StepExpression(List(Literal("user "), Extractor(string))),
-    { case Tuple1(name) => ZIO.debug(s"user: $name") }
+    (t: Tuple1[String]) => ZIO.debug(s"user: ${t._1}")
   )
 
   private val whenAge = makeStep(
     StepType.WhenStep,
     StepExpression(List(Literal("age is "), Extractor(int))),
-    { case Tuple1(age) => ZIO.debug(s"age: $age") }
+    (t: Tuple1[Int]) => ZIO.debug(s"age: ${t._1}")
   )
 
   // This And step acts as universal glue for any keyword
   private val andRole = makeStep(
     StepType.AndStep,
     StepExpression(List(Literal("role is "), Extractor(string))),
-    { case Tuple1(role) => ZIO.debug(s"role: $role") }
+    (t: Tuple1[String]) => ZIO.debug(s"role: ${t._1}")
   )
 
   private def registry(steps: List[StepDef[Any, Unit]]) = StepRegistryLive[Any, Unit](steps)
