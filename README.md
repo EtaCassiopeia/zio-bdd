@@ -61,7 +61,7 @@ object AccountSpec extends ZIOSteps[Any, AccountState]:
 
 ```scala
 // build.sbt
-libraryDependencies += "io.github.etacassiopeia" %% "zio-bdd" % "1.0.0" % Test
+libraryDependencies += "io.github.etacassiopeia" %% "zio-bdd" % "1.2.0" % Test
 
 Test / testFrameworks += new TestFramework("zio.bdd.ZIOBDDFramework")
 ```
