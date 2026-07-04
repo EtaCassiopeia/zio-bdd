@@ -3,6 +3,10 @@ on:
   push:
     tags: ["*"]
 jobs:
+  # Stable job (JDK 22): FFM is finalized in JDK 22 (JEP 454), so on a 22+ JDK the root aggregates the
+  # full stack + the stable embedded provider (zio-bdd-rift-embedded) + the natives jar — one standard
+  # `ci-release` publishes them all. The container/core modules stay portable (scalac emits Java 8
+  # bytecode regardless of the build JDK; the JDK-11 CI `build` job guards their JDK-11 API compat).
   publish:
     runs-on: ubuntu-latest
     steps:
@@ -12,7 +16,31 @@ jobs:
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: 11
+          java-version: 22
+          cache: sbt
+      - uses: sbt/setup-sbt@v1
+      - run: sbt ci-release
+        env:
+          PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
+          PGP_SECRET: ${{ secrets.PGP_SECRET }}
+          SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
+          SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
+
+  # Preview job (JDK 21): the JDK-21 preview variant (zio-bdd-rift-embedded-jdk21) is a preview-compiled
+  # class that can only be built on JDK 21. On JDK 21 the root aggregates ONLY that variant, so the same
+  # standard `ci-release` publishes exactly it (its rift/mock/natives deps are compiled but not published
+  # here — they ship from the stable job). Runs after `publish` so the two Sonatype bundles don't race.
+  publish-preview:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
           cache: sbt
       - uses: sbt/setup-sbt@v1
       - run: sbt ci-release
