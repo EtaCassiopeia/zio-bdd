@@ -15,6 +15,11 @@ object Default:
    * startup if no default.
    */
   transparent inline given schemaDefault[T](using schema: Schema[T]): Default[T] =
+    fromSchema(schema)
+
+  // The Default instance is built here (a regular method), not inline, so the anonymous class is
+  // compiled once rather than duplicated at every `schemaDefault` call site (Scala 3 E197).
+  private def fromSchema[T](schema: Schema[T]): Default[T] =
     new Default[T]:
       val default: T = schema.defaultValue match
         case Right(value) => value
