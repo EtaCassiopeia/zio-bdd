@@ -76,6 +76,19 @@ object EmbeddedRiftCapabilitiesSpec extends ZIOSpecDefault:
     }
 
   def spec = suite("EmbeddedRiftCapabilities")(
+    test("#211: an authored port is honoured — the imposter binds on it and baseUri reflects it") {
+      withControl { (control, _, _, _) =>
+        for
+          space <- control.provision(MockSource.Dsl(MockSpec(List(pingRule), port = Some(9998)))).map(_.head)
+        yield assertTrue(portFromUri(space.baseUri) == 9998, space.baseUri == "http://localhost:9998")
+      }
+    },
+    test("#211: omitting the port keeps the auto-assigned default (a nonzero free port, not 9998)") {
+      withControl { (control, _, _, _) =>
+        for space <- control.provision(pingSource).map(_.head)
+        yield assertTrue(portFromUri(space.baseUri) > 0, portFromUri(space.baseUri) != 9998)
+      }
+    },
     test("advertises all six capabilities and every accessor succeeds") {
       withControl { (control, _, _, _) =>
         for

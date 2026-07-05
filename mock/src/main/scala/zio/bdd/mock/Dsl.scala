@@ -111,7 +111,9 @@ object dsl:
 
   extension (spec: MockSpec)
     /**
-     * Set the advisory port (always stripped on provision — see [[MockSpec]]).
+     * Pin the imposter to a fixed port — the opt-in fixed-port path (#211): the
+     * Rift adapters bind exactly this port instead of auto-assigning a free
+     * one. Omit it for the share-nothing default (a fresh free port per space).
      */
     def onPort(port: Int): MockSpec = spec.copy(port = Some(port))
 
