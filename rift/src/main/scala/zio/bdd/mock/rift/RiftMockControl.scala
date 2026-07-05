@@ -314,22 +314,33 @@ private[rift] final case class RiftMockControl(
 
   // ===== PerInstance — one imposter per space =====================================
 
+  // Honour a caller-authored port (#211): bind the imposter on exactly that port instead of taking
+  // a pool port, and never fall back to a random one — a bind failure surfaces via `postImposter`.
+  // The authored port is the container-internal imposter port; the caller is responsible for it
+  // being reachable (published/host-networked), just as the pool ports are. Without an authored
+  // port the share-nothing default holds: take a pool port and return it to the pool on failure.
   private def serveImposter(src: NormalizedSource): IO[MockError, MockSpace] =
-    endpoint.acquirePort.flatMap { port =>
-      val stand =
-        for
-          bodyAndCount <- imposterBody(port, src)
-          (body, count) = bodyAndCount
-          _            <- postImposter(port, body)
-          ruleIds      <- freshIds(count)
-          stubs        <- Ref.make(ruleIds)
-          scen         <- Ref.make(Map.empty[String, ScenarioState])
-          id            = SpaceId(s"${src.name}-$port")
-          space         = MockSpace(endpoint.baseUriFor(port), identity, id)
-          _            <- spaces.update(_.updated(id, Imposter(port, stubs, scen)))
-        yield space
-      stand.onError(_ => endpoint.releasePort(port))
-    }
+    src.authoredPort match
+      case Some(port) => standImposter(port, src, pooled = false)
+      case None =>
+        endpoint.acquirePort.flatMap(port =>
+          standImposter(port, src, pooled = true).onError(_ => endpoint.releasePort(port))
+        )
+
+  // `pooled` records whether `port` came from the endpoint pool — so `piDestroy` returns only pooled
+  // ports to the pool and never an authored fixed port (which would corrupt the pool, #211).
+  private def standImposter(port: Int, src: NormalizedSource, pooled: Boolean): IO[MockError, MockSpace] =
+    for
+      bodyAndCount <- imposterBody(port, src)
+      (body, count) = bodyAndCount
+      _            <- postImposter(port, body)
+      ruleIds      <- freshIds(count)
+      stubs        <- Ref.make(ruleIds)
+      scen         <- Ref.make(Map.empty[String, ScenarioState])
+      id            = SpaceId(s"${src.name}-$port")
+      space         = MockSpace(endpoint.baseUriFor(port), identity, id)
+      _            <- spaces.update(_.updated(id, Imposter(port, stubs, scen, pooled)))
+    yield space
 
   private def piAddRule(imp: Imposter, rule: MockRule, priority: Priority): IO[MockError, RuleId] =
     for
@@ -371,7 +382,7 @@ private[rift] final case class RiftMockControl(
       u   <- url(s"/imposters/${imp.port}")
       res <- send(Request(method = HttpMethod.DELETE, url = u))
       _   <- ZIO.unless(res._1 == 404)(expectSuccess(s"destroy imposter ${imp.port}", res))
-      _   <- endpoint.releasePort(imp.port)
+      _   <- ZIO.when(imp.pooled)(endpoint.releasePort(imp.port)) // never return an authored fixed port (#211)
       _   <- spaces.update(_ - space.id)
     yield ()
 
@@ -577,7 +588,8 @@ private[rift] object RiftMockControl:
   final case class Imposter(
     port: Int,
     stubs: Ref[Vector[RuleId]],
-    scenarios: Ref[Map[String, ScenarioState]] // defined scenario name -> initial state (for reset)
+    scenarios: Ref[Map[String, ScenarioState]], // defined scenario name -> initial state (for reset)
+    pooled: Boolean                             // port drawn from the endpoint pool (vs. a caller-authored fixed port, #211)
   )
   final case class CorrSpace(
     port: Int,

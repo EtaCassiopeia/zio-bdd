@@ -362,12 +362,13 @@ private[embedded] final case class EmbeddedRiftMockControl(
 
   // ===== PerInstance — one imposter per space =====================================
 
-  // Stand up one imposter for `src` on its own OS-assigned localhost port. The host allocates a
-  // free port (PortAllocator) and the engine binds it directly (`rift_create_imposter` echoes the
-  // requested port); a mismatch means the port was taken in the bind window — surfaced, not hidden.
+  // Stand up one imposter for `src`. Honour a caller-authored port verbatim (#211), else auto-assign
+  // a free localhost port (the share-nothing default) — `Provisioning.choosePort` picks. The engine
+  // binds the chosen port directly (`rift_create_imposter` echoes the requested port); a mismatch
+  // means the port was taken in the bind window — surfaced as a MockError, never hidden or retried.
   private def serveImposter(src: NormalizedSource): IO[MockError, MockSpace] =
     for
-      port  <- provisioning.allocator.freePort
+      port  <- provisioning.choosePort(src.authoredPort)
       built <- buildImposter(port, src)
       bound <- engine.createImposter(built.configJson)
       _ <- ZIO.unless(bound == port)(

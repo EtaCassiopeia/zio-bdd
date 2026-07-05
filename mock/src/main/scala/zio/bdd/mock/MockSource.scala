@@ -2,12 +2,12 @@ package zio.bdd.mock
 
 /**
  * A minimal, portable spec a [[MockSource.Dsl]] carries: canonical rules plus
- * an *advisory* port. The fluent builders that produce a `MockSpec` land in
- * #112 — here it is just the neutral payload the DSL source wraps.
+ * an optional fixed port.
  *
- * `port` is advisory only: [[Provisioning]] always strips it and auto-assigns a
- * fresh free port (see the fixed-port trap in #111). It is retained on the
- * normalized form purely for diagnostics.
+ * `port` is the opt-in fixed port (#211, set via `onPort`): when present the
+ * Rift adapters bind exactly it instead of auto-assigning; when absent each
+ * space gets a fresh free port (the share-nothing default, and the
+ * fixed-port-trap-safe behaviour of #111).
  */
 final case class MockSpec(rules: List[MockRule], port: Option[Int] = None)
 

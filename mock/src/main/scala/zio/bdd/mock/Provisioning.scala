@@ -14,8 +14,10 @@ import java.nio.file.{Files, Paths}
  *     "dsl"/"json"/the resource or file base name otherwise).
  *   - `payload` : canonical rules (from the DSL) or raw backend wire text (from
  *     json/resource/file) the adapter parses itself.
- *   - `authoredPort`: the advisory port the author requested, if any. Always
- *     stripped on provision — kept only for diagnostics.
+ *   - `authoredPort`: the port the author requested, if any. Honoured as an
+ *     opt-in fixed port by the adapters' port selection
+ *     ([[Provisioning.choosePort]], #211); when absent a fresh free port is
+ *     auto-assigned (the default).
  */
 final case class NormalizedSource(name: String, payload: SourcePayload, authoredPort: Option[Int])
 
@@ -37,13 +39,15 @@ private object MockIO:
 
 /**
  * Hands out localhost ports that are free at the moment of issue and distinct
- * across the allocator's lifetime — the antidote to the fixed-port trap: an
- * authored port is never honored, every space gets its own auto-assigned port.
+ * across the allocator's lifetime — the default (no authored port) path, and
+ * the antidote to the fixed-port trap: every auto-assigned space gets its own
+ * port. (An explicitly authored port bypasses the allocator entirely — see
+ * [[Provisioning.choosePort]], #211.)
  *
  * Allocation probes the OS (`ServerSocket(0)`) and closes the probe, so there
  * is an inherent TOCTOU window before the caller binds the port; distinctness
- * within the allocator removes the *self*-collision (provisioning the same
- * fixed-port source twice), which is the trap this issue targets.
+ * within the allocator removes the *self*-collision (auto-assigning the same
+ * port to two spaces).
  */
 trait PortAllocator:
   def freePort: IO[MockError, Int]
@@ -77,12 +81,24 @@ object PortAllocator:
 /**
  * The single provisioning entry point (#111). Normalizes any [[MockSource]] to
  * one [[NormalizedSource]] per space — memoizing the parsed form so repeated
- * provisioning of the same source is cheap — then for each space strips the
- * authored port, auto-assigns a free one, asks the adapter to serve the
- * payload, and assembles the resolved [[MockSpace]] whose `baseUri` reflects
- * the auto-assigned port.
+ * provisioning of the same source is cheap. This convenience always
+ * auto-assigns a free port; adapters that support an opt-in fixed port select
+ * via [[choosePort]] on their own serve path instead (#211).
  */
 final case class Provisioning(allocator: PortAllocator, cache: Ref[Map[MockSource, List[NormalizedSource]]]):
+
+  /**
+   * Select the port to bind an imposter on: honour a caller-authored port
+   * verbatim (the opt-in fixed-port path, #211 — e.g. `MockSpec.onPort(n)`),
+   * otherwise auto-assign a fresh free one (the share-nothing default). An
+   * authored port that is already bound is not worked around here — the adapter
+   * surfaces the backend's bind failure rather than silently falling back to a
+   * random port.
+   */
+  def choosePort(authoredPort: Option[Int]): IO[MockError, Int] =
+    authoredPort match
+      case Some(port) => ZIO.succeed(port)
+      case None       => allocator.freePort
 
   /** Resolve a source to one normalized form per space; memoized by source. */
   def normalize(source: MockSource): IO[MockError, List[NormalizedSource]] =

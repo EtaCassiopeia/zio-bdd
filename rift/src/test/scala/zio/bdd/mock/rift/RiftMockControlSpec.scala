@@ -83,6 +83,51 @@ object RiftMockControlSpec extends ZIOSpecDefault:
           )
       }
     },
+    test("#211: an authored port binds the imposter on THAT port — baseUri and the create body both use it") {
+      val fixed = 9998 // outside withAdapter's 4545..4600 pool, so a pool port can't masquerade as a pass
+      withAdapter { (control, fake) =>
+        for
+          spacesE <- control.provision(MockSource.Dsl(MockSpec(List(pingRule), port = Some(fixed)))).either
+          posted  <- fake.posted.get
+        yield
+          val space = spacesE.toOption.toList.flatten.head
+          assertTrue(
+            spacesE.isRight,
+            space.baseUri == s"http://localhost:$fixed",
+            posted.exists(b => FakeRift.portOf(b).contains(fixed))
+          )
+      }
+    },
+    test("#211: omitting the port preserves the default — the imposter gets an auto-assigned pool port") {
+      withAdapterPool(List(4600)) { (control, _) =>
+        for spacesE <- control.provision(pingSource).either
+        yield assertTrue(spacesE.toOption.toList.flatten.head.baseUri == "http://localhost:4600")
+      }
+    },
+    test("#211: a create rejection on the authored port surfaces as a descriptive MockError — no silent fallback") {
+      withAdapter { (control, fake) =>
+        for
+          _      <- fake.failProvision.set(true)
+          result <- control.provision(MockSource.Dsl(MockSpec(List(pingRule), port = Some(9998)))).either
+        yield assertTrue(
+          result.isLeft,
+          result.swap.toOption.exists(_.toString.contains("9998")) // names the port, not a swallowed generic error
+        )
+      }
+    },
+    test("#211: destroying an authored-port space does not return the fixed port to the pool") {
+      withAdapterPool(List(4600)) { (control, _) => // pool holds exactly one port: 4600
+        for
+          fixedE <- control.provision(MockSource.Dsl(MockSpec(List(pingRule), port = Some(9998)))).either
+          fixed   = fixedE.toOption.toList.flatten.head
+          _      <- control.destroy(fixed).either
+          autoE  <- control.provision(pingSource).either // must draw the pool's own 4600, never the freed 9998
+        yield assertTrue(
+          fixedE.isRight,
+          autoE.toOption.toList.flatten.head.baseUri == "http://localhost:4600"
+        )
+      }
+    },
     test("destroy(A) deletes only A's imposter — never the global reset — and leaves B intact") {
       withAdapter { (control, fake) =>
         for

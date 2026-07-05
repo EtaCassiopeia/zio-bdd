@@ -117,6 +117,19 @@ object ProvisioningSpec extends ZIOSpecDefault:
           space.inject(HttpRequest(Method.Get, "http://x/")) == HttpRequest(Method.Get, "http://x/")
         )
     },
+    test("choosePort honours an authored port verbatim (the opt-in fixed-port seam, #211)") {
+      for
+        prov <- Provisioning.make
+        p    <- prov.choosePort(Some(9998))
+      yield assertTrue(p == 9998)
+    },
+    test("choosePort auto-allocates a distinct free port when none is authored (default preserved)") {
+      for
+        prov <- Provisioning.make
+        a    <- prov.choosePort(None)
+        b    <- prov.choosePort(None)
+      yield assertTrue(a > 0, b > 0, a != b)
+    },
     test("normalize memoizes: a source deleted after first normalize still resolves from cache") {
       ZIO.scoped {
         for
