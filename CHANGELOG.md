@@ -4,6 +4,16 @@ All notable changes to zio-bdd are documented here.
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-07-05
+
+### Added
+
+- **Opt-in fixed imposter port** — `MockSpec.onPort(n)` now binds the Rift container and embedded
+  imposters on exactly that port instead of always auto-allocating a random one; the auto-assigned
+  free port remains the default. This removes the runtime port-discovery handoff for
+  externally-configured clients (proxies, containers, sidecars). A fixed port is never returned to
+  the internal port pool. (#211)
+
 ## [1.3.0] — 2026-07-04
 
 ### Added
