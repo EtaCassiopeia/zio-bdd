@@ -146,6 +146,8 @@ object StatusColor:
 
   given StatusColor[ScenarioResult] = from { sc =>
     if (sc.isIgnored) Style(Color.Gray, "◑")
+    else if (sc.isUnexpectedlyPassing) Style(Color.Red, "✗") // expected to fail, but passed
+    else if (sc.isExpectedFailure) Style(Color.Gray, "✓")    // known failure — expected, not red
     else if (sc.hasPending && !sc.hasFailure) Style(Color.Orange, "◑")
     else if (sc.isPassed) Style(Color.Blue, "✓") // sky blue — scenario-level pass
     else Style(Color.Red, "✗")
@@ -291,7 +293,12 @@ object ScenarioCounts:
     if (f.isIgnored) ScenarioCounts(0, 0, f.scenarioResults.size, 0)
     else
       f.scenarioResults.foldLeft(zero) { (acc, sc) =>
+        // Mirror statusText/StatusColor ordering so the summary agrees with the tree: the
+        // expected-failure states are resolved before PENDING (an xfail scenario may also contain
+        // a pending step, but it must count as passed/failed, not pending).
         if (sc.isIgnored) acc.copy(ignored = acc.ignored + 1)
+        else if (sc.isUnexpectedlyPassing) acc.copy(failed = acc.failed + 1)
+        else if (sc.isExpectedFailure) acc.copy(passed = acc.passed + 1)
         else if (sc.hasPending && !sc.hasFailure) acc.copy(pending = acc.pending + 1)
         else if (sc.isPassed) acc.copy(passed = acc.passed + 1)
         else acc.copy(failed = acc.failed + 1)
@@ -473,6 +480,8 @@ object DocBuilder:
 
   private def statusText(sc: ScenarioResult): String =
     if (sc.isIgnored) "IGNORED"
+    else if (sc.isUnexpectedlyPassing) "UNEXPECTEDLY PASSED"
+    else if (sc.isExpectedFailure) "XFAIL (expected)"
     else if (sc.hasPending && !sc.hasFailure) "PENDING"
     else if (sc.isPassed) "PASSED"
     else "FAILED"
