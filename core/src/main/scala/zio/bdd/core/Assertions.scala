@@ -224,6 +224,118 @@ object Assertions {
   ): ZIO[R, Throwable, Unit] =
     condition.repeat(Schedule.spaced(interval) && Schedule.upTo(duration)).unit
 
+  // ── Collection quantifiers ─────────────────────────────────────────────────
+  // Assert a predicate over the elements of a collection (every / some / no /
+  // exactly-n / between). The predicate is soft-evaluated against every element
+  // so a single failure message can list all offenders with their indices.
+
+  private def labelTag(label: String): String = if (label.nonEmpty) s"[$label] " else ""
+
+  // Run `pred` against every element, recording (index, element, failure message
+  // when the predicate failed — None when it satisfied).
+  private def probeAll[A](
+    collection: Iterable[A],
+    pred: A => ZIO[Any, Throwable, Unit]
+  ): ZIO[Any, Nothing, List[(Int, A, Option[String])]] =
+    ZIO.foreach(collection.toList.zipWithIndex) { case (a, i) =>
+      pred(a).either.map {
+        case Right(_) => (i, a, None)
+        case Left(t)  => (i, a, Some(Option(t.getMessage).getOrElse(t.getClass.getName)))
+      }
+    }
+
+  private def renderElems[A](elems: List[(Int, A, Option[String])]): String =
+    elems.map { case (i, a, msg) => s"  - [index $i] $a" + msg.fold("")(m => s" ($m)") }.mkString("\n")
+
+  /**
+   * Assert every element of `collection` satisfies `pred`. An empty collection
+   * passes vacuously.
+   */
+  def assertForAll[A](collection: Iterable[A], label: String = "")(
+    pred: A => ZIO[Any, Throwable, Unit]
+  ): ZIO[Any, Throwable, Unit] =
+    probeAll(collection, pred).flatMap { probed =>
+      val offenders = probed.filter(_._3.isDefined)
+      if (offenders.isEmpty) ZIO.unit
+      else
+        ZIO.fail(
+          new AssertionError(
+            s"${labelTag(label)}assertForAll failed: ${offenders.size} of ${probed.size} element(s) did not satisfy the predicate:\n${renderElems(offenders)}"
+          )
+        )
+    }
+
+  /** Assert at least one element of `collection` satisfies `pred`. */
+  def assertExists[A](collection: Iterable[A], label: String = "")(
+    pred: A => ZIO[Any, Throwable, Unit]
+  ): ZIO[Any, Throwable, Unit] =
+    probeAll(collection, pred).flatMap { probed =>
+      if (probed.exists(_._3.isEmpty)) ZIO.unit
+      else {
+        val detail = if (probed.nonEmpty) s":\n${renderElems(probed)}" else ""
+        ZIO.fail(
+          new AssertionError(
+            s"${labelTag(label)}assertExists failed: no element of ${probed.size} satisfied the predicate$detail"
+          )
+        )
+      }
+    }
+
+  /**
+   * Assert no element of `collection` satisfies `pred`. Named to avoid a clash
+   * with `assertNone[A](actual: Option[A])`, which asserts an `Option` is
+   * empty.
+   */
+  def assertNoneSatisfy[A](collection: Iterable[A], label: String = "")(
+    pred: A => ZIO[Any, Throwable, Unit]
+  ): ZIO[Any, Throwable, Unit] =
+    probeAll(collection, pred).flatMap { probed =>
+      val satisfying = probed.filter(_._3.isEmpty)
+      if (satisfying.isEmpty) ZIO.unit
+      else
+        ZIO.fail(
+          new AssertionError(
+            s"${labelTag(label)}assertNoneSatisfy failed: ${satisfying.size} element(s) satisfied the predicate:\n${renderElems(satisfying)}"
+          )
+        )
+    }
+
+  /** Assert exactly `n` elements of `collection` satisfy `pred`. */
+  def assertExactly[A](n: Int, collection: Iterable[A], label: String = "")(
+    pred: A => ZIO[Any, Throwable, Unit]
+  ): ZIO[Any, Throwable, Unit] =
+    probeAll(collection, pred).flatMap { probed =>
+      val satisfying = probed.filter(_._3.isEmpty)
+      if (satisfying.size == n) ZIO.unit
+      else
+        ZIO.fail(
+          new AssertionError(
+            s"${labelTag(label)}assertExactly($n) failed: ${satisfying.size} of ${probed.size} element(s) satisfied the predicate:\n${renderElems(satisfying)}"
+          )
+        )
+    }
+
+  /**
+   * Assert between `min` and `max` (inclusive) elements of `collection` satisfy
+   * `pred`.
+   */
+  def assertBetween[A](min: Int, max: Int, collection: Iterable[A], label: String = "")(
+    pred: A => ZIO[Any, Throwable, Unit]
+  ): ZIO[Any, Throwable, Unit] =
+    probeAll(collection, pred).flatMap { probed =>
+      val satisfying = probed.filter(_._3.isEmpty)
+      val count      = satisfying.size
+      if (count >= min && count <= max) ZIO.unit
+      else {
+        val detail = if (satisfying.nonEmpty) s":\n${renderElems(satisfying)}" else ""
+        ZIO.fail(
+          new AssertionError(
+            s"${labelTag(label)}assertBetween($min, $max) failed: $count of ${probed.size} element(s) satisfied the predicate$detail"
+          )
+        )
+      }
+    }
+
   /**
    * Run all assertions and collect every failure into a single
    * `MultipleAssertionError`.
