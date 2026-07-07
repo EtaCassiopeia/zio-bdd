@@ -148,6 +148,57 @@ object Assertions {
     )
 
   /**
+   * Retry `effect` until it succeeds or `maxTime` elapses, for asserting on
+   * eventually-consistent systems (feature-flag propagation, async consumers,
+   * mock reload) without a blind `ZIO.sleep`.
+   *
+   * On timeout the last underlying failure is surfaced — not a generic "timed
+   * out" — because `retry` re-emits the effect's final error once the schedule
+   * is exhausted. The effect stays interruptible, so an outer `stepTimeout` (or
+   * any enclosing timeout) is a hard cap; keep `maxTime` ≤ that timeout.
+   *
+   * Only typed failures are retried. A defect (an exception thrown outside a
+   * `ZIO.attempt` boundary, surfacing as `Cause.Die`) propagates on the first
+   * attempt and is NOT retried — wrap effects that may throw in `ZIO.attempt`
+   * so the throw becomes a retryable typed failure. The `assert*` helpers
+   * already do this.
+   *
+   * {{{
+   *   When("flag propagation is observed") {
+   *     eventually(
+   *       getFlagStatus.filterOrFail(_ == "ON")(RuntimeException("flag not ON yet")),
+   *       maxTime = 8.seconds
+   *     )
+   *   }
+   * }}}
+   */
+  def eventually[R, A](
+    effect: ZIO[R, Throwable, A],
+    maxTime: Duration = 10.seconds,
+    schedule: Schedule[Any, Any, Any] = Schedule.exponential(50.millis).jittered && Schedule.spaced(500.millis)
+  ): ZIO[R, Throwable, A] =
+    effect.retry(schedule && Schedule.upTo(maxTime))
+
+  /**
+   * Probe a value with `fetch`, run `assertion` against it, and retry the pair
+   * until the assertion holds or `maxTime` elapses. On timeout the last
+   * assertion failure is surfaced (see [[eventually]]).
+   *
+   * {{{
+   *   Then("the balance is eventually settled") {
+   *     eventuallyAssert(fetchBalance)(b => assertEquals(b, expected))
+   *   }
+   * }}}
+   */
+  def eventuallyAssert[R, A](
+    fetch: ZIO[R, Throwable, A]
+  )(
+    assertion: A => ZIO[Any, Throwable, Unit],
+    maxTime: Duration = 10.seconds
+  ): ZIO[R, Throwable, Unit] =
+    eventually(fetch.flatMap(assertion), maxTime)
+
+  /**
    * Run all assertions and collect every failure into a single
    * `MultipleAssertionError`.
    *
