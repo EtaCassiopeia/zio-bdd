@@ -753,3 +753,44 @@ Assertions.during[R](
 - **Interruptible**, and respects the enclosing `stepTimeout` — keep `duration` ≤ `stepTimeout`.
   Only typed failures count as a violation (same Fail/Die caveat as `eventually`).
 
+---
+
+## 14. Collection quantifiers
+
+`assertContainsAll` / `assertContainsSubset` check *membership*, but not a *predicate* over the
+elements. These quantifiers assert a predicate holds for every / some / no / exactly-n / a range
+of elements, and on failure list the offending elements **with their indices** (and the optional
+`label`) so you see *which* elements broke the rule, not just a count.
+
+```scala
+Then("every settled order has a positive total") {
+  ScenarioContext.get.flatMap { s =>
+    Assertions.assertForAll(s.orders, label = "orders")(o => Assertions.assertTrue(o.total > 0, s"${o.id} is non-positive"))
+  }
+}
+```
+
+### API
+
+```scala
+Assertions.assertForAll[A]     (collection: Iterable[A], label: String = "")(pred: A => ZIO[Any, Throwable, Unit]): ZIO[Any, Throwable, Unit]
+Assertions.assertExists[A]     (collection: Iterable[A], label: String = "")(pred: A => ZIO[Any, Throwable, Unit]): ZIO[Any, Throwable, Unit]
+Assertions.assertNoneSatisfy[A](collection: Iterable[A], label: String = "")(pred: A => ZIO[Any, Throwable, Unit]): ZIO[Any, Throwable, Unit]
+Assertions.assertExactly[A]    (n: Int, collection: Iterable[A], label: String = "")(pred: A => ZIO[Any, Throwable, Unit]): ZIO[Any, Throwable, Unit]
+Assertions.assertBetween[A]    (min: Int, max: Int, collection: Iterable[A], label: String = "")(pred: A => ZIO[Any, Throwable, Unit]): ZIO[Any, Throwable, Unit]
+```
+
+- **"Satisfies" = the predicate succeeds.** The predicate is any `ZIO[Any, Throwable, Unit]` — the
+  existing `assert*` helpers compose directly.
+- **`assertForAll`** fails if any element fails (empty collection passes vacuously); **`assertExists`**
+  fails if none satisfy (empty fails); **`assertNoneSatisfy`** fails if any satisfies (empty passes) —
+  named to avoid a clash with `assertNone[A](Option[A])`, which asserts an `Option` is empty;
+  **`assertExactly(n)`** / **`assertBetween(min, max)`** fail when the satisfying count is off /
+  outside `[min, max]`.
+- **Every element is probed** (soft, `collectAll`-style), so the failure message reports *all*
+  offenders with their indices — not just the first.
+- **A predicate that fails with a typed error counts as "did not satisfy"** — a genuine error in
+  the typed channel is indistinguishable from a legitimate `false`. (A defect — thrown outside a
+  `ZIO.attempt` boundary — still propagates, same Fail/Die caveat as `eventually`.) If a predicate
+  can raise a typed error you do *not* want treated as an unsatisfied element, handle it first.
+
