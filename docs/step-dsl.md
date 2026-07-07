@@ -930,3 +930,31 @@ Assertions.poll[R, A](
   Fail/Die caveat as `eventually`).
 - If the **probe itself** keeps failing (never yields a value), its own error is surfaced on
   timeout — there is no last-polled-value annotation, since nothing was successfully polled.
+
+---
+
+## 19. Approximate numeric equality with `Assertions.assertApproxEquals`
+
+For monetary / floating-point domains where exact `assertEquals` is the wrong tool, assert that a
+value is within a tolerance of the expected one. Works for any `Numeric` (`Double`, `BigDecimal`, …).
+
+```scala
+Then("the total is about 19.99") {
+  ScenarioContext.get.flatMap(s => Assertions.assertApproxEquals(s.total, 19.99, 0.01))
+}
+
+// fluent form (import Assertions.shouldBeCloseTo):
+Then("the rate is close to 3.5%") {
+  ScenarioContext.get.flatMap(s => s.rate.shouldBeCloseTo(0.035, 0.001))
+}
+```
+
+### API
+
+```scala
+Assertions.assertApproxEquals[A](actual: A, expected: A, delta: A, message: String = "")(using Numeric[A]): ZIO[Any, Throwable, Unit]
+extension [A: Numeric](actual: A) def shouldBeCloseTo(expected: A, delta: A): ZIO[Any, Throwable, Unit]
+```
+
+- Passes when `abs(actual - expected) <= delta` (the boundary is inclusive). On failure the message
+  shows the actual, expected, delta, and the observed difference.
