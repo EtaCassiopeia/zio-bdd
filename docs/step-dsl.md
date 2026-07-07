@@ -841,3 +841,28 @@ final class ComposedChangeAssertion[R]:
 > `R & State[S]` / `.by[B](… A =:= B)` signatures that reads the same at call sites and infers
 > reliably.
 
+
+---
+
+## 16. Named-predicate assertions with `Assertions.assertSatisfies`
+
+A concise shorthand over `assertZIO(value, Assertion.assertion("…")(…))` — assert that a value
+satisfies a named predicate, with a failure message that reports both the description and the
+offending value.
+
+```scala
+Then("the response id is a UUID") {
+  ScenarioContext.get.flatMap(s => Assertions.assertSatisfies(s.id, "is a valid UUID")(isUuid))
+}
+```
+
+### API
+
+```scala
+Assertions.assertSatisfies[A](actual: A, description: String)(pred: A => Boolean): ZIO[Any, Throwable, Unit]
+Assertions.assertSatisfiesZIO[R, A](actual: A, description: String)(pred: A => ZIO[R, Throwable, Boolean]): ZIO[R, Throwable, Unit]
+```
+
+- On failure the message is `expected <actual> to satisfy: <description>`.
+- `assertSatisfiesZIO` takes an **effectful** predicate; if the predicate's effect fails, that
+  failure propagates unchanged (it is not turned into an assertion failure).
