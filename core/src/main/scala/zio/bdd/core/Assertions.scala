@@ -52,6 +52,36 @@ object Assertions {
   ): ZIO[Any, Throwable, Unit] =
     evaluate(actual, assertion, message)
 
+  /**
+   * Assert that `actual` satisfies a named predicate — a concise shorthand over
+   * `assertZIO(value, Assertion.assertion("…")(…))`. On failure the message
+   * names both the `description` and the offending `actual` value.
+   *
+   * {{{
+   *   Then("the response id is a UUID") {
+   *     ScenarioContext.get.flatMap(s => assertSatisfies(s.id, "is a valid UUID")(isUuid))
+   *   }
+   * }}}
+   */
+  def assertSatisfies[A](actual: A, description: String)(pred: A => Boolean): ZIO[Any, Throwable, Unit] =
+    ZIO.attempt {
+      if (!pred(actual)) throw new AssertionError(s"expected $actual to satisfy: $description")
+    }
+
+  /**
+   * Effectful variant of [[assertSatisfies]]: the predicate returns a `ZIO[R,
+   * Throwable, Boolean]`. A predicate whose effect fails propagates that
+   * failure unchanged.
+   */
+  def assertSatisfiesZIO[R, A](actual: A, description: String)(
+    pred: A => ZIO[R, Throwable, Boolean]
+  ): ZIO[R, Throwable, Unit] =
+    // suspend so a predicate that throws *synchronously* (before returning its effect) becomes a
+    // typed failure rather than escaping as a defect — symmetric with assertSatisfies.
+    ZIO.suspend(pred(actual)).flatMap { ok =>
+      if (ok) ZIO.unit else ZIO.fail(new AssertionError(s"expected $actual to satisfy: $description"))
+    }
+
   def assertSome[A](actual: Option[A], message: String = "Expected Some, got None"): ZIO[Any, Throwable, Unit] =
     assertZIO(actual, isSome, message)
 
