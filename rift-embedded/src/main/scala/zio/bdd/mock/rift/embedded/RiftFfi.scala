@@ -5,12 +5,15 @@ import zio.bdd.mock.MockError
 import zio.json.*
 
 /**
- * The ZIO-facing surface over the Rift engine's C-ABI v2 (rift#343,
- * `librift_ffi` ≥ v0.9.0): the data plane (create an imposter, replace all of
- * its stubs, read its recorded requests) plus the in-process admin plane
- * ([[serveAdmin]]), per-imposter delete ([[deleteImposter]]), and build
- * identity ([[buildInfo]]). A pre-v2 library fails fast at load
- * ([[RiftFfiBridge.start]]), so this surface always assumes v2.
+ * The ZIO-facing surface over the Rift engine's C-ABI (`librift_ffi` ≥
+ * v0.11.0): the data plane (create an imposter, replace all of its stubs, read
+ * its recorded requests) plus the in-process admin plane ([[serveAdmin]]),
+ * per-imposter delete ([[deleteImposter]]), build identity ([[buildInfo]]), and
+ * — the admin long tail over direct C-ABI (rift#411) — scenario/flow state
+ * ([[flowStateGet]]/[[flowStatePut]]) and the correlated space plane
+ * ([[spaceAddStub]]/[[spaceDelete]]/[[spaceRecorded]]), so the adapter needs no
+ * loopback HTTP. A pre-v0.11.0 library fails fast at load
+ * ([[RiftFfiBridge.start]]) when the bridge binds those mandatory symbols.
  *
  * A trait (not just the live wrapper) so the adapter can be unit-tested against
  * a recording double without the native library.
@@ -43,6 +46,40 @@ private[embedded] trait EmbeddedEngine:
   /** The engine's build identity (version/commit/features). */
   def buildInfo: IO[MockError, EmbeddedEngine.BuildInfo]
 
+  // The admin long tail over direct C-ABI (rift#411, librift_ffi ≥ v0.11.0): scenario/flow state +
+  // correlated spaces, so the adapter drives them with no loopback HTTP admin plane.
+
+  /**
+   * The scenario/flow-state value for `(flowId, key)` as its string form
+   * (scenario state is stored as a JSON string), or `None` if the key is
+   * absent.
+   */
+  def flowStateGet(port: Int, flowId: String, key: String): IO[MockError, Option[String]]
+
+  /**
+   * Set the scenario/flow-state value for `(flowId, key)` from a bare JSON
+   * value.
+   */
+  def flowStatePut(port: Int, flowId: String, key: String, valueJson: String): IO[MockError, Unit]
+
+  /**
+   * Register a stub scoped to `flowId` on the shared imposter (its `space` is
+   * set from `flowId`).
+   */
+  def spaceAddStub(port: Int, flowId: String, stubJson: String): IO[MockError, Unit]
+
+  /**
+   * Tear down a space in one call (its scoped stubs, recorded requests, and
+   * scenario state).
+   */
+  def spaceDelete(port: Int, flowId: String): IO[MockError, Unit]
+
+  /**
+   * The requests recorded under `flowId` (header-filtered by the space's
+   * resolved flow id) as a JSON array string (`[]` when none).
+   */
+  def spaceRecorded(port: Int, flowId: String): IO[MockError, String]
+
 private[embedded] object EmbeddedEngine:
 
   /**
@@ -65,6 +102,15 @@ private[embedded] object EmbeddedEngine:
   )
   object BuildInfo:
     given JsonDecoder[BuildInfo] = DeriveJsonDecoder.gen[BuildInfo]
+
+  /**
+   * The `value` field of a `rift_flow_state_get` result
+   * (`{"flowId","key","value"}`), decoded as its string form — scenario state
+   * (the sole reader) is stored as a JSON string. Extra fields ignored.
+   */
+  private[embedded] final case class FlowStateValue(value: String)
+  private[embedded] object FlowStateValue:
+    given JsonDecoder[FlowStateValue] = DeriveJsonDecoder.gen[FlowStateValue]
 
   /**
    * The live engine over [[RiftFfiBridge]] — the Panama FFM bindings to
@@ -136,6 +182,55 @@ private[embedded] object EmbeddedEngine:
           ZIO
             .fromEither(json.fromJson[BuildInfo])
             .mapError(e => MockError.CommunicationError(s"rift_build_info returned unparseable build info: $e ($json)"))
+      }
+
+    // A null return is "key absent" (mapped to None) — the crate also returns null on a genuine
+    // error, but the adapter only reads a scenario it defined on a live imposter, so absence is the
+    // meaningful case (mirrors the HTTP path's `Option[String]`). rift's null conflates the two.
+    def flowStateGet(port: Int, flowId: String, key: String): IO[MockError, Option[String]] =
+      blocking("rift_flow_state_get")(Option(bridge.flowStateGet(port, flowId, key))).flatMap {
+        case None => ZIO.none
+        case Some(json) =>
+          ZIO
+            .fromEither(json.fromJson[FlowStateValue])
+            .mapError(e => MockError.CommunicationError(s"rift_flow_state_get returned unparseable JSON: $e ($json)"))
+            .map(v => Some(v.value))
+      }
+
+    def flowStatePut(port: Int, flowId: String, key: String, valueJson: String): IO[MockError, Unit] =
+      blocking("rift_flow_state_put") {
+        val rc = bridge.flowStatePut(port, flowId, key, valueJson)
+        if rc == 0 then None else Some(withReason(s"rift_flow_state_put returned $rc for port $port"))
+      }.flatMap {
+        case None      => ZIO.unit
+        case Some(msg) => ZIO.fail(MockError.CommunicationError(msg))
+      }
+
+    def spaceAddStub(port: Int, flowId: String, stubJson: String): IO[MockError, Unit] =
+      blocking("rift_space_add_stub") {
+        val rc = bridge.spaceAddStub(port, flowId, stubJson)
+        if rc == 0 then None else Some(withReason(s"rift_space_add_stub returned $rc for port $port"))
+      }.flatMap {
+        case None      => ZIO.unit
+        case Some(msg) => ZIO.fail(MockError.CommunicationError(msg))
+      }
+
+    def spaceDelete(port: Int, flowId: String): IO[MockError, Unit] =
+      blocking("rift_space_delete") {
+        val rc = bridge.spaceDelete(port, flowId)
+        if rc == 0 then None else Some(withReason(s"rift_space_delete returned $rc for port $port"))
+      }.flatMap {
+        case None      => ZIO.unit
+        case Some(msg) => ZIO.fail(MockError.CommunicationError(msg))
+      }
+
+    def spaceRecorded(port: Int, flowId: String): IO[MockError, String] =
+      blocking("rift_space_recorded") {
+        val json = bridge.spaceRecorded(port, flowId)
+        if json == null then Left(withReason(s"rift_space_recorded returned null for port $port")) else Right(json)
+      }.flatMap {
+        case Right(json) => ZIO.succeed(json)
+        case Left(msg)   => ZIO.fail(MockError.CommunicationError(msg))
       }
 
     private def blocking[A](op: String)(thunk: => A): IO[MockError, A] =

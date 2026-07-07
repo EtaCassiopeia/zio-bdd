@@ -25,12 +25,14 @@ import java.nio.file.Path;
  * the identical source compiles and runs against both generations. Every variant needs
  * {@code --enable-native-access}.
  *
- * <p>Requires the C-ABI v2 (rift#343, first shipped in {@code librift_ffi} v0.9.0): the data plane
- * ({@code rift_start/stop/create_imposter/replace_stubs/recorded/free}) plus the in-process admin
- * plane ({@code rift_serve_admin}), per-imposter delete ({@code rift_delete_imposter}), build
- * identity ({@code rift_build_info}), and thread-local error text ({@code rift_last_error}). All
- * symbols are bound at {@link #start}, so a pre-v2 library fails fast there with a missing-symbol
- * error rather than degrading silently — zio-bdd pins the v2 natives and does not support older Rift.
+ * <p>Requires {@code librift_ffi} ≥ v0.11.0: the v2 data plane
+ * ({@code rift_start/stop/create_imposter/replace_stubs/recorded/free}) + in-process admin plane
+ * ({@code rift_serve_admin}) + per-imposter delete + build identity + thread-local error text
+ * (rift#343, v0.9.0), plus the admin long tail over direct C-ABI (rift#411, v0.11.0):
+ * {@code rift_flow_state_get/put} and {@code rift_space_add_stub/delete/recorded}, which let the
+ * adapter drive scenario state and correlated spaces with no loopback HTTP. All symbols are bound at
+ * {@link #start}, so a pre-v0.11.0 library fails fast there with a missing-symbol error rather than
+ * degrading silently — zio-bdd pins the matching natives and does not support older Rift.
  *
  * <p>Boundary discipline mirrors the crate: memory is created and freed on the same side (returned
  * {@code *mut c_char} buffers are handed straight back to {@code rift_free}; {@code rift_build_info}
@@ -88,6 +90,14 @@ public final class RiftFfiBridge implements AutoCloseable {
   private final MethodHandle buildInfo;
   private final MethodHandle lastError;
 
+  // v0.11.0 (rift#411): the admin long tail over direct C-ABI — scenario/flow state + correlated
+  // spaces — so the embedded adapter drives them with no loopback HTTP admin plane.
+  private final MethodHandle flowStateGet;
+  private final MethodHandle flowStatePut;
+  private final MethodHandle spaceAddStub;
+  private final MethodHandle spaceDelete;
+  private final MethodHandle spaceRecorded;
+
   private RiftFfiBridge(Arena arena, SymbolLookup lookup, MemorySegment handle) {
     this.arena = arena;
     this.handle = handle;
@@ -107,6 +117,19 @@ public final class RiftFfiBridge implements AutoCloseable {
     this.deleteImposter = downcall(lookup, "rift_delete_imposter",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_SHORT));
     this.lastError = downcall(lookup, "rift_last_error", FunctionDescriptor.of(ValueLayout.ADDRESS));
+    // v0.11.0 symbols are mandatory too: binding them makes a pre-0.11.0 library fail fast at start
+    // (zio-bdd pins the matching natives, so the floor is honest).
+    this.flowStateGet = downcall(lookup, "rift_flow_state_get", FunctionDescriptor.of(
+        ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_SHORT, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+    this.flowStatePut = downcall(lookup, "rift_flow_state_put", FunctionDescriptor.of(
+        ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_SHORT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+        ValueLayout.ADDRESS));
+    this.spaceAddStub = downcall(lookup, "rift_space_add_stub", FunctionDescriptor.of(
+        ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_SHORT, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+    this.spaceDelete = downcall(lookup, "rift_space_delete", FunctionDescriptor.of(
+        ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_SHORT, ValueLayout.ADDRESS));
+    this.spaceRecorded = downcall(lookup, "rift_space_recorded", FunctionDescriptor.of(
+        ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_SHORT, ValueLayout.ADDRESS));
   }
 
   /**
@@ -200,6 +223,64 @@ public final class RiftFfiBridge implements AutoCloseable {
       return (int) deleteImposter.invoke(handle, (short) port);
     } catch (Throwable t) {
       throw failure("rift_delete_imposter", t);
+    }
+  }
+
+  /**
+   * Get a scenario/flow-state value as JSON {@code {"flowId","key","value"}}, or {@code null} when
+   * the key is absent OR on error (the crate's {@code rift_last_error} distinguishes them). The native
+   * buffer is freed via {@code rift_free} before return.
+   */
+  public String flowStateGet(int port, String flowId, String key) {
+    try (Arena call = Arena.ofConfined()) {
+      MemorySegment result = (MemorySegment) flowStateGet.invoke(handle, (short) port,
+          (MemorySegment) ALLOC_STRING.invoke(call, flowId), (MemorySegment) ALLOC_STRING.invoke(call, key));
+      return readAndFree(result);
+    } catch (Throwable t) {
+      throw failure("rift_flow_state_get", t);
+    }
+  }
+
+  /** Set a scenario/flow-state value from a bare JSON value. Returns {@code 0} on success, {@code -1} on error. */
+  public int flowStatePut(int port, String flowId, String key, String valueJson) {
+    try (Arena call = Arena.ofConfined()) {
+      return (int) flowStatePut.invoke(handle, (short) port, (MemorySegment) ALLOC_STRING.invoke(call, flowId),
+          (MemorySegment) ALLOC_STRING.invoke(call, key), (MemorySegment) ALLOC_STRING.invoke(call, valueJson));
+    } catch (Throwable t) {
+      throw failure("rift_flow_state_put", t);
+    }
+  }
+
+  /** Register a stub scoped to {@code flowId} (its {@code space} is set from {@code flowId}). Returns {@code 0}/{@code -1}. */
+  public int spaceAddStub(int port, String flowId, String stubJson) {
+    try (Arena call = Arena.ofConfined()) {
+      return (int) spaceAddStub.invoke(handle, (short) port, (MemorySegment) ALLOC_STRING.invoke(call, flowId),
+          (MemorySegment) ALLOC_STRING.invoke(call, stubJson));
+    } catch (Throwable t) {
+      throw failure("rift_space_add_stub", t);
+    }
+  }
+
+  /** Tear down a space (its scoped stubs, recorded requests, scenario state). Returns {@code 0}/{@code -1}. */
+  public int spaceDelete(int port, String flowId) {
+    try (Arena call = Arena.ofConfined()) {
+      return (int) spaceDelete.invoke(handle, (short) port, (MemorySegment) ALLOC_STRING.invoke(call, flowId));
+    } catch (Throwable t) {
+      throw failure("rift_space_delete", t);
+    }
+  }
+
+  /**
+   * The requests recorded under {@code flowId} (header-filtered by the space's resolved flow id) as a
+   * JSON array string, or {@code null} on error. The native buffer is freed via {@code rift_free}.
+   */
+  public String spaceRecorded(int port, String flowId) {
+    try (Arena call = Arena.ofConfined()) {
+      MemorySegment result =
+          (MemorySegment) spaceRecorded.invoke(handle, (short) port, (MemorySegment) ALLOC_STRING.invoke(call, flowId));
+      return readAndFree(result);
+    } catch (Throwable t) {
+      throw failure("rift_space_recorded", t);
     }
   }
 

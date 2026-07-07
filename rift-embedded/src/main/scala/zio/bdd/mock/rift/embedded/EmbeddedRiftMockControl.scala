@@ -2,8 +2,7 @@ package zio.bdd.mock.rift.embedded
 
 import zio.*
 import zio.bdd.mock.*
-import zio.bdd.mock.rift.{Correlation, RiftCorrelatedSpace, RiftMode, RiftProtocol, RiftScenarioAdmin}
-import zio.http.Client
+import zio.bdd.mock.rift.{Correlation, RiftMode, RiftProtocol}
 import zio.json.*
 import zio.json.ast.Json
 
@@ -16,17 +15,16 @@ import zio.json.ast.Json
  * container adapter — the FFI consumes the same imposter/stub model the admin
  * API does — so the wire fidelity is identical; only the transport differs.
  *
- * Requires the C-ABI v2 (rift#343, `librift_ffi` ≥ v0.9.0): the engine starts
- * the '''real''' admin API in-process on loopback
- * ([[EmbeddedEngine.serveAdmin]]) over the same manager the FFI downcalls
- * drive. So the adapter is "the container adapter minus Docker": the hot-path
- * data plane stays FFI downcalls (`create_imposter`/`replace_stubs`/`recorded`,
- * no HTTP hop), while the admin long tail — scenario pin/read/reset, and (in
- * Correlated mode) the whole per-space stub plane — routes over the loopback
- * admin URL, exactly as the container adapter does. `destroy` frees the port
- * via `rift_delete_imposter`. All six capabilities are advertised. (Older Rift
- * is unsupported — a pre-v2 library fails fast at load, so there is no legacy
- * tier.)
+ * Requires the C-ABI v0.11.0 (rift#411): the adapter drives Rift '''entirely
+ * over FFI''' — no loopback HTTP admin plane (#244). The hot-path data plane is
+ * `create_imposter`/`replace_stubs`/`recorded`; the admin long tail —
+ * scenario/flow state (`rift_flow_state_get`/`put`) and, in Correlated mode,
+ * the whole per-space stub plane (`rift_space_add_stub`/`delete`/`recorded`) —
+ * are direct downcalls too, over the same manager, so there is no TCP + HTTP
+ * round trip for an in-process engine. `destroy` frees the port via
+ * `rift_delete_imposter`. All six capabilities are advertised. (Older Rift is
+ * unsupported — a pre-v0.11.0 library fails fast at load when the bridge binds
+ * the mandatory symbols, so there is no legacy tier.)
  *
  * Two isolation modes ([[RiftMode]]), mirroring the container adapter:
  *
@@ -41,12 +39,13 @@ import zio.json.ast.Json
  *   - Correlated: all spaces share ONE imposter (created via
  *     `rift_create_imposter` on an allocator-issued port, guarded by
  *     `sharedPort` so it is created at most once), whose `flowIdSource` is
- *     `header:<correlation>`. Since the FFI has no per-space stub surface, the
- *     shared imposter's spaces are driven entirely over the loopback admin
- *     plane through [[RiftCorrelatedSpace]] — the same wire calls the container
- *     adapter issues (`POST/DELETE .../spaces/:flowId/...`, the header-filtered
- *     `received`) — so isolation semantics are byte-identical, only the shared
- *     imposter's own creation/teardown goes through the FFI instead of HTTP.
+ *     `header:<correlation>`. The shared imposter's spaces are driven over the
+ *     space FFI downcalls through [[EmbeddedCorrelatedSpace]] — the
+ *     FFI-transport mirror of the container adapter's `RiftCorrelatedSpace`,
+ *     building the byte-identical stub JSON via [[RiftProtocol]] and
+ *     registering/tearing it down via `rift_space_add_stub`/`delete`/`recorded`
+ *     — so isolation semantics are byte-identical to the container, with no
+ *     HTTP hop.
  *
  * A native imposter ([[provisionNative]]) always gets its own port regardless
  * of mode, so the two space kinds coexist; per-space operations dispatch by
@@ -59,8 +58,7 @@ private[embedded] final case class EmbeddedRiftMockControl(
   spaces: Ref[Map[SpaceId, EmbeddedRiftMockControl.Imposter]],
   correlated: Ref[Map[SpaceId, EmbeddedRiftMockControl.CorrSpace]],
   sharedPort: Ref.Synchronized[Option[Int]],
-  ids: Ref[Int],
-  admin: EmbeddedRiftMockControl.Admin
+  ids: Ref[Int]
 ) extends MockControl:
 
   import EmbeddedRiftMockControl.{CorrSpace, Imposter}
@@ -296,7 +294,7 @@ private[embedded] final case class EmbeddedRiftMockControl(
     for
       _ <- ZIO.foreachDiscard(sc.rules) { r =>
              val stub = RiftProtocol.statefulStub(sc.name, r.whenState, r.thenState, MockRule(r.request, r.respond))
-             RiftCorrelatedSpace.postRawStub(admin.client, admin.url, cs.port, cs.flowId, stub)
+             EmbeddedCorrelatedSpace.postRawStub(engine, cs.port, cs.flowId, stub)
            }
       _ <- putScenarioState(cs.port, cs.flowId, sc.name, sc.initial)
       _ <- cs.scenarios.update(_ + (sc.name -> sc.initial))
@@ -309,35 +307,46 @@ private[embedded] final case class EmbeddedRiftMockControl(
     )
 
   private val embeddedStateInspection: StateInspection = new StateInspection:
+    // Guard `currentState` on the locally-tracked scenarios (like `setState`/`reset`) so an undeclared
+    // name is an accurate InvalidDefinition from the Ref — not inferred from a `flow_state_get` null,
+    // which the crate also returns on a genuine engine error (rift#415: null conflates absent-key and
+    // error).
     def currentState(space: MockSpace, name: String): IO[MockError, ScenarioState] =
-      dispatch(space)(cs => readState(cs.port, cs.flowId, space.id, name))(imp =>
-        readState(imp.port, imp.port.toString, space.id, name)
+      dispatch(space)(cs => guardDefined(cs.scenarios, space.id, name)(readState(cs.port, cs.flowId, space.id, name)))(
+        imp => guardDefined(imp.scenarios, space.id, name)(readState(imp.port, imp.port.toString, space.id, name))
       )
     def setState(space: MockSpace, name: String, to: ScenarioState): IO[MockError, Unit] =
       dispatch(space)(cs => guardDefined(cs.scenarios, space.id, name)(putScenarioState(cs.port, cs.flowId, name, to)))(
         imp => guardDefined(imp.scenarios, space.id, name)(putScenarioState(imp.port, imp.port.toString, name, to))
       )
 
-  private def guardDefined(
+  private def guardDefined[A](
     scenarios: Ref[Map[String, ScenarioState]],
     spaceId: SpaceId,
     name: String
-  )(action: => IO[MockError, Unit]): IO[MockError, Unit] =
+  )(action: => IO[MockError, A]): IO[MockError, A] =
     scenarios.get.flatMap(s =>
       if s.contains(name) then action
       else ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${spaceId.value}"))
     )
 
+  // Reached only for a scenario the guard confirmed is declared (so `define` has pinned its state):
+  // a `Some` is its current state. A `None` here is anomalous — a declared scenario whose flow-state
+  // key vanished, or a genuine engine error the null-return can't distinguish — surfaced as a
+  // CommunicationError rather than masked as "no scenario" (which the guard already rules out).
   private def readState(port: Int, flowId: String, spaceId: SpaceId, name: String): IO[MockError, ScenarioState] =
-    RiftScenarioAdmin.readState(admin.client, admin.url, port, flowId, name).flatMap {
+    engine.flowStateGet(port, flowId, name).flatMap {
       case Some(s) => ZIO.succeed(ScenarioState(s))
-      case None    => ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${spaceId.value}"))
+      case None =>
+        ZIO.fail(MockError.CommunicationError(s"scenario '$name' on space ${spaceId.value} has no readable state"))
     }
 
   // flowId = the imposter port (PerInstance) / the correlation value (Correlated): the slice a
-  // request resolves its scenario state to.
+  // request resolves its scenario state to. Scenario state is flow-state keyed by the scenario name,
+  // stored as a JSON string — the same slice `set_scenario_state` writes (rift-core), so pinning via
+  // `rift_flow_state_put(name, "\"state\"")` is byte-identical to the admin `/scenarios/:name/state`.
   private def putScenarioState(port: Int, flowId: String, name: String, state: ScenarioState): IO[MockError, Unit] =
-    RiftScenarioAdmin.putState(admin.client, admin.url, port, flowId, name, state)
+    engine.flowStatePut(port, flowId, name, Json.Str(state.value).toJson)
 
   // ---------------------------------------------------------------------------
 
@@ -393,15 +402,19 @@ private[embedded] final case class EmbeddedRiftMockControl(
       tagged <- tagRules(rules)
       // Mirror serveImposter's release-on-error: if a stub POST fails partway, tear the half-built
       // space down so it can't orphan stubs on the shared imposter.
-      _ <- RiftCorrelatedSpace
-             .registerStubs(admin.client, admin.url, port, flowId, tagged)
-             .onError(_ => RiftCorrelatedSpace.deleteSpace(admin.client, admin.url, port, flowId).ignore)
+      _ <- EmbeddedCorrelatedSpace
+             .registerStubs(engine, port, flowId, tagged)
+             .onError(_ =>
+               EmbeddedCorrelatedSpace
+                 .deleteSpace(engine, port, flowId)
+                 .catchAllCause(c => ZIO.logWarningCause(s"rollback: teardown of half-built space $flowId failed", c))
+             )
       rulesRef  <- Ref.make(tagged)
       faultsRef <- Ref.make(Vector.empty[(RuleId, RequestMatch, FaultKind)])
       extrasRef <- Ref.make(Vector.empty[(RuleId, Json)])
       scen      <- Ref.make(Map.empty[String, ScenarioState])
       _ <- correlated.update(
-             _.updated(id, CorrSpace(port, flowId, corr.header, rulesRef, faultsRef, extrasRef, scen))
+             _.updated(id, CorrSpace(port, flowId, rulesRef, faultsRef, extrasRef, scen))
            )
     yield MockSpace(s"http://localhost:$port", req => req.copy(headers = req.headers.add(corr.header, flowId)), id)
 
@@ -429,7 +442,7 @@ private[embedded] final case class EmbeddedRiftMockControl(
       val act = priority match
         // Base appends (Rift's space POST appends).
         case Priority.Base =>
-          RiftCorrelatedSpace.postStub(admin.client, admin.url, cs.port, cs.flowId, rule.copy(id = Some(ruleId))) *>
+          EmbeddedCorrelatedSpace.postStub(engine, cs.port, cs.flowId, rule.copy(id = Some(ruleId))) *>
             cs.rules.update(_ :+ tagged)
         // Overlay must be first-match — rebuild with the prepended set.
         case Priority.Overlay =>
@@ -460,14 +473,14 @@ private[embedded] final case class EmbeddedRiftMockControl(
     tagRules(rules).flatMap(next => rebuildSpaceWith(cs, next) *> cs.rules.set(next))
 
   private def corrDestroy(spaceId: SpaceId, cs: CorrSpace): IO[MockError, Unit] =
-    RiftCorrelatedSpace.deleteSpace(admin.client, admin.url, cs.port, cs.flowId) *> correlated.update(_ - spaceId)
+    EmbeddedCorrelatedSpace.deleteSpace(engine, cs.port, cs.flowId) *> correlated.update(_ - spaceId)
 
   // Space-scoped recorded requests: the header-filtered admin query (rift#201) returns everything
   // recorded under this space's flowId — identical to the container adapter, so a cross-space
   // request (a different flowId) is excluded, while this space's own traffic (matched or not) is
   // returned. Parity with `RiftMockControl`; no client-side re-filtering.
   private def corrReceived(cs: CorrSpace): IO[MockError, List[RecordedRequest]] =
-    RiftCorrelatedSpace.received(admin.client, admin.url, cs.port, cs.flowId, cs.header)
+    EmbeddedCorrelatedSpace.received(engine, cs.port, cs.flowId)
 
   // rift#223 has no per-stub-in-space delete: re-register the space's stubs after a whole-space
   // teardown. Server-first — the caller commits tracking only on success. Re-register with the
@@ -488,7 +501,7 @@ private[embedded] final case class EmbeddedRiftMockControl(
     faults: Vector[(RuleId, RequestMatch, FaultKind)],
     rules: Vector[(RuleId, MockRule)]
   ): IO[MockError, Unit] =
-    RiftCorrelatedSpace.rebuild(admin.client, admin.url, cs.port, cs.flowId, extras, faults, rules)
+    EmbeddedCorrelatedSpace.rebuild(engine, cs.port, cs.flowId, extras, faults, rules)
 
   private def rulesOf(src: NormalizedSource): IO[MockError, List[MockRule]] =
     src.payload match
@@ -573,12 +586,6 @@ private[embedded] final case class EmbeddedRiftMockControl(
 private[embedded] object EmbeddedRiftMockControl:
 
   /**
-   * Where the v2 in-process admin plane is reachable, plus the HTTP client to
-   * reach it.
-   */
-  final case class Admin(url: String, client: Client)
-
-  /**
    * A live imposter: its bound port, the ordered portable rules tracked for
    * `rift_replace_stubs`, the pre-built capability stubs (#132/#185) and
    * scenario stubs (#193) re-registered ahead of the rules on every rebuild,
@@ -597,16 +604,17 @@ private[embedded] object EmbeddedRiftMockControl:
 
   /**
    * A Correlated space (rift#223): its shared imposter's port, its `flowId` on
-   * that imposter, the correlation `header` `received` filters by, the space's
-   * tracked portable rules, faults, and pre-built capability stubs (each
-   * re-registered ahead of the rules on a rebuild — rift#223 has no
-   * per-stub-in-space delete), and its defined scenarios' initial states (for
-   * reset). Mirrors the container adapter's `CorrSpace`.
+   * that imposter, the space's tracked portable rules, faults, and pre-built
+   * capability stubs (each re-registered ahead of the rules on a rebuild —
+   * rift#223 has no per-stub-in-space delete), and its defined scenarios'
+   * initial states (for reset). Mirrors the container adapter's `CorrSpace`
+   * (minus the correlation header: the space FFI filters `recorded` by the
+   * resolved flow id itself, so the adapter never re-filters). `flowId`
+   * addresses the space.
    */
   final case class CorrSpace(
     port: Int,
     flowId: String,
-    header: String,
     rules: Ref[Vector[(RuleId, MockRule)]],
     faults: Ref[Vector[(RuleId, RequestMatch, FaultKind)]],
     extras: Ref[Vector[(RuleId, Json)]],
@@ -627,7 +635,6 @@ private[embedded] object EmbeddedRiftMockControl:
   def make(
     engine: EmbeddedEngine,
     provisioning: Provisioning,
-    admin: Admin,
     mode: RiftMode = RiftMode.PerInstance
   ): URIO[Scope, MockControl] =
     for
@@ -635,6 +642,6 @@ private[embedded] object EmbeddedRiftMockControl:
       correlated <- Ref.make(Map.empty[SpaceId, CorrSpace])
       sharedPort <- Ref.Synchronized.make(Option.empty[Int])
       ids        <- Ref.make(0)
-      control     = EmbeddedRiftMockControl(engine, provisioning, mode, spaces, correlated, sharedPort, ids, admin)
+      control     = EmbeddedRiftMockControl(engine, provisioning, mode, spaces, correlated, sharedPort, ids)
       _          <- ZIO.addFinalizer(control.teardownShared)
     yield control

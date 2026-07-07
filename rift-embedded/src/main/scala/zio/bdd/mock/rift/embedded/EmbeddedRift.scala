@@ -3,8 +3,6 @@ package zio.bdd.mock.rift.embedded
 import zio.*
 import zio.bdd.mock.{MockControl, MockError, Provisioning}
 import zio.bdd.mock.rift.RiftMode
-import zio.http.Client
-import zio.json.ast.Json
 
 import java.nio.file.{Files, Path, StandardCopyOption}
 
@@ -25,14 +23,12 @@ import java.nio.file.{Files, Path, StandardCopyOption}
  * (`--enable-native-access` to silence the restricted-method warning).
  * Published as two variants from this one source: `zio-bdd-rift-embedded` for
  * **JDK 22+** (stable FFM, JEP 454) and `zio-bdd-rift-embedded-jdk21` for **JDK
- * 21** (preview FFM — also needs `--enable-preview`). Requires the C-ABI v2
- * (rift#343, `librift_ffi` ≥ v0.9.0) — a pre-v2 library fails fast at start
- * with a missing-symbol error.
+ * 21** (preview FFM — also needs `--enable-preview`). Requires `librift_ffi` ≥
+ * v0.11.0: the adapter drives Rift entirely over FFI, including the admin long
+ * tail (rift#411) — a pre-v0.11.0 library fails fast at start with a
+ * missing-symbol error when the bridge binds those mandatory symbols.
  */
 object EmbeddedRift:
-
-  // The engine binds the in-process admin API on loopback with an OS-assigned port (rift#343).
-  private val serveAdminOptions: String = Json.Obj("host" -> Json.Str("127.0.0.1"), "port" -> Json.Num(0)).toString
 
   /**
    * True iff a `librift_ffi` resolves for the host (a bundled native resource,
@@ -51,31 +47,18 @@ object EmbeddedRift:
    * A scoped [[MockControl]] backed by the in-process Rift engine, in the given
    * isolation `mode` (#203 adds Correlated — mirroring the container adapter,
    * but the shared imposter is FFI-created/-destroyed rather than
-   * HTTP-managed): `rift_start` plus `rift_serve_admin` (the in-process admin
-   * plane) on layer construction, `rift_stop` (and, in Correlated mode, the
-   * shared imposter's teardown) on close. Self-contained — it builds its own
-   * loopback HTTP client for the admin plane, so the public requirement stays
-   * just [[Provisioning]]. Fails with [[MockError.ProvisionFailed]] when no
-   * native library resolves for the host, or it cannot be loaded.
+   * HTTP-managed): `rift_start` on layer construction, `rift_stop` (and, in
+   * Correlated mode, the shared imposter's teardown) on close. Entirely FFI
+   * (#244) — no loopback HTTP admin plane, so the public requirement stays just
+   * [[Provisioning]]. Fails with [[MockError.ProvisionFailed]] when no native
+   * library resolves for the host, or it cannot be loaded.
    */
   def layer(mode: RiftMode): ZLayer[Provisioning, MockError, MockControl] =
     ZLayer.scoped {
       for
-        prov   <- ZIO.service[Provisioning]
-        engine <- startEngine
-        // Standing up the admin plane is part of constructing the backend, so a failure here is a
-        // ProvisionFailed (matching this layer's contract), not the raw CommunicationError.
-        adminInfo <-
-          engine
-            .serveAdmin(serveAdminOptions)
-            .mapError(e => MockError.ProvisionFailed(s"starting the embedded Rift admin plane: $e"))
-        client <- adminClient
-        control <- EmbeddedRiftMockControl.make(
-                     engine,
-                     prov,
-                     EmbeddedRiftMockControl.Admin(adminInfo.adminUrl, client),
-                     mode
-                   )
+        prov    <- ZIO.service[Provisioning]
+        engine  <- startEngine
+        control <- EmbeddedRiftMockControl.make(engine, prov, mode)
       yield control
     }
 
@@ -87,14 +70,6 @@ object EmbeddedRift:
       path   <- loadablePath(source)
       engine <- RiftFfi.start(path.toString)
     yield engine
-
-  // The loopback HTTP client for the in-process admin plane, owned by the layer's scope so the
-  // embedded adapter needs nothing from the environment but Provisioning (mirrors the container
-  // adapter's Client, but self-provided).
-  private def adminClient: ZIO[Scope, MockError, Client] =
-    Client.default.build
-      .map(_.get[Client])
-      .mapError(t => MockError.ProvisionFailed(s"building embedded Rift admin HTTP client: ${message(t)}"))
 
   // An override is already a real path; a bundled resource is extracted to a temp file (removed when
   // the JVM exits — the engine keeps the loaded library mapped, so the file is no longer needed).
@@ -116,6 +91,3 @@ object EmbeddedRift:
           val msg = Option(t.getMessage).filter(_.nonEmpty).fold("")(m => s": $m")
           MockError.ProvisionFailed(s"extracting bundled native '$resource': ${t.getClass.getSimpleName}$msg")
         }
-
-  private def message(t: Throwable): String =
-    Option(t.getMessage).getOrElse(t.getClass.getSimpleName)
