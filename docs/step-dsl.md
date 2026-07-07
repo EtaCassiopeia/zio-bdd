@@ -794,3 +794,50 @@ Assertions.assertBetween[A]    (min: Int, max: Int, collection: Iterable[A], lab
   `ZIO.attempt` boundary — still propagates, same Fail/Die caveat as `eventually`.) If a predicate
   can raise a typed error you do *not* want treated as an unsatisfied element, handle it first.
 
+---
+
+## 15. Change assertions with `Assertions.assertChange`
+
+A composable, readable upgrade over [`withSnapshot`](#8-withsnapshot-for-beforeafter-assertions)
+for "after a deposit of 100, the balance increased by 100." `assertChange(probe)(action)` captures
+`probe` before running `action`, re-probes after, and defers the check to a terminal:
+
+```scala
+Then("the deposit increases the balance by 100") {
+  Assertions.assertChange(ScenarioContext.get.map(_.balance)) {
+    When("a deposit of 100 is made") { ... }
+  }.by(100)
+}
+```
+
+### API
+
+```scala
+Assertions.assertChange[R, A](probe: ZIO[R, Throwable, A])(action: ZIO[R, Throwable, Unit]): ChangeAssertion[R, A]
+
+final class ChangeAssertion[R, A]:
+  def by(delta: A)(using Numeric[A]): ZIO[R, Throwable, Unit]  // changed by exactly delta
+  def from(before: A): ChangeAssertion.From[R, A]              // .from(x).to(y): exact before AND after
+  def toAnything: ZIO[R, Throwable, Unit]                      // changed at all (before != after)
+  def and[B](otherProbe: ZIO[R, Throwable, B]): ComposedChangeAssertion[R]
+
+final class ComposedChangeAssertion[R]:
+  def and[B](otherProbe: ZIO[R, Throwable, B]): ComposedChangeAssertion[R]
+  def assert: ZIO[R, Throwable, Unit]                          // run the shared action once; every probe must change
+```
+
+- **`.by(delta)`** requires a `Numeric[A]` and asserts `after - before == delta` (exact equality —
+  for approximate numeric comparison use a dedicated tolerance check).
+- **`.from(x).to(y)`** asserts the exact before *and* after values.
+- **`.toAnything`** asserts the value changed without pinning the delta.
+- **`.and(otherProbe)`** composes several probes over a **single** action — the action runs once
+  and every probe must change. It takes a bare *probe* (not a second `assertChange`), so there is
+  no way to supply a second action; chain more with `.and` and terminate with `.assert`:
+  `assertChange(a)(action).and(b).and(c).assert`.
+- Failure messages show the observed **before**, **after**, and **expected** values.
+
+> **Design note.** The environment is threaded as a single `R` (typically containing `State[S]`),
+> and `.by` takes `delta: A` directly — a simplification of the issue's sketched
+> `R & State[S]` / `.by[B](… A =:= B)` signatures that reads the same at call sites and infers
+> reliably.
+
