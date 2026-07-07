@@ -36,6 +36,39 @@ object Assertions {
   def assertEquals[A](actual: A, expected: A, message: String = "Values not equal"): ZIO[Any, Throwable, Unit] =
     evaluate(actual, equalTo(expected), s"$message: expected $expected, got $actual")
 
+  /**
+   * Assert that `actual` is within `delta` of `expected` — approximate equality
+   * for monetary / floating-point domains where exact `assertEquals` is the
+   * wrong tool. Passes when `abs(actual - expected) <= delta`. Works for any
+   * `Numeric` (`Double`, `BigDecimal`, …).
+   *
+   * {{{
+   *   Then("the total is about 19.99") {
+   *     ScenarioContext.get.flatMap(s => assertApproxEquals(s.total, 19.99, 0.01))
+   *   }
+   * }}}
+   */
+  def assertApproxEquals[A](actual: A, expected: A, delta: A, message: String = "")(using
+    num: Numeric[A]
+  ): ZIO[Any, Throwable, Unit] = {
+    val diff = num.abs(num.minus(actual, expected))
+    if (num.lteq(diff, delta)) ZIO.unit
+    else {
+      val prefix = if (message.nonEmpty) s"$message: " else ""
+      ZIO.fail(
+        new AssertionError(s"${prefix}expected $actual to be within $delta of $expected (difference was $diff)")
+      )
+    }
+  }
+
+  /**
+   * Fluent form of [[assertApproxEquals]]: `actual.shouldBeCloseTo(expected,
+   * delta)`.
+   */
+  extension [A: Numeric](actual: A)
+    def shouldBeCloseTo(expected: A, delta: A): ZIO[Any, Throwable, Unit] =
+      assertApproxEquals(actual, expected, delta)
+
   def assertThrows[E <: Throwable: ClassTag](
     zio: ZIO[Any, E, Any],
     message: String = "Expected exception not thrown"
