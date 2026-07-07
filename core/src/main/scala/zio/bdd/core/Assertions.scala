@@ -364,6 +364,29 @@ object Assertions {
       else ZIO.fail(new MultipleAssertionError(failures))
     }
 
+  /**
+   * A composable before/after change assertion — the deferred, readable upgrade
+   * over `withSnapshot` for "after a deposit of 100, the balance increased by
+   * 100." Captures `probe` before running `action`, re-probes after, and defers
+   * evaluation until a terminal: `.by(delta)`, `.from(x).to(y)`, `.toAnything`,
+   * or `.and(...)` composition.
+   *
+   * `R` is the probe's environment (typically containing `State[S]`), threaded
+   * through unchanged.
+   *
+   * {{{
+   *   Then("the deposit increases the balance by 100") {
+   *     assertChange(ScenarioContext.get.map(_.balance)) {
+   *       When("a deposit of 100 is made") { ... }
+   *     }.by(100)
+   *   }
+   * }}}
+   */
+  def assertChange[R, A](
+    probe: ZIO[R, Throwable, A]
+  )(action: ZIO[R, Throwable, Unit]): ChangeAssertion[R, A] =
+    new ChangeAssertion(probe, action)
+
   private def containsAllElements[A](expected: Iterable[A]): Assertion[Iterable[A]] =
     Assertion.assertion("containsAllElements") { actual =>
       expected.forall(e => actual.exists(_ == e))
@@ -375,3 +398,110 @@ final class MultipleAssertionError(val failures: List[String])
     extends AssertionError(
       s"${failures.length} assertion(s) failed:\n" + failures.mkString("  - ", "\n  - ", "")
     )
+
+/**
+ * A deferred before/after change assertion built by
+ * [[Assertions.assertChange]]. Terminals (`by` / `from().to()` / `toAnything`)
+ * run `action` once, capturing the probe before and after; `and` composes
+ * several probes over that single action.
+ */
+final class ChangeAssertion[R, A] private[core] (
+  private[core] val probe: ZIO[R, Throwable, A],
+  private[core] val action: ZIO[R, Throwable, Unit]
+) {
+  import ChangeAssertion.*
+
+  /** Assert the probed value changed by exactly `delta`. */
+  def by(delta: A)(using num: Numeric[A]): ZIO[R, Throwable, Unit] =
+    runAll(action, List(probeCheck(probe, byCheck(delta))))
+
+  /** Begin a `from(before).to(after)` exact before/after assertion. */
+  def from(before: A): ChangeAssertion.From[R, A] =
+    new ChangeAssertion.From(probe, action, before)
+
+  /** Assert the probed value changed at all (before != after). */
+  def toAnything: ZIO[R, Throwable, Unit] =
+    runAll(action, List(probeCheck(probe, changedCheck)))
+
+  /**
+   * Compose with another `probe` over the *same* action: the receiver's
+   * `action` is run once and both this probe and `otherProbe` must change.
+   * Taking a bare probe (rather than a second `assertChange`) makes the
+   * single-action contract unrepresentable-to-violate — there is no way to
+   * smuggle in a second action.
+   */
+  def and[B](otherProbe: ZIO[R, Throwable, B]): ComposedChangeAssertion[R] =
+    new ComposedChangeAssertion(
+      action,
+      List(probeCheck(probe, changedCheck[A]), probeCheck(otherProbe, changedCheck[B]))
+    )
+}
+
+object ChangeAssertion {
+  // A capture unit: running it snapshots the "before"; the effect it returns —
+  // run after the action — snapshots the "after" and yields a failure message,
+  // or None when the observed change is as expected. The element type is hidden
+  // in the closure so heterogeneous probes compose in one list.
+  private[core] type ProbeCheck[R] = ZIO[R, Throwable, ZIO[R, Throwable, Option[String]]]
+
+  private[core] def probeCheck[R, A](probe: ZIO[R, Throwable, A], check: (A, A) => Option[String]): ProbeCheck[R] =
+    probe.map(before => probe.map(after => check(before, after)))
+
+  private[core] def runAll[R](action: ZIO[R, Throwable, Unit], checks: List[ProbeCheck[R]]): ZIO[R, Throwable, Unit] =
+    for {
+      afters  <- ZIO.foreach(checks)(identity) // snapshot every "before", in order
+      _       <- action                        // one action for the whole assertion
+      results <- ZIO.foreach(afters)(identity) // snapshot every "after" and evaluate
+      failures = results.flatten
+      _ <- if (failures.isEmpty) ZIO.unit
+           else ZIO.fail(new AssertionError("assertChange failed:\n" + failures.mkString("  - ", "\n  - ", "")))
+    } yield ()
+
+  private[core] def byCheck[A](delta: A)(using num: Numeric[A]): (A, A) => Option[String] =
+    (before, after) => {
+      val actual = num.minus(after, before)
+      Option.unless(num.equiv(actual, delta))(
+        s"expected a change of $delta, but changed by $actual (before=$before, after=$after)"
+      )
+    }
+
+  private[core] def changedCheck[A]: (A, A) => Option[String] =
+    (before, after) => Option.when(before == after)(s"expected the value to change, but it stayed $before")
+
+  private[core] def fromToCheck[A](expectedBefore: A, expectedAfter: A): (A, A) => Option[String] =
+    (before, after) => {
+      val errs = List(
+        Option.when(before != expectedBefore)(s"expected before=$expectedBefore, got before=$before"),
+        Option.when(after != expectedAfter)(s"expected after=$expectedAfter, got after=$after")
+      ).flatten
+      Option.unless(errs.isEmpty)(errs.mkString("; "))
+    }
+
+  /** Intermediate builder for `from(before).to(after)`. */
+  final class From[R, A] private[core] (
+    probe: ZIO[R, Throwable, A],
+    action: ZIO[R, Throwable, Unit],
+    before: A
+  ) {
+    def to(after: A): ZIO[R, Throwable, Unit] =
+      runAll(action, List(probeCheck(probe, fromToCheck(before, after))))
+  }
+}
+
+/**
+ * Several change assertions composed over a single action (see
+ * [[ChangeAssertion.and]]). Every probe must change; `assert` runs the action
+ * once and evaluates them all.
+ */
+final class ComposedChangeAssertion[R] private[core] (
+  action: ZIO[R, Throwable, Unit],
+  checks: List[ChangeAssertion.ProbeCheck[R]]
+) {
+  import ChangeAssertion.*
+
+  def and[B](otherProbe: ZIO[R, Throwable, B]): ComposedChangeAssertion[R] =
+    new ComposedChangeAssertion(action, checks :+ probeCheck(otherProbe, changedCheck[B]))
+
+  def assert: ZIO[R, Throwable, Unit] =
+    runAll(action, checks)
+}
