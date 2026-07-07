@@ -866,3 +866,34 @@ Assertions.assertSatisfiesZIO[R, A](actual: A, description: String)(pred: A => Z
 - On failure the message is `expected <actual> to satisfy: <description>`.
 - `assertSatisfiesZIO` takes an **effectful** predicate; if the predicate's effect fails, that
   failure propagates unchanged (it is not turned into an assertion failure).
+
+---
+
+## 17. Inspecting a raised exception with `Assertions.assertRaises`
+
+An upgrade over `assertThrows` (which only checks the exception *type*): `assertRaises[E]` catches
+the exception raised by an effect and runs an inspection block on it, so you can assert on its
+message, cause, or fields.
+
+```scala
+Then("charging a declined card raises PaymentError") {
+  Assertions.assertRaises[PaymentError](chargeDeclinedCard) { e =>
+    Assertions.assertTrue(e.reason == "declined")
+  }
+}
+```
+
+### API
+
+```scala
+Assertions.assertRaises[E <: Throwable : ClassTag, R, A](
+  effect: ZIO[R, Throwable, A],
+  message: String = s"Expected <E> to be raised"
+)(inspect: E => ZIO[Any, Throwable, Unit]): ZIO[R, Throwable, Unit]
+```
+
+- **Passes** when `effect` raises an `E` and `inspect` succeeds. **Fails** when the effect succeeds
+  (nothing raised), raises a *different* type, or when `inspect` fails.
+- The exception is caught whether it surfaces as a typed failure or a defect; **interruption** is
+  not treated as a raised exception and propagates (cancellation is honored).
+- `inspect` is a `ZIO[Any, Throwable, Unit]`, so it composes with the other `assert*` helpers.
