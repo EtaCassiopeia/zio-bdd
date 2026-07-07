@@ -390,6 +390,49 @@ When("a very slow operation completes") {
 
 ---
 
+## Scenario retry tags
+
+For environmentally flaky acceptance tests, a scenario can be re-run automatically. Tag it in
+Gherkin with an integer argument, or configure it in code via `scenarioAspects`.
+
+| Tag | Semantics |
+|---|---|
+| `@retry(n)` | Re-run on failure, up to `n` attempts; pass on the first success. |
+| `@flaky(n)` | Run up to `n` attempts; pass if any succeeds (same outcome as `@retry`). |
+| `@nonFlaky(n)` | Run up to `n` attempts; pass only if **every** attempt passes (fail fast on the first failure). |
+
+```gherkin
+@retry(3)
+Scenario: provisions a fresh tenant
+  Given a clean environment
+  When a tenant is provisioned
+  Then the tenant is reachable
+```
+
+Or, without touching the feature file, override `scenarioAspects` (keyed by scenario name):
+
+```scala
+override def scenarioAspects: Map[String, ScenarioAspect] =
+  Map("provisions a fresh tenant" -> ScenarioAspect.Retry(3))
+```
+
+**Semantics & interactions**
+
+- Each attempt is fully independent: per-scenario state is reset and the `beforeScenario` /
+  `afterScenario` hooks run on every attempt.
+- A tag on the scenario takes precedence over the `scenarioAspects` map. `n` is clamped to `≥ 1`.
+- `stepTimeout` applies per step *within* each attempt, so a retried scenario's worst-case
+  wall-clock time is up to `n ×` the single-attempt time.
+- `@ignore` wins over a retry tag: an ignored scenario never runs and is not retried. Include/
+  exclude tag filtering is unaffected — the retry tags are not treated as filter labels.
+- The pretty reporter appends `(k attempts)` to a scenario that ran more than once; the count is
+  also available as `ScenarioResult.attempts` for custom reporters.
+- Retry tags are **scenario-level only** — a `@retry(n)` placed above `Feature:` does not apply to
+  the feature's scenarios; tag each scenario (or use `scenarioAspects`). An unrecognised or
+  malformed argument (e.g. `@retry(abc)`) is ignored and the scenario runs once.
+
+---
+
 
 ## IDE integration
 

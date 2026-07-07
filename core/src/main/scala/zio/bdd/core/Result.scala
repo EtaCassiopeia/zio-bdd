@@ -63,7 +63,12 @@ case class ScenarioResult(
   scenario: Scenario,
   stepResults: List[StepResult],
   setupError: Option[Cause[Throwable]] = None,
-  duration: Long = 0L
+  duration: Long = 0L,
+  /**
+   * How many times the scenario ran. 1 unless a retry aspect
+   * (@retry/@flaky/@nonFlaky) applied.
+   */
+  attempts: Int = 1
 ):
   def isPassed: Boolean   = stepResults.forall(r => r.isPassed || r.isSkipped) && setupError.isEmpty
   def isIgnored: Boolean  = scenario.isIgnored

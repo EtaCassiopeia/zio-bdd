@@ -174,6 +174,19 @@ object PrettyReporterSpec extends ZIOSpecDefault {
       val leaf    = DocBuilder.stepLeaf(skipped)
       assertTrue(leaf.style.color == Color.Gray, leaf.text.contains("SKIPPED"))
     },
+    test("scenarioBranch header shows the attempt count when a scenario was retried") {
+      val sc =
+        mkScenarioResult("retried scenario", List((StepType.GivenStep, "a step", StepStatus.Passed))).copy(attempts = 3)
+      DocBuilder.scenarioBranch(sc, isLast = true, featureIgnored = false, _ => emptyLogs) match
+        case Doc.Branch(header, _, _) => assertTrue(header.text.contains("3 attempts"))
+        case _                        => assertTrue(false)
+    },
+    test("scenarioBranch header omits the attempt count for a single-attempt scenario") {
+      val sc = mkScenarioResult("normal scenario", List((StepType.GivenStep, "a step", StepStatus.Passed)))
+      DocBuilder.scenarioBranch(sc, isLast = true, featureIgnored = false, _ => emptyLogs) match
+        case Doc.Branch(header, _, _) => assertTrue(!header.text.contains("attempt"))
+        case _                        => assertTrue(false)
+    },
     test("stepBranch with no logs and passed step is a Branch with no children") {
       val step = mkStep(StepType.GivenStep, "a step")
       val sr   = StepResult(step, Right(()), 0L)
