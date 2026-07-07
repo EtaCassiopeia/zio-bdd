@@ -45,6 +45,21 @@ object Assertions {
       case Right(_) => throw new AssertionError(message)
     }
 
+  /**
+   * Assert that `effect` raises an exception of type `E`, then run `inspect` on
+   * the caught exception — an upgrade over [[assertThrows]] (which only checks
+   * the type) for asserting on the exception's message, cause, or fields. The
+   * exception is caught whether it surfaces as a typed failure or a defect;
+   * interruption is not treated as a raised exception and propagates.
+   *
+   * {{{
+   *   Then("charging a declined card raises PaymentError") {
+   *     assertRaises[PaymentError](chargeDeclinedCard)(e => assertTrue(e.reason == "declined"))
+   *   }
+   * }}}
+   */
+  def assertRaises[E <: Throwable](using ct: ClassTag[E]): AssertRaises[E] = new AssertRaises[E](ct)
+
   def assertZIO[A](
     actual: A,
     assertion: Assertion[A],
@@ -428,6 +443,33 @@ final class MultipleAssertionError(val failures: List[String])
     extends AssertionError(
       s"${failures.length} assertion(s) failed:\n" + failures.mkString("  - ", "\n  - ", "")
     )
+
+/**
+ * Builder returned by [[Assertions.assertRaises]] so that only the exception
+ * type `E` is named explicitly while `R`/`A` are inferred from the effect.
+ */
+final class AssertRaises[E <: Throwable](private val ct: ClassTag[E]) {
+
+  def apply[R, A](effect: ZIO[R, Throwable, A], message: String = "")(
+    inspect: E => ZIO[Any, Throwable, Unit]
+  ): ZIO[R, Throwable, Unit] = {
+    given ClassTag[E] = ct
+    val prefix        = if (message.nonEmpty) message else s"Expected ${ct.runtimeClass.getSimpleName} to be raised"
+    effect.exit.flatMap {
+      case Exit.Success(_) =>
+        ZIO.fail(new AssertionError(s"$prefix, but no exception was thrown"))
+      case Exit.Failure(cause) =>
+        if (cause.isInterruptedOnly) ZIO.failCause(cause.stripFailures)
+        else
+          cause.failureOption.orElse(cause.dieOption) match {
+            case Some(e: E) => inspect(e)
+            case Some(other) =>
+              ZIO.fail(new AssertionError(s"$prefix, but a ${other.getClass.getName} was raised: ${other.getMessage}"))
+            case None => ZIO.fail(new AssertionError(s"$prefix, but no matchable exception was raised"))
+          }
+    }
+  }
+}
 
 /**
  * A deferred before/after change assertion built by
