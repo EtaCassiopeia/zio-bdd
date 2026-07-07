@@ -504,6 +504,29 @@ trait ZIOSteps[R: Tag, S: Tag: Default]
   private[bdd] final def overrideStepTimeout(d: Duration): Unit =
     _annotationStepTimeout = Some(d)
 
+  /**
+   * Override to control scenario parallelism at runtime, with the highest
+   * precedence — it wins over the `@Suite` annotation, the
+   * `--scenario-parallelism` CLI flag, and the `ZIO_BDD_SCENARIO_PARALLELISM`
+   * env var. Return `None` to defer to those. `n = 0` means auto
+   * (availableProcessors).
+   *
+   * {{{
+   * // sequential locally (CI env var absent), full parallelism in CI
+   * override def scenarioParallelism: Option[Int] =
+   *   Option(System.getenv("CI")).map(_ => 0).orElse(Some(1))
+   * }}}
+   */
+  def scenarioParallelism: Option[Int] = None
+
+  /**
+   * Override to control feature parallelism at runtime, with the highest
+   * precedence (see [[scenarioParallelism]]). Return `None` to defer to the
+   * `@Suite` annotation, the `--parallelism` CLI flag, or the
+   * `ZIO_BDD_FEATURE_PARALLELISM` env var.
+   */
+  def featureParallelism: Option[Int] = None
+
   // ── Step DSL operators ──────────────────────────────────────────────────
 
   extension [Out <: Tuple](se: StepExpression[Out])
