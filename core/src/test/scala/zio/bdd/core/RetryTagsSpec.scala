@@ -83,6 +83,54 @@ object RetryTagsSpec extends ZIOSpecDefault {
     Then("it is done")(ZIO.unit)
   }
 
+  /**
+   * The `When` step raises an interrupt-only `Cause` (the shape produced when a
+   * step is cancelled), without globally interrupting the run fiber — so the
+   * executor's handling of `Cause.Interrupt` is exercised deterministically.
+   */
+  class InterruptRaisingSteps(val attempts: AtomicInteger) extends ZIOSteps[Any, St] with DefaultTypedExtractor {
+    Given("a system")(ScenarioContext.update(_ => St()))
+    When("the interrupted action runs") {
+      ZIO.succeed(attempts.incrementAndGet()) *> ZIO.failCause(Cause.interrupt(zio.FiberId.None))
+    }
+    Then("it is done")(ZIO.unit)
+  }
+
+  /** A `beforeScenario` hook that raises an interrupt-only cause. */
+  class InterruptBeforeScenarioSteps(val hookRuns: AtomicInteger) extends ZIOSteps[Any, St] with DefaultTypedExtractor {
+    beforeScenario { (_: ScenarioMetadata) =>
+      ZIO.succeed(hookRuns.incrementAndGet()) *> ZIO.failCause(Cause.interrupt(zio.FiberId.None))
+    }
+    Given("a system")(ScenarioContext.update(_ => St()))
+    When("a step")(ZIO.unit)
+    Then("it is done")(ZIO.unit)
+  }
+
+  /**
+   * A `beforeStep` hook that raises an interrupt-only cause on the first step.
+   */
+  class InterruptBeforeStepSteps(val hookRuns: AtomicInteger) extends ZIOSteps[Any, St] with DefaultTypedExtractor {
+    beforeStep { (_: StepMetadata) =>
+      ZIO.succeed(hookRuns.incrementAndGet()) *> ZIO.failCause(Cause.interrupt(zio.FiberId.None))
+    }
+    Given("a system")(ScenarioContext.update(_ => St()))
+    When("a step")(ZIO.unit)
+    Then("it is done")(ZIO.unit)
+  }
+
+  /**
+   * An `afterStep` hook that raises an interrupt-only cause after the first
+   * (passing) step.
+   */
+  class InterruptAfterStepSteps(val hookRuns: AtomicInteger) extends ZIOSteps[Any, St] with DefaultTypedExtractor {
+    afterStep { (_: StepMetadata) =>
+      ZIO.succeed(hookRuns.incrementAndGet()) *> ZIO.failCause(Cause.interrupt(zio.FiberId.None))
+    }
+    Given("a system")(ScenarioContext.update(_ => St()))
+    When("a step")(ZIO.unit)
+    Then("it is done")(ZIO.unit)
+  }
+
   private val F = "retry.feature"
 
   private def run(content: String)(using steps: ZIOSteps[Any, St]) =
@@ -230,5 +278,46 @@ object RetryTagsSpec extends ZIOSpecDefault {
     }
   )
 
-  def spec = suite("RetryTagsSpec")(parsing, semantics, overrideAndInteractions)
+  // ── Interruption (issue #230) ───────────────────────────────────────────────
+  private val interruption = suite("interruption vs failure (#230)")(
+    test("an interrupted step propagates interruption instead of completing as a failed scenario (AC1)") {
+      val attempts                   = new AtomicInteger(0)
+      given steps: ZIOSteps[Any, St] = new InterruptRaisingSteps(attempts)
+      run(scenario("# no tag", when = "the interrupted action runs")).exit.map { exit =>
+        // Unfixed: the interrupt is recorded as a failed step, so the run completes (Success).
+        assertTrue(exit.isInterrupted, attempts.get() == 1)
+      }
+    },
+    test("@retry(n) does NOT re-run an interrupted scenario — cancellation is honored (AC2)") {
+      val attempts                   = new AtomicInteger(0)
+      given steps: ZIOSteps[Any, St] = new InterruptRaisingSteps(attempts)
+      run(scenario("@retry(3)", when = "the interrupted action runs")).exit.map { exit =>
+        // Unfixed: interrupt → failed attempt → retried 3×. Fixed: propagates on the first attempt.
+        assertTrue(exit.isInterrupted, attempts.get() == 1)
+      }
+    },
+    test("an interrupted beforeScenario hook propagates and is not retried") {
+      val hookRuns                   = new AtomicInteger(0)
+      given steps: ZIOSteps[Any, St] = new InterruptBeforeScenarioSteps(hookRuns)
+      run(scenario("@retry(3)", when = "a step")).exit.map { exit =>
+        assertTrue(exit.isInterrupted, hookRuns.get() == 1)
+      }
+    },
+    test("an interrupted beforeStep hook propagates and is not retried") {
+      val hookRuns                   = new AtomicInteger(0)
+      given steps: ZIOSteps[Any, St] = new InterruptBeforeStepSteps(hookRuns)
+      run(scenario("@retry(3)", when = "a step")).exit.map { exit =>
+        assertTrue(exit.isInterrupted, hookRuns.get() == 1)
+      }
+    },
+    test("an interrupted afterStep hook propagates and is not retried") {
+      val hookRuns                   = new AtomicInteger(0)
+      given steps: ZIOSteps[Any, St] = new InterruptAfterStepSteps(hookRuns)
+      run(scenario("@retry(3)", when = "a step")).exit.map { exit =>
+        assertTrue(exit.isInterrupted, hookRuns.get() == 1)
+      }
+    }
+  )
+
+  def spec = suite("RetryTagsSpec")(parsing, semantics, overrideAndInteractions, interruption)
 }

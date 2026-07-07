@@ -79,6 +79,10 @@ object ScenarioExecutor {
                             // setup is recorded as the scenario's setupError instead of running steps.
                             beforeExit <- suite.beforeScenarioHook(meta).exit
                             result <- beforeExit match {
+                                        // Cancellation of the setup hook must propagate, not be recorded as a
+                                        // retryable setup error (see the step-body note below).
+                                        case Exit.Failure(cause) if cause.isInterruptedOnly =>
+                                          ZIO.failCause(cause.stripFailures)
                                         case Exit.Failure(cause) =>
                                           ZIO.succeed(ScenarioResult(scenario, Nil, setupError = Some(cause)))
                                         case Exit.Success(_) =>
@@ -141,6 +145,9 @@ object ScenarioExecutor {
         startNanos  <- nowNanos
         beforeCause <- suite.beforeStepHook(stepMeta).foldCause[Option[Cause[Throwable]]](c => Some(c), _ => None)
         result <- beforeCause match {
+                    // Cancellation of a beforeStep hook propagates rather than becoming a retryable failure.
+                    case Some(cause) if cause.isInterruptedOnly =>
+                      ZIO.failCause(cause.stripFailures)
                     case Some(cause) =>
                       // A failing beforeStep hook fails the step; the step body is not run.
                       ZIO.succeed(StepResult(step, Left(cause)))
@@ -162,19 +169,31 @@ object ScenarioExecutor {
                                              effect
                                          }
                                          timedEffect.foldCauseZIO(
-                                           cause => ZIO.succeed(StepResult(step, Left(cause))),
+                                           cause =>
+                                             // A genuine external interruption (cancellation / shutdown) must
+                                             // propagate, not be recorded as a retryable step failure —
+                                             // otherwise retry tags would re-run a cancelled scenario. A per-step
+                                             // timeout surfaces as a StepTimeoutException (a typed failure), so it
+                                             // is not interrupt-only and stays a normal failed step.
+                                             if (cause.isInterruptedOnly) ZIO.failCause(cause.stripFailures)
+                                             else ZIO.succeed(StepResult(step, Left(cause))),
                                            _ => ZIO.succeed(StepResult(step, Right(())))
                                          )
                                        }
                                    )
                         afterCause <-
                           suite.afterStepHook(stepMeta).foldCause[Option[Cause[Throwable]]](c => Some(c), _ => None)
-                      } yield afterCause match {
-                        // A failing afterStep hook fails an otherwise-passed step; a step that has
-                        // already failed keeps its original cause.
-                        case Some(cause) if stepRes.outcome.isRight => StepResult(step, Left(cause))
-                        case _                                      => stepRes
-                      }
+                        merged <- afterCause match {
+                                    // Cancellation of an afterStep hook propagates rather than turning a
+                                    // (possibly passed) step into a retryable failure.
+                                    case Some(cause) if cause.isInterruptedOnly => ZIO.failCause(cause.stripFailures)
+                                    // A failing afterStep hook fails an otherwise-passed step; a step that has
+                                    // already failed keeps its original cause.
+                                    case Some(cause) if stepRes.outcome.isRight =>
+                                      ZIO.succeed(StepResult(step, Left(cause)))
+                                    case _ => ZIO.succeed(stepRes)
+                                  }
+                      } yield merged
                   }
         endNanos <- nowNanos
         duration  = (endNanos - startNanos) / 1_000_000L
