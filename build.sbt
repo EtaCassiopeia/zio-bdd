@@ -188,6 +188,10 @@ lazy val mimaSettings = Seq(
     ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.gherkin.Scenario.copy"),
     ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.FeatureExecutor.executeFeature"),
     ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.FeatureExecutor.executeFeatures"),
+    // #225: ScenarioResult gained a trailing `attempts: Int = 1` field (retry-tag support).
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.ScenarioResult.apply"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.ScenarioResult.this"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.ScenarioResult.copy"),
     ProblemFilters.exclude[MissingFieldProblem]("zio.bdd.core.report.Color.Yellow"),
     ProblemFilters.exclude[MissingFieldProblem]("zio.bdd.core.report.Color.PaleGreen"),
     ProblemFilters.exclude[MissingFieldProblem]("zio.bdd.core.report.Color.PaleCyan"),
