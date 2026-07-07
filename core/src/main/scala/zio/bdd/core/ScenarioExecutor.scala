@@ -23,17 +23,29 @@ object ScenarioExecutor {
       ZIO.succeed(ScenarioResult(scenario, Nil, setupError = None))
     } else {
       val attempt = runAttempt[R, S](scenario, suite, dryRun, flagValues, stepTimeout)
-      resolveAspect(scenario, suite) match {
-        case None                             => attempt
-        case Some(ScenarioAspect.Retry(n))    => runUntilPass(n, attempt)
-        case Some(ScenarioAspect.Flaky(n))    => runUntilPass(n, attempt)
-        case Some(ScenarioAspect.NonFlaky(n)) => runUntilFail(n, attempt)
-      }
+      val aspects = resolveAspects(scenario, suite)
+      // In dry-run only step *wiring* is validated (every step trivially passes), so the
+      // @expectedFailure inversion must not turn that into an "unexpectedly passing" failure.
+      if (!dryRun && aspects.contains(ScenarioAspect.ExpectedFailure))
+        // @expectedFailure wins over retry: run once and invert the outcome.
+        attempt.map(_.copy(expectedFailure = true))
+      else
+        retryAspectOf(aspects) match {
+          case Some(ScenarioAspect.Retry(n))    => runUntilPass(n, attempt)
+          case Some(ScenarioAspect.Flaky(n))    => runUntilPass(n, attempt)
+          case Some(ScenarioAspect.NonFlaky(n)) => runUntilFail(n, attempt)
+          case _                                => attempt
+        }
     }
 
-  // A scenario tag wins over the code-side `scenarioAspects` map.
-  private def resolveAspect[R, S](scenario: Scenario, suite: ZIOSteps[R, S]): Option[ScenarioAspect] =
-    ScenarioAspect.fromTags(scenario.tags).orElse(suite.scenarioAspects.get(scenario.name))
+  // All aspects on the scenario: from tags plus the code-side `scenarioAspects` map.
+  private def resolveAspects[R, S](scenario: Scenario, suite: ZIOSteps[R, S]): List[ScenarioAspect] =
+    (scenario.tags.flatMap(ScenarioAspect.fromTag) ++ suite.scenarioAspects.get(scenario.name).toList).distinct
+
+  private def retryAspectOf(aspects: List[ScenarioAspect]): Option[ScenarioAspect] =
+    aspects.collectFirst { case a @ (ScenarioAspect.Retry(_) | ScenarioAspect.Flaky(_) | ScenarioAspect.NonFlaky(_)) =>
+      a
+    }
 
   // @retry / @flaky: re-run up to n times, stopping at the first passing result.
   private def runUntilPass[Env](

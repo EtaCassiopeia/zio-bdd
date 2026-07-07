@@ -433,6 +433,38 @@ override def scenarioAspects: Map[String, ScenarioAspect] =
 
 ---
 
+## Expected-failure scenarios
+
+Mark a scenario that is *known* to fail (a pending fix, a known bug) with `@expectedFailure`
+(alias `@failing`) so CI reads it as an expected failure rather than a red build — while still
+running the body, so the tag can't silently rot.
+
+```gherkin
+@expectedFailure
+Scenario: refunds are not yet prorated
+  Given a partial refund is requested
+  When the refund is issued
+  Then the prorated amount is returned   # currently fails — tracked in #NNN
+```
+
+- If the body **fails**, the scenario is reported as **`XFAIL (expected)`** and does **not** fail
+  the build. If the body **passes**, it is reported as **`UNEXPECTEDLY PASSED`** and **does** fail
+  the build — so once the underlying bug is fixed you're told to remove the tag.
+- Distinct from `pending` (an *unimplemented* step): `@expectedFailure` expects the body to run and
+  fail.
+- Available in code via the `scenarioAspects` map: `Map("scenario name" -> ScenarioAspect.ExpectedFailure)`.
+- **Only the scenario body is inverted.** A *setup* failure (a failing `beforeScenario` hook, a
+  broken environment) is always a real failure — `@expectedFailure` never masks infrastructure
+  breakage as an expected failure.
+- **Interactions:** `@ignore` wins (an ignored scenario never runs). `@expectedFailure` takes
+  precedence over the retry tags — a scenario marked `@expectedFailure` runs **once** (retrying a
+  known failure is contradictory). Under `--dry-run` the inversion is skipped (dry-run only
+  validates step wiring). It is a scenario-level tag and is **not** applied to `@property`
+  scenarios (which have their own execution path). `ScenarioResult` exposes `isExpectedFailure` /
+  `isUnexpectedlyPassing` for custom reporters.
+
+---
+
 
 ## IDE integration
 
