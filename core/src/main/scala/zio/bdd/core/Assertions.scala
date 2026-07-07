@@ -199,6 +199,32 @@ object Assertions {
     eventually(fetch.flatMap(assertion), maxTime)
 
   /**
+   * The inverse of [[eventually]]: assert that `condition` *stays* true for the
+   * whole `duration`, re-probing every `interval`. Fails fast on the first
+   * violation, surfacing that underlying failure — a transient breach that
+   * recovers mid-`interval` between probes can still be missed, so pick an
+   * `interval` fine enough for the property under test.
+   *
+   * The wait stays interruptible, so an outer `stepTimeout` (or any enclosing
+   * timeout) is a hard cap; keep `duration` ≤ that timeout. As with
+   * [[eventually]], only typed failures count as a violation — a defect from
+   * `condition` (an exception thrown outside a `ZIO.attempt` boundary)
+   * propagates immediately.
+   *
+   * {{{
+   *   Then("the balance stays zero after the cancelled transaction") {
+   *     during(ScenarioContext.get.flatMap(s => assertEquals(s.balance, 0)), duration = 2.seconds)
+   *   }
+   * }}}
+   */
+  def during[R](
+    condition: ZIO[R, Throwable, Unit],
+    duration: Duration,
+    interval: Duration = 200.millis
+  ): ZIO[R, Throwable, Unit] =
+    condition.repeat(Schedule.spaced(interval) && Schedule.upTo(duration)).unit
+
+  /**
    * Run all assertions and collect every failure into a single
    * `MultipleAssertionError`.
    *

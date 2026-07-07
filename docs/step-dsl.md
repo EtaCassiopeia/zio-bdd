@@ -716,3 +716,40 @@ Assertions.eventuallyAssert[R, A](
   effect that may throw in `ZIO.attempt` so the throw becomes a retryable failure — the `assert*`
   helpers already do this.
 
+---
+
+## 13. Stability with `Assertions.during`
+
+The inverse of `eventually`: assert a condition *stays* true for a window rather than *becomes*
+true. Use it for negative/stability properties — "the balance must remain zero for 2s after a
+cancelled transaction", "the Rift imposter must record no new requests during a quiesce period". A
+`ZIO.sleep(d) *> assertOnce` can't catch a transient violation that recovered mid-sleep; `during`
+re-probes continuously and fails the moment the property is breached.
+
+```scala
+Then("the balance stays zero after the cancelled transaction") {
+  Assertions.during(
+    ScenarioContext.get.flatMap(s => Assertions.assertEquals(s.balance, 0)),
+    duration = 2.seconds
+  )
+}
+```
+
+### API
+
+```scala
+Assertions.during[R](
+  condition: ZIO[R, Throwable, Unit],
+  duration: Duration,
+  interval: Duration = 200.millis
+): ZIO[R, Throwable, Unit]
+```
+
+- **Fails fast** on the first probe that fails, surfacing that underlying failure (not a generic
+  "stability check failed"). Passes only if `condition` holds on every probe across `duration`.
+- **Sampling, not continuous.** A breach that appears and recovers entirely between two probes can
+  be missed — choose an `interval` fine enough for the property under test.
+- **No `zio.Schedule`/`Clock` import** needed at the call site; the defaults live in `Assertions`.
+- **Interruptible**, and respects the enclosing `stepTimeout` — keep `duration` ≤ `stepTimeout`.
+  Only typed failures count as a violation (same Fail/Die caveat as `eventually`).
+
