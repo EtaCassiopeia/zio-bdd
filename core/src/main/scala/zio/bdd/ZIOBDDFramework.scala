@@ -192,8 +192,10 @@ class ZIOBDDTask(
     val program = suiteInstance
       .run(
         updateFeatures,
-        featureParallelism = config.featureParallelism,
-        scenarioParallelism = config.scenarioParallelism,
+        featureParallelism =
+          ZIOBDDTask.effectiveParallelism(suiteInstance.featureParallelism, config.featureParallelism),
+        scenarioParallelism =
+          ZIOBDDTask.effectiveParallelism(suiteInstance.scenarioParallelism, config.scenarioParallelism),
         dryRun = config.dryRun
       )
       .tap { results =>
@@ -290,13 +292,23 @@ class ZIOBDDTask(
       focused = args.contains("--focused")
     )
 
+    // Option B: CI-wide env override, slotted between the CLI flag and the annotation.
+    val envFeatureParallelism  = ZIOBDDTask.parseEnvParallelism(sys.env.get("ZIO_BDD_FEATURE_PARALLELISM"))
+    val envScenarioParallelism = ZIOBDDTask.parseEnvParallelism(sys.env.get("ZIO_BDD_SCENARIO_PARALLELISM"))
+
     BDDTestConfig(
       featureFiles = if (cliConfig.featureFiles.nonEmpty) cliConfig.featureFiles else annoConfig.featureFiles,
       reporters = if (cliConfig.reporters.nonEmpty) cliConfig.reporters else annoConfig.reporters,
-      featureParallelism =
-        if (cliConfig.featureParallelism != 1) cliConfig.featureParallelism else annoConfig.featureParallelism,
-      scenarioParallelism =
-        if (cliConfig.scenarioParallelism != 0) cliConfig.scenarioParallelism else annoConfig.scenarioParallelism,
+      featureParallelism = ZIOBDDTask.resolveFeatureParallelism(
+        cliConfig.featureParallelism,
+        envFeatureParallelism,
+        annoConfig.featureParallelism
+      ),
+      scenarioParallelism = ZIOBDDTask.resolveScenarioParallelism(
+        cliConfig.scenarioParallelism,
+        envScenarioParallelism,
+        annoConfig.scenarioParallelism
+      ),
       includeTags = if (cliConfig.includeTags.nonEmpty) cliConfig.includeTags else annoConfig.includeTags,
       excludeTags = if (cliConfig.excludeTags.nonEmpty) cliConfig.excludeTags else annoConfig.excludeTags,
       logLevel = if (cliConfig.logLevel != InternalLogLevel.Info) cliConfig.logLevel else annoConfig.logLevel,
@@ -489,6 +501,38 @@ class ZIOBDDTask(
 }
 
 object ZIOBDDTask {
+
+  /**
+   * Parse a `ZIO_BDD_*_PARALLELISM` env value: `"auto"` → `Some(0)`, a valid
+   * integer → `Some(n)`, and empty/absent/garbage → `None` (defer to the next
+   * source in the precedence chain).
+   */
+  def parseEnvParallelism(raw: Option[String]): Option[Int] =
+    raw.filter(_.nonEmpty).flatMap(s => if (s == "auto") Some(0) else s.toIntOption)
+
+  /**
+   * Resolve scenario parallelism across CLI > env > annotation. The CLI "unset"
+   * sentinel is `0` (auto), so a non-zero CLI value wins; otherwise the env
+   * value applies, else the annotation value.
+   */
+  def resolveScenarioParallelism(cli: Int, env: Option[Int], anno: Int): Int =
+    if (cli != 0) cli else env.getOrElse(anno)
+
+  /**
+   * Resolve feature parallelism across CLI > env > annotation. The CLI "unset"
+   * sentinel is `1` (sequential), so a CLI value other than `1` wins; otherwise
+   * the env value applies, else the annotation value.
+   */
+  def resolveFeatureParallelism(cli: Int, env: Option[Int], anno: Int): Int =
+    if (cli != 1) cli else env.getOrElse(anno)
+
+  /**
+   * Apply the suite-level override (Option A), which has the highest
+   * precedence: `Some(n)` wins over the already-resolved config value; `None`
+   * defers to it.
+   */
+  def effectiveParallelism(suiteOverride: Option[Int], configValue: Int): Int =
+    suiteOverride.getOrElse(configValue)
 
   /**
    * Apply include/exclude tag filters and the scenario-name filter to a list of

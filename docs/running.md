@@ -289,6 +289,51 @@ sbt "testOnly com.example.MySuite -- --parallelism 4 --scenario-parallelism 2"
 This runs up to 4 features concurrently, each with up to 2 scenarios concurrently,
 for a maximum of 8 concurrent scenario executions.
 
+### Runtime overrides and precedence
+
+A static `@Suite` value can't be right in every environment. A common case: a suite backed by
+a single embedded resource (e.g. a local DynamoDB container) must run sequentially locally, but
+can use full parallelism in CI where the resource is provisioned to handle load. Because
+annotation values are compile-time constants, you can't branch on an env var inside `@Suite`.
+
+Two runtime overrides close that gap. Both `scenarioParallelism` and `featureParallelism`
+resolve through this chain, **highest precedence first**:
+
+| # | Source | How to set |
+|---|--------|------------|
+| 1 | Suite override (Scala) | `override def scenarioParallelism: Option[Int]` in the suite |
+| 2 | CLI flag | `--scenario-parallelism <n>` / `--parallelism <n>` |
+| 3 | Env var | `ZIO_BDD_SCENARIO_PARALLELISM` / `ZIO_BDD_FEATURE_PARALLELISM` |
+| 4 | `@Suite` annotation | `@Suite(scenarioParallelism = n)` (compile-time default) |
+
+The env var accepts an integer or `auto` (equivalent to `0`); an empty or unparseable value is
+ignored, deferring to the annotation. It is a JVM-wide default, shared by every suite in the fork.
+
+> **Note on CLI defaults.** The "unset" CLI sentinel is in-band: `--scenario-parallelism` defaults
+> to `0` (auto) and `--parallelism` to `1` (sequential). Passing exactly that default value on the
+> CLI is indistinguishable from omitting the flag, so it is treated as *unset* and an env var or
+> `@Suite` value can still apply. To force sequential scenarios regardless of the environment, use
+> the suite override (`override def scenarioParallelism = Some(1)`) rather than `--scenario-parallelism 1`.
+
+The suite override (`def scenarioParallelism: Option[Int] = None` / `def featureParallelism`)
+wins over everything when it returns `Some`. Returning `None` (the default) defers to the CLI
+flag, env var, and annotation as above. This lets you decide in plain Scala:
+
+```scala
+@Suite(featureDirs = Array("src/test/resources/features"))
+object LedgerSuite extends ZIOSteps[LedgerEnv, LedgerState]:
+  // Sequential locally (CI env var absent), full parallelism (auto) in CI.
+  override def scenarioParallelism: Option[Int] =
+    Option(System.getenv("CI")).map(_ => 0).orElse(Some(1))
+```
+
+Or set it CI-wide with no change to any suite:
+
+```sh
+ZIO_BDD_SCENARIO_PARALLELISM=auto sbt test   # CI: full parallelism
+sbt test                                      # local: falls back to the @Suite value
+```
+
 ---
 
 ## Step timeout
