@@ -19,49 +19,91 @@ object ScenarioExecutor {
     stepTimeout: Option[Duration] = None
   ): ZIO[R & StepRegistry[R, S], Nothing, ScenarioResult] =
     if (scenario.isIgnored) {
+      // An ignored scenario never runs — retry aspects do not apply to it.
       ZIO.succeed(ScenarioResult(scenario, Nil, setupError = None))
     } else {
-      ZIO.scoped {
-        for {
-          stateRef <- FiberRef.make(Default[S].default)
-          // Per-scenario staging is scoped to the scenario and auto-restored on scope close,
-          // so values cannot leak into the next scenario even if a step is interrupted.
-          _             <- Stage.ref.locallyScoped(Map.empty)
-          _             <- Stage.currentStepLabel.locallyScoped("")
-          scenarioScope <- ZIO.scope
-          meta           = ScenarioMetadata.from(scenario, flagValues)
-          scenarioResult <- (for {
-                              startNanos <- nowNanos
-                              // Run beforeScenario setup to completion BEFORE any step. A failing
-                              // setup is recorded as the scenario's setupError instead of running steps.
-                              beforeExit <- suite.beforeScenarioHook(meta).exit
-                              result <- beforeExit match {
-                                          case Exit.Failure(cause) =>
-                                            ZIO.succeed(ScenarioResult(scenario, Nil, setupError = Some(cause)))
-                                          case Exit.Success(_) =>
-                                            computeEffectiveStepTypes(scenario.steps).either.flatMap {
-                                              case Left(throwable) =>
-                                                ZIO.succeed(
-                                                  ScenarioResult(
-                                                    scenario,
-                                                    Nil,
-                                                    setupError = Some(Cause.fail(throwable))
-                                                  )
-                                                )
-                                              case Right(stepsWithTypes) =>
-                                                executeSteps[R, S](scenario, stepsWithTypes, suite, dryRun, stepTimeout)
-                                            }
-                                        }
-                              endNanos <- nowNanos
-                              duration  = (endNanos - startNanos) / 1_000_000L
-                            } yield result.copy(duration = duration))
-                              // afterScenario teardown always runs, even on failure or interruption.
-                              .ensuring(suite.afterScenarioHook(meta))
-                              .provideSomeLayer[StepRegistry[R, S] & R](
-                                State.layer(stateRef) ++ ZLayer.succeed(scenarioScope)
-                              )
-        } yield scenarioResult
+      val attempt = runAttempt[R, S](scenario, suite, dryRun, flagValues, stepTimeout)
+      resolveAspect(scenario, suite) match {
+        case None                             => attempt
+        case Some(ScenarioAspect.Retry(n))    => runUntilPass(n, attempt)
+        case Some(ScenarioAspect.Flaky(n))    => runUntilPass(n, attempt)
+        case Some(ScenarioAspect.NonFlaky(n)) => runUntilFail(n, attempt)
       }
+    }
+
+  // A scenario tag wins over the code-side `scenarioAspects` map.
+  private def resolveAspect[R, S](scenario: Scenario, suite: ZIOSteps[R, S]): Option[ScenarioAspect] =
+    ScenarioAspect.fromTags(scenario.tags).orElse(suite.scenarioAspects.get(scenario.name))
+
+  // @retry / @flaky: re-run up to n times, stopping at the first passing result.
+  private def runUntilPass[Env](
+    n: Int,
+    attempt: ZIO[Env, Nothing, ScenarioResult]
+  ): ZIO[Env, Nothing, ScenarioResult] = {
+    def loop(k: Int): ZIO[Env, Nothing, ScenarioResult] =
+      attempt.flatMap(r => if (r.isPassed || k >= n) ZIO.succeed(r.copy(attempts = k)) else loop(k + 1))
+    loop(1)
+  }
+
+  // @nonFlaky: re-run up to n times, stopping at the first failing result (fail fast).
+  private def runUntilFail[Env](
+    n: Int,
+    attempt: ZIO[Env, Nothing, ScenarioResult]
+  ): ZIO[Env, Nothing, ScenarioResult] = {
+    def loop(k: Int): ZIO[Env, Nothing, ScenarioResult] =
+      attempt.flatMap(r => if (!r.isPassed || k >= n) ZIO.succeed(r.copy(attempts = k)) else loop(k + 1))
+    loop(1)
+  }
+
+  // One scenario attempt: fresh per-scenario state and staging, before/after hooks included, so
+  // every retry attempt is fully independent.
+  private def runAttempt[R: Tag, S: Tag: Default](
+    scenario: Scenario,
+    suite: ZIOSteps[R, S],
+    dryRun: Boolean,
+    flagValues: Map[String, String],
+    stepTimeout: Option[Duration]
+  ): ZIO[R & StepRegistry[R, S], Nothing, ScenarioResult] =
+    ZIO.scoped {
+      for {
+        stateRef <- FiberRef.make(Default[S].default)
+        // Per-scenario staging is scoped to the scenario and auto-restored on scope close,
+        // so values cannot leak into the next scenario even if a step is interrupted.
+        _             <- Stage.ref.locallyScoped(Map.empty)
+        _             <- Stage.currentStepLabel.locallyScoped("")
+        scenarioScope <- ZIO.scope
+        meta           = ScenarioMetadata.from(scenario, flagValues)
+        scenarioResult <- (for {
+                            startNanos <- nowNanos
+                            // Run beforeScenario setup to completion BEFORE any step. A failing
+                            // setup is recorded as the scenario's setupError instead of running steps.
+                            beforeExit <- suite.beforeScenarioHook(meta).exit
+                            result <- beforeExit match {
+                                        case Exit.Failure(cause) =>
+                                          ZIO.succeed(ScenarioResult(scenario, Nil, setupError = Some(cause)))
+                                        case Exit.Success(_) =>
+                                          computeEffectiveStepTypes(scenario.steps).either.flatMap {
+                                            case Left(throwable) =>
+                                              ZIO.succeed(
+                                                ScenarioResult(
+                                                  scenario,
+                                                  Nil,
+                                                  setupError = Some(Cause.fail(throwable))
+                                                )
+                                              )
+                                            case Right(stepsWithTypes) =>
+                                              executeSteps[R, S](scenario, stepsWithTypes, suite, dryRun, stepTimeout)
+                                          }
+                                      }
+                            endNanos <- nowNanos
+                            duration  = (endNanos - startNanos) / 1_000_000L
+                          } yield result.copy(duration = duration))
+                            // afterScenario teardown always runs, even on failure or interruption.
+                            .ensuring(suite.afterScenarioHook(meta))
+                            .provideSomeLayer[StepRegistry[R, S] & R](
+                              State.layer(stateRef) ++ ZLayer.succeed(scenarioScope)
+                            )
+      } yield scenarioResult
     }
 
   private def executeSteps[R: Tag, S: Tag: Default](

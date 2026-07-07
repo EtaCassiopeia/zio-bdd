@@ -527,6 +527,18 @@ trait ZIOSteps[R: Tag, S: Tag: Default]
    */
   def featureParallelism: Option[Int] = None
 
+  /**
+   * Override to apply scenario-level retry policies in code, keyed by scenario
+   * name — an alternative to the `@retry(n)` / `@flaky(n)` / `@nonFlaky(n)`
+   * Gherkin tags. A tag on the scenario takes precedence over this map.
+   *
+   * {{{
+   * override def scenarioAspects: Map[String, ScenarioAspect] =
+   *   Map("provisions a fresh tenant" -> ScenarioAspect.Retry(3))
+   * }}}
+   */
+  def scenarioAspects: Map[String, zio.bdd.core.ScenarioAspect] = Map.empty
+
   // ── Step DSL operators ──────────────────────────────────────────────────
 
   extension [Out <: Tuple](se: StepExpression[Out])

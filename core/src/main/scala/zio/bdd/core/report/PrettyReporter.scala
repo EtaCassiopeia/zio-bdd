@@ -442,8 +442,9 @@ object DocBuilder:
     val effectiveIgnored = featureIgnored || sc.isIgnored
     val sty              = summon[StatusColor[ScenarioResult]].style(sc)
     val loc              = sc.scenario.line.map(l => s":$l").getOrElse("")
+    val attemptStr       = if (sc.attempts > 1) s" (${sc.attempts} attempts)" else ""
     val header = Doc.Leaf(
-      text = s"Scenario: ${sc.scenario.name}$loc - ${statusText(sc)}${durStr(sc.duration)}",
+      text = s"Scenario: ${sc.scenario.name}$loc - ${statusText(sc)}${durStr(sc.duration)}$attemptStr",
       style = sty
     )
     val stepDocs =
