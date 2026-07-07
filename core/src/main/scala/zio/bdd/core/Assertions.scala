@@ -244,6 +244,35 @@ object Assertions {
     eventually(fetch.flatMap(assertion), maxTime)
 
   /**
+   * Companion to [[eventually]] that separates the `probe` (run once per
+   * attempt) from the `assertion` (retried), re-probing every `interval` until
+   * the assertion holds or `maxTime` elapses. On timeout the last assertion
+   * failure is surfaced — annotated with the last polled value — rather than a
+   * generic "timed out".
+   *
+   * The wait stays interruptible, so an outer `stepTimeout` (or any enclosing
+   * timeout) is a hard cap; keep `maxTime` ≤ that timeout. Only typed failures
+   * are retried (same Fail/Die caveat as [[eventually]]).
+   *
+   * {{{
+   *   Then("the job eventually reports DONE") {
+   *     poll(fetchJobStatus)(status => assertEquals(status, "DONE"))
+   *   }
+   * }}}
+   */
+  def poll[R, A](
+    probe: ZIO[R, Throwable, A],
+    maxTime: Duration = 10.seconds,
+    interval: Duration = 200.millis
+  )(assertion: A => ZIO[Any, Throwable, Unit]): ZIO[R, Throwable, Unit] =
+    probe.flatMap { value =>
+      assertion(value).mapError { err =>
+        val detail = Option(err.getMessage).getOrElse(err.getClass.getName)
+        new AssertionError(s"poll assertion did not hold (last polled value: $value): $detail", err)
+      }
+    }.retry(Schedule.spaced(interval) && Schedule.upTo(maxTime))
+
+  /**
    * The inverse of [[eventually]]: assert that `condition` *stays* true for the
    * whole `duration`, re-probing every `interval`. Fails fast on the first
    * violation, surfacing that underlying failure — a transient breach that

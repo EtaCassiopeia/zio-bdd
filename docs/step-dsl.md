@@ -897,3 +897,36 @@ Assertions.assertRaises[E <: Throwable : ClassTag, R, A](
 - The exception is caught whether it surfaces as a typed failure or a defect; **interruption** is
   not treated as a raised exception and propagates (cancellation is honored).
 - `inspect` is a `ZIO[Any, Throwable, Unit]`, so it composes with the other `assert*` helpers.
+
+---
+
+## 18. Polling a probe with `Assertions.poll`
+
+A companion to [`eventually`](#12-polling-with-assertionseventually--eventuallyassert) that
+separates the **probe** (run once per attempt) from the **assertion** (retried) — useful when the
+probe is expensive and you want the failure message to foreground the *last polled value*.
+
+```scala
+Then("the job eventually reports DONE") {
+  Assertions.poll(fetchJobStatus)(status => Assertions.assertEquals(status, "DONE"))
+}
+```
+
+### API
+
+```scala
+Assertions.poll[R, A](
+  probe: ZIO[R, Throwable, A],
+  maxTime: Duration = 10.seconds,
+  interval: Duration = 200.millis
+)(assertion: A => ZIO[Any, Throwable, Unit]): ZIO[R, Throwable, Unit]
+```
+
+- Re-probes every `interval` until the `assertion` holds or `maxTime` elapses.
+- **On timeout the last assertion failure is surfaced**, annotated with the last polled value
+  (`poll assertion did not hold (last polled value: …): …`) — not a generic "timed out".
+- Configurable `maxTime` and `interval` with sensible defaults. **Interruptible**, and respects the
+  enclosing `stepTimeout` — keep `maxTime` ≤ `stepTimeout`. Only typed failures are retried (same
+  Fail/Die caveat as `eventually`).
+- If the **probe itself** keeps failing (never yields a value), its own error is surfaced on
+  timeout — there is no last-polled-value annotation, since nothing was successfully polled.
