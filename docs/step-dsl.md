@@ -657,3 +657,62 @@ the step into helper methods.
 - **`withSnapshot`** — capture a state value before an action, assert after
   (see [§8 above](#8-withsnapshot-for-beforeafter-assertions))
 
+---
+
+## 12. Polling with `Assertions.eventually` / `eventuallyAssert`
+
+When the system under test is *eventually consistent* — feature-flag propagation, async
+message-queue consumers, mock reload, distributed state — a step must wait for a condition to
+become true. A blind `ZIO.sleep(worstCase)` is both slow and flaky. `eventually` retries an
+effect until it succeeds or a time budget elapses, proceeding the moment the condition holds.
+
+```scala
+// Before: fixed worst-case margin — slow when fast, flaky when slow
+When("flag propagation is observed") {
+  ScenarioContext.get.flatMap(_ => ZIO.sleep(5.seconds))
+}
+
+// After: proceeds as soon as the flag flips, up to 8s
+When("flag propagation is observed") {
+  Assertions.eventually(
+    getFlagStatus.filterOrFail(_ == "ON")(RuntimeException("flag not ON yet")),
+    maxTime = 8.seconds
+  )
+}
+```
+
+`eventuallyAssert` is a convenience overload that probes a value with `fetch`, runs an
+assertion against it, and retries the pair:
+
+```scala
+Then("the balance is eventually settled") {
+  Assertions.eventuallyAssert(fetchBalance)(b => Assertions.assertEquals(b, expected))
+}
+```
+
+### API
+
+```scala
+Assertions.eventually[R, A](
+  effect: ZIO[R, Throwable, A],
+  maxTime: Duration = 10.seconds,
+  schedule: Schedule[Any, Any, Any] = Schedule.exponential(50.millis).jittered && Schedule.spaced(500.millis)
+): ZIO[R, Throwable, A]
+
+Assertions.eventuallyAssert[R, A](
+  fetch: ZIO[R, Throwable, A]
+)(assertion: A => ZIO[Any, Throwable, Unit], maxTime: Duration = 10.seconds): ZIO[R, Throwable, Unit]
+```
+
+- **No `zio.Schedule` import needed** for the common case — the defaults live inside
+  `Assertions`. Override `schedule` only when you want a different back-off.
+- **On timeout the last underlying failure is surfaced** — not a generic "timed out". The
+  message you failed with (e.g. `"flag not ON yet"`) is what propagates, so failures stay
+  diagnosable.
+- **Interruptible.** The retry loop respects the enclosing step timeout: the outer
+  `stepTimeout` is a hard cap that interrupts the wait, so keep `maxTime` ≤ `stepTimeout`.
+- **Only typed failures are retried.** An exception thrown outside a `ZIO.attempt` boundary
+  becomes a defect (`Cause.Die`) and propagates on the first attempt without retrying. Wrap any
+  effect that may throw in `ZIO.attempt` so the throw becomes a retryable failure — the `assert*`
+  helpers already do this.
+
