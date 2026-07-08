@@ -35,11 +35,14 @@ private[rift] final class RiftIntercept(client: Client, adminBase: String, host:
     yield ()
 
   def trustStore(format: TrustStoreFormat): IO[MockError, TrustStore] =
+    // Rift's admin route uses the file extension (.p12 / .jks), NOT the format wire token
+    // ("pkcs12", which the embedded FFI uses) — a `.pkcs12` route 404s on the real proxy.
+    val ext = RiftIntercept.routeExt(format)
     for
-      u    <- url(s"/intercept/truststore.${format.wire}")
+      u    <- url(s"/intercept/truststore.$ext")
       resp <- sendResponse(Request(method = HttpMethod.GET, url = u))
       _ <- ZIO.unless(resp.status.code >= 200 && resp.status.code < 300)(
-             failBody(s"read intercept truststore.${format.wire}", resp)
+             failBody(s"read intercept truststore.$ext", resp)
            )
       password <- ZIO
                     .fromOption(resp.headers.get(RiftIntercept.TruststorePasswordHeader))
@@ -105,3 +108,9 @@ private[rift] final class RiftIntercept(client: Client, adminBase: String, host:
 
 private[rift] object RiftIntercept:
   private val TruststorePasswordHeader: String = "x-truststore-password"
+
+  // The admin-route file extension for a truststore format (`GET /intercept/truststore.<ext>`).
+  // Distinct from `TrustStoreFormat.wire` ("pkcs12") — the route uses the file extension ".p12".
+  private def routeExt(format: TrustStoreFormat): String = format match
+    case TrustStoreFormat.Pkcs12 => "p12"
+    case TrustStoreFormat.Jks    => "jks"

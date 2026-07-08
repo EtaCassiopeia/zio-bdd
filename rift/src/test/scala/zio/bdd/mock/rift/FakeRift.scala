@@ -119,9 +119,10 @@ final case class FakeRift(
           interceptRulesRef.update(_ :+ body).as(Response.ok)
         }
       },
-      // Intercept truststore export (#253): GET /intercept/truststore.<pkcs12|jks>. Fixed canned
+      // Intercept truststore export (#253): GET /intercept/truststore.<p12|jks> — the real rift route
+      // uses the .p12 FILE extension, not the "pkcs12" wire token (a .pkcs12 route 404s). Fixed canned
       // bytes/password — the adapter only parses the header + bytes, never a real keystore, here.
-      Method.GET / "intercept" / "truststore.pkcs12" -> handler { (_: Request) =>
+      Method.GET / "intercept" / "truststore.p12" -> handler { (_: Request) =>
         ZIO.succeed(
           Response(status = Status.Ok, body = Body.fromArray(FakeRift.truststoreBytes))
             .addHeader(FakeRift.TruststorePasswordHeader, FakeRift.truststorePassword)
