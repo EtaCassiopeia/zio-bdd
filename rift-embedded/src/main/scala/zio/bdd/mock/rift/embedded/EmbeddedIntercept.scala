@@ -47,14 +47,16 @@ private[embedded] final class EmbeddedIntercept(
       _ <- engine.interceptExportTruststore(format.wire, EmbeddedIntercept.DefaultPassword, out.toString)
     yield TrustStore(out, EmbeddedIntercept.DefaultPassword, format)
 
-  // Start the listener at most once (race-safe), memoizing its bound proxy port.
+  // Start the listener at most once (race-safe), memoizing its bound proxy port. Validate the bind host
+  // first so a hostname fails with a clear message here, not opaquely inside the engine (#262).
   private def ensureStarted: IO[MockError, Int] =
     started.modifyZIO {
       case s @ Some(p) => ZIO.succeed((p, s))
       case None =>
-        engine
-          .startIntercept(EmbeddedIntercept.startOptions(config))
-          .map(i => (i.interceptPort, Some(i.interceptPort)))
+        ZIO.fromEither(EmbeddedIntercept.validateBindHost(config.bindHost)) *>
+          engine
+            .startIntercept(EmbeddedIntercept.startOptions(config))
+            .map(i => (i.interceptPort, Some(i.interceptPort)))
     }
 
   private def message(t: Throwable): String = Option(t.getMessage).getOrElse(t.getClass.getSimpleName)
@@ -67,6 +69,34 @@ private[embedded] object EmbeddedIntercept:
   // to 0 (OS-assigned); a pinned value binds a known port for a SUT whose proxy target is fixed up front.
   private[embedded] def startOptions(config: EmbeddedRift.InterceptConfig): String =
     Json.Obj("host" -> Json.Str(config.bindHost), "port" -> Json.Num(config.port.getOrElse(0))).toJson
+
+  // rift binds the intercept listener via SocketAddr::parse, which accepts only IP literals — a hostname
+  // (`localhost` / a DNS name) fails there with an opaque error. Reject it early, DNS-free (no resolution),
+  // with a clear message. IPv4 is validated strictly (rejecting leading zeros, matching Rust's parser);
+  // IPv6 leniently (colon + hex/dot chars) so a valid literal passes through.
+  private[embedded] def validateBindHost(host: String): Either[MockError, Unit] =
+    if isIpLiteral(host) then Right(())
+    else
+      Left(
+        MockError.InvalidDefinition(
+          s"intercept bindHost must be an IP literal (e.g. 0.0.0.0 or a NIC address), not a hostname: $host"
+        )
+      )
+
+  private def isIpLiteral(host: String): Boolean =
+    // ASCII digits only — Rust's socket-address parser rejects non-ASCII, and `Char.isDigit`/`toInt`
+    // would otherwise accept Unicode decimal digits (e.g. Arabic-Indic) that the engine won't.
+    def asciiDigit(c: Char): Boolean = c >= '0' && c <= '9'
+    def isIpv4: Boolean =
+      val parts = host.split("\\.", -1)
+      parts.length == 4 && parts.forall { p =>
+        p.nonEmpty && p.length <= 3 && p.forall(asciiDigit) && p.toInt <= 255 && (p == "0" || !p.startsWith("0"))
+      }
+    def isIpv6: Boolean =
+      host.contains(":") && host.forall { c =>
+        asciiDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || c == ':' || c == '.'
+      }
+    isIpv4 || isIpv6
 
   /**
    * Build the rift intercept-rule JSON from a portable [[InterceptRule]]. Left
