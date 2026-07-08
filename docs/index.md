@@ -17,6 +17,8 @@ New to zio-bdd?  Read in this order:
    `docString`, `regex`, `oneOf`, etc.) plus the `StepEffect` / `StepIO` type aliases.
 4. **[Property-Based Testing](property-testing.md)** — once you're comfortable with literal
    `Examples:` rows, learn the `@property(...)` tag to sample generated values instead.
+5. **[Verified Examples](verified-examples.md)** — canonical, copy-pasteable snippets (a minimal
+   suite, assertions, the mock DSL) that are compile-checked against the API on every build.
 
 ---
 
