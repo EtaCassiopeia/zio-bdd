@@ -150,6 +150,19 @@ trait Intercept:
   def trustStore(format: TrustStoreFormat = TrustStoreFormat.Pkcs12): IO[MockError, TrustStore]
 
   /**
+   * As [[trustStore]], but the exported store ALSO contains the JVM's default
+   * trust anchors. Pointing a SUT at the CA-only [[trustStore]] via
+   * `-Djavax.net.ssl.trustStore` *replaces* its default trust store, so the SUT
+   * trusts the intercepted (mocked) hosts but loses trust for real HTTPS
+   * endpoints (AWS, etc.). Use this merged export for a "mostly hermetic" SUT
+   * that mocks some hosts yet still calls real ones; the CA-only [[trustStore]]
+   * is right for a fully hermetic SUT. Built on [[trustStore]], so it is
+   * backend-neutral — every `Intercept` adapter gets it for free.
+   */
+  def trustStoreWithSystemCAs(format: TrustStoreFormat = TrustStoreFormat.Pkcs12): IO[MockError, TrustStore] =
+    trustStore(format).flatMap(TrustStore.plusSystemCAs)
+
+  /**
    * Convenience: intercept `host` and forward its requests to `space`'s
    * imposter.
    */
