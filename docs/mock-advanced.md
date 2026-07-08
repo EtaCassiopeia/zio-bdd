@@ -30,11 +30,15 @@ _  <- sc.define(space, defineRetry(path))
 | `Capability.Scripting` | `scripting: IO[Unsupported, Scripting]` | yes | yes | no |
 | `Capability.ProxyRecord` | `proxyRecord: IO[Unsupported, ProxyRecord]` | yes | yes | no |
 | `Capability.Templating` | `templating: IO[Unsupported, Templating]` | yes | yes | no |
+| `Capability.Intercept` | `intercept: IO[Unsupported, Intercept]` | no | yes | no |
 
 Faults, StatefulScenarios, and StateInspection are portable across all three
 adapters. Scripting, ProxyRecord, and Templating are Rift-only (container or
 embedded — embedded is capability-complete, a pure backend swap for the
-container, not a reduced subset); WireMock does not advertise them. See
+container, not a reduced subset); WireMock does not advertise them. `Intercept`
+(built-in HTTPS intercept, §9) is **embedded-only**: it runs the TLS-MITM
+listener in-process over the FFI; the container and WireMock adapters inherit
+the `Unsupported` fallback. See
 [Adapters](mock-adapters.md) for the full per-adapter breakdown and
 [Mocking overview](mocking.md) for the `MockControl` port these accessors sit
 on.
@@ -376,3 +380,75 @@ Next: [Cookbook](mock-cookbook.md)
 
 See also: [Mocking overview](mocking.md) · [the DSL](mock-dsl.md) ·
 [Adapters](mock-adapters.md)
+
+---
+
+## 9. HTTPS intercept — drop the mitmproxy container (`Capability.Intercept`)
+
+When a SUT **hard-codes** an external HTTPS host you cannot change
+(`https://cdn.example.com/…`), the usual trick is to stand up a separate
+**mitmproxy** container that TLS-MITMs that host and redirects it to a mock. The
+embedded Rift provider does this **in-process, with no extra container**: it runs
+a TLS-MITM forward-proxy, mints a per-host leaf cert signed by its own CA, and
+either forwards the intercepted host to a mock space or answers it inline.
+
+The MITM constraint is intrinsic — the SUT must trust the intercept CA — so the
+goal is to *provision* that trust, not eliminate it: `trustStore` hands you a
+ready-to-use JVM truststore (JKS by default) + password, and `proxyPort` is the
+loopback port the SUT proxies through. Starting the listener is lazy and opt-in:
+a suite that never calls `mc.intercept` pays nothing.
+
+Build rules with the DSL — `intercept(host).redirectTo(space)` or
+`.respondWith(stub)` — and apply them through the capability:
+
+```scala
+import zio.*
+import zio.bdd.mock.*
+import zio.bdd.mock.dsl.*
+import zio.bdd.mock.rift.embedded.EmbeddedRift
+
+// A layer for the in-process engine — no Docker, no mitmproxy.
+val mock = Provisioning.live >>> EmbeddedRift.layer
+
+val setUp: ZIO[MockControl, Throwable, TrustStore] =
+  for
+    mc     <- ZIO.service[MockControl]
+    // the imposter that will answer the intercepted host
+    spaces <- mc.provision(MockSource.Resource("cdn-config.json")).mapError(e => new RuntimeException(e.toString))
+    ic     <- mc.intercept.mapError(u => new RuntimeException(u.message))
+    // redirect the hard-coded external host to that mock space
+    _      <- ic.add(intercept("cdn.example.com").redirectTo(spaces.head))
+              .mapError(e => new RuntimeException(e.toString))
+    // (or answer inline, no imposter needed:)
+    //   _ <- ic.add(intercept("cdn.example.com").respondWith(InterceptStub(200, body = Some("""{"cdn":"mocked"}"""))))
+    ts     <- ic.trustStore().mapError(e => new RuntimeException(e.toString)) // JKS path + password
+    port   <- ic.proxyPort.mapError(e => new RuntimeException(e.toString))    // the loopback proxy port
+  yield ts
+```
+
+Wire the JVM SUT in one line each — trust the CA and route HTTPS through the
+intercept port:
+
+```
+-Djavax.net.ssl.trustStore=<ts.path> -Djavax.net.ssl.trustStorePassword=<ts.password>
+-Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=<port>
+```
+
+The SUT's call to `https://cdn.example.com/config.json` is intercepted, its TLS
+terminated with a leaf cert the truststore trusts, and the request forwarded to
+your mock imposter (or answered by the inline stub) — the mitmproxy container is
+gone. See `EmbeddedInterceptSpec` for the runnable end-to-end version (a real
+`java.net.http.HttpClient` driving the intercept).
+
+**Isolation semantics.** `redirectTo` forwards to the target space's imposter
+**port**; under PerInstance (the embedded default) each space has its own port,
+so the redirect lands on exactly that space. `respondWith` is
+isolation-independent. Because a Correlated space shares one imposter port and is
+separated by a correlation header the intercepted request does not carry, use
+PerInstance (the default) for host redirects.
+
+> **Truststore format.** `trustStore` defaults to **JKS**, which the JVM's
+> default `TrustManagerFactory` loads as a `trustedCertEntry` out of the box.
+> `TrustStoreFormat.Pkcs12` is selectable, but rift's PKCS#12 export is not yet
+> surfaced as a trust anchor by the JVM `KeyStore` (rift#417) — prefer JKS for a
+> JVM SUT.

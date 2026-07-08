@@ -58,14 +58,15 @@ private[embedded] final case class EmbeddedRiftMockControl(
   spaces: Ref[Map[SpaceId, EmbeddedRiftMockControl.Imposter]],
   correlated: Ref[Map[SpaceId, EmbeddedRiftMockControl.CorrSpace]],
   sharedPort: Ref.Synchronized[Option[Int]],
-  ids: Ref[Int]
+  ids: Ref[Int],
+  interceptStarted: Ref.Synchronized[Option[Int]]
 ) extends MockControl:
 
   import EmbeddedRiftMockControl.{CorrSpace, Imposter}
 
   def backendName: String = "embedded"
 
-  // The v2 in-process admin plane makes the embedded adapter capability-complete: all six.
+  // The FFI admin plane + intercept make the embedded adapter capability-complete: all seven.
   def capabilities: Set[Capability] =
     Set(
       Capability.Faults,
@@ -73,7 +74,8 @@ private[embedded] final case class EmbeddedRiftMockControl(
       Capability.ProxyRecord,
       Capability.Templating,
       Capability.StatefulScenarios,
-      Capability.StateInspection
+      Capability.StateInspection,
+      Capability.Intercept
     )
 
   override def isolation: Isolation = mode match
@@ -172,7 +174,12 @@ private[embedded] final case class EmbeddedRiftMockControl(
   def faults: IO[Unsupported, Faults]           = ZIO.succeed(embeddedFaults)
   def scripting: IO[Unsupported, Scripting]     = ZIO.succeed(embeddedScripting)
   def proxyRecord: IO[Unsupported, ProxyRecord] = ZIO.succeed(embeddedProxyRecord)
-  def templating: IO[Unsupported, Templating]   = ZIO.succeed(embeddedTemplating)
+
+  // Built-in HTTPS intercept (#219) over the intercept FFI (rift#410); one instance per adapter so the
+  // TLS-MITM listener starts at most once (memoized in interceptStarted).
+  private val embeddedIntercept: Intercept           = EmbeddedIntercept(engine, interceptStarted)
+  override def intercept: IO[Unsupported, Intercept] = ZIO.succeed(embeddedIntercept)
+  def templating: IO[Unsupported, Templating]        = ZIO.succeed(embeddedTemplating)
 
   // Scenario/state route over the in-process admin plane (rift#343).
   def scenarios: IO[Unsupported, StatefulScenarios]     = ZIO.succeed(embeddedScenarios)
@@ -642,6 +649,7 @@ private[embedded] object EmbeddedRiftMockControl:
       correlated <- Ref.make(Map.empty[SpaceId, CorrSpace])
       sharedPort <- Ref.Synchronized.make(Option.empty[Int])
       ids        <- Ref.make(0)
-      control     = EmbeddedRiftMockControl(engine, provisioning, mode, spaces, correlated, sharedPort, ids)
+      intercept  <- Ref.Synchronized.make(Option.empty[Int])
+      control     = EmbeddedRiftMockControl(engine, provisioning, mode, spaces, correlated, sharedPort, ids, intercept)
       _          <- ZIO.addFinalizer(control.teardownShared)
     yield control

@@ -42,7 +42,8 @@ object NegotiationErrorScenarios:
         Capability.StateInspection   -> control.stateInspection,
         Capability.Scripting         -> control.scripting,
         Capability.ProxyRecord       -> control.proxyRecord,
-        Capability.Templating        -> control.templating
+        Capability.Templating        -> control.templating,
+        Capability.Intercept         -> control.intercept
       )
       for
         outcomes <- ZIO.foreach(accessors)((cap, acc) => acc.either.map(cap -> _))

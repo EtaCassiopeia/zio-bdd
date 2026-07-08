@@ -80,6 +80,27 @@ private[embedded] trait EmbeddedEngine:
    */
   def spaceRecorded(port: Int, flowId: String): IO[MockError, String]
 
+  // Built-in HTTPS intercept over direct C-ABI (rift#410, #219): start the TLS-MITM forward-proxy,
+  // add rules to its store, and export the CA truststore — no loopback HTTP.
+
+  /**
+   * Start the intercept/TLS-MITM forward-proxy from `optionsJson`
+   * (`{"host","port"}`, or `{}`).
+   */
+  def startIntercept(optionsJson: String): IO[MockError, EmbeddedEngine.InterceptInfo]
+
+  /**
+   * Add one intercept rule (or a JSON array) — the shape rift's intercept rule
+   * store accepts.
+   */
+  def interceptAddRules(rulesJson: String): IO[MockError, Unit]
+
+  /**
+   * Write a truststore (`format` = "pkcs12"/"jks") for the intercept CA to
+   * `outPath`.
+   */
+  def interceptExportTruststore(format: String, password: String, outPath: String): IO[MockError, Unit]
+
 private[embedded] object EmbeddedEngine:
 
   /**
@@ -111,6 +132,13 @@ private[embedded] object EmbeddedEngine:
   private[embedded] final case class FlowStateValue(value: String)
   private[embedded] object FlowStateValue:
     given JsonDecoder[FlowStateValue] = DeriveJsonDecoder.gen[FlowStateValue]
+
+  /**
+   * The bound endpoint of the intercept listener, from `rift_start_intercept`.
+   */
+  final case class InterceptInfo(interceptPort: Int, interceptUrl: String)
+  object InterceptInfo:
+    given JsonDecoder[InterceptInfo] = DeriveJsonDecoder.gen[InterceptInfo]
 
   /**
    * The live engine over [[RiftFfiBridge]] — the Panama FFM bindings to
@@ -231,6 +259,31 @@ private[embedded] object EmbeddedEngine:
       }.flatMap {
         case Right(json) => ZIO.succeed(json)
         case Left(msg)   => ZIO.fail(MockError.CommunicationError(msg))
+      }
+
+    def startIntercept(optionsJson: String): IO[MockError, InterceptInfo] =
+      blocking("rift_start_intercept")(bridge.startIntercept(optionsJson)).flatMap { json =>
+        ZIO
+          .fromEither(json.fromJson[InterceptInfo])
+          .mapError(e => MockError.CommunicationError(s"rift_start_intercept returned unparseable info: $e ($json)"))
+      }
+
+    def interceptAddRules(rulesJson: String): IO[MockError, Unit] =
+      blocking("rift_intercept_add_rules") {
+        val rc = bridge.interceptAddRules(rulesJson)
+        if rc == 0 then None else Some(withReason(s"rift_intercept_add_rules returned $rc"))
+      }.flatMap {
+        case None      => ZIO.unit
+        case Some(msg) => ZIO.fail(MockError.CommunicationError(msg))
+      }
+
+    def interceptExportTruststore(format: String, password: String, outPath: String): IO[MockError, Unit] =
+      blocking("rift_intercept_export_truststore") {
+        val rc = bridge.interceptExportTruststore(format, password, outPath)
+        if rc == 0 then None else Some(withReason(s"rift_intercept_export_truststore returned $rc"))
+      }.flatMap {
+        case None      => ZIO.unit
+        case Some(msg) => ZIO.fail(MockError.CommunicationError(msg))
       }
 
     private def blocking[A](op: String)(thunk: => A): IO[MockError, A] =

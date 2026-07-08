@@ -31,7 +31,10 @@ object EmbeddedRiftCapabilitiesSpec extends ZIOSpecDefault:
     val replaced: Ref[Map[Int, String]],
     val deleted: Ref[Chunk[Int]],
     val flowState: Ref[Map[(Int, String, String), String]],
-    val spaceStubs: Ref[Map[(Int, String), Vector[String]]]
+    val spaceStubs: Ref[Map[(Int, String), Vector[String]]],
+    val interceptStarts: Ref[Int],
+    val interceptRules: Ref[Chunk[String]],
+    val truststoreExports: Ref[Chunk[(String, String, String)]]
   ) extends EmbeddedEngine:
     def createImposter(configJson: String): IO[MockError, Int] = ZIO.succeed(portOf(configJson))
     def replaceStubs(port: Int, stubsJson: String): IO[MockError, Unit] =
@@ -55,6 +58,14 @@ object EmbeddedRiftCapabilitiesSpec extends ZIOSpecDefault:
       spaceStubs.update(_ - ((port, flowId)))
     def spaceRecorded(port: Int, flowId: String): IO[MockError, String] = ZIO.succeed("[]")
 
+    // Intercept FFI (#219): count listener starts (to prove memoization), capture the rule JSON and
+    // the truststore-export args the adapter drives.
+    def startIntercept(optionsJson: String): IO[MockError, EmbeddedEngine.InterceptInfo] =
+      interceptStarts.update(_ + 1).as(EmbeddedEngine.InterceptInfo(38080, "http://127.0.0.1:38080"))
+    def interceptAddRules(rulesJson: String): IO[MockError, Unit] = interceptRules.update(_ :+ rulesJson)
+    def interceptExportTruststore(format: String, password: String, outPath: String): IO[MockError, Unit] =
+      truststoreExports.update(_ :+ (format, password, outPath))
+
     private def portOf(cfg: String): Int =
       cfg
         .fromJson[zio.json.ast.Json]
@@ -75,7 +86,10 @@ object EmbeddedRiftCapabilitiesSpec extends ZIOSpecDefault:
         deleted    <- Ref.make(Chunk.empty[Int])
         flowState  <- Ref.make(Map.empty[(Int, String, String), String])
         spaceStubs <- Ref.make(Map.empty[(Int, String), Vector[String]])
-        engine      = RecordingEngine(replaced, deleted, flowState, spaceStubs)
+        icStarts   <- Ref.make(0)
+        icRules    <- Ref.make(Chunk.empty[String])
+        icExports  <- Ref.make(Chunk.empty[(String, String, String)])
+        engine      = RecordingEngine(replaced, deleted, flowState, spaceStubs, icStarts, icRules, icExports)
         control    <- EmbeddedRiftMockControl.make(engine, prov, mode)
         result     <- use(control, engine)
       yield result
@@ -94,7 +108,7 @@ object EmbeddedRiftCapabilitiesSpec extends ZIOSpecDefault:
         yield assertTrue(portFromUri(space.baseUri) > 0, portFromUri(space.baseUri) != 9998)
       }
     },
-    test("advertises all six capabilities and every accessor succeeds") {
+    test("advertises all seven capabilities and every accessor succeeds") {
       withControl() { (control, _) =>
         for
           faultsE   <- control.faults.either
@@ -103,6 +117,7 @@ object EmbeddedRiftCapabilitiesSpec extends ZIOSpecDefault:
           templateE <- control.templating.either
           scenE     <- control.scenarios.either
           siE       <- control.stateInspection.either
+          icE       <- control.intercept.either
         yield assertTrue(
           control.capabilities == Set(
             Capability.Faults,
@@ -110,14 +125,16 @@ object EmbeddedRiftCapabilitiesSpec extends ZIOSpecDefault:
             Capability.ProxyRecord,
             Capability.Templating,
             Capability.StatefulScenarios,
-            Capability.StateInspection
+            Capability.StateInspection,
+            Capability.Intercept
           ),
           faultsE.isRight,
           scriptE.isRight,
           proxyE.isRight,
           templateE.isRight,
           scenE.isRight,
-          siE.isRight
+          siE.isRight,
+          icE.isRight
         )
       }
     },
@@ -344,6 +361,60 @@ object EmbeddedRiftCapabilitiesSpec extends ZIOSpecDefault:
           stubs.contains("/over") && stubs.contains("/base"),
           stubs.indexOf("/boom") < stubs.indexOf("/over"), // fault registered ahead of the rules
           stubs.indexOf("/over") < stubs.indexOf("/base")  // overlay first-match over the base rule
+        )
+      }
+    },
+    test(
+      "intercept: capability advertised, accessor succeeds, redirect/serve build the FFI rule JSON, start memoized"
+    ) {
+      withControl() { (control, engine) =>
+        for
+          space  <- control.provision(pingSource).map(_.head)
+          port    = portFromUri(space.baseUri)
+          ic     <- control.intercept
+          _      <- ic.redirectTo("cdn.example.com", space)
+          _      <- ic.respondWith("api.example.com", InterceptStub(status = 418, body = Some("teapot")))
+          p      <- ic.proxyPort
+          rules  <- engine.interceptRules.get
+          starts <- engine.interceptStarts.get
+        yield assertTrue(
+          control.capabilities.contains(Capability.Intercept),
+          p == 38080,
+          starts == 1, // one listener despite redirect + serve + proxyPort (memoized)
+          rules.exists(j =>
+            j.contains("\"forward\"") && j.contains(s"\"port\":$port") && j.contains("cdn.example.com")
+          ),
+          rules.exists(j =>
+            j.contains("\"serve\"") && j.contains("418") && j.contains("teapot") && j.contains("api.example.com")
+          )
+        )
+      }
+    },
+    test("intercept: a redirect whose target space has no port in its baseUri fails with InvalidDefinition") {
+      val portless = MockSpace("localhost-without-a-port", identity, SpaceId("x"))
+      val ok       = MockSpace("http://localhost:4545", identity, SpaceId("y"))
+      assertTrue(
+        EmbeddedIntercept.ruleJson(InterceptRule.Redirect("cdn.example.com", portless)).isLeft,
+        EmbeddedIntercept.ruleJson(InterceptRule.Redirect("cdn.example.com", ok)) match
+          case Right(j) => j.contains("\"forward\"") && j.contains("\"port\":4545")
+          case Left(_)  => false
+      )
+    },
+    test("intercept.trustStore defaults to JKS, exports to a temp file, and returns its path + password") {
+      withControl() { (control, engine) =>
+        for
+          ic      <- control.intercept
+          ts      <- ic.trustStore()
+          p12     <- ic.trustStore(TrustStoreFormat.Pkcs12)
+          exports <- engine.truststoreExports.get
+        yield assertTrue(
+          ts.format == TrustStoreFormat.Jks,
+          ts.password == "changeit",
+          ts.path.toString.endsWith(".jks"),
+          exports.exists((fmt, pw, path) => fmt == "jks" && pw == "changeit" && path == ts.path.toString),
+          // the format is honoured — PKCS#12 is still selectable
+          p12.format == TrustStoreFormat.Pkcs12,
+          exports.exists((fmt, _, path) => fmt == "pkcs12" && path == p12.path.toString)
         )
       }
     },

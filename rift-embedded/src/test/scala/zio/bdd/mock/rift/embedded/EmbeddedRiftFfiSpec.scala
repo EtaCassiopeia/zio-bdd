@@ -220,7 +220,8 @@ object EmbeddedRiftFfiSpec extends ZIOSpecDefault:
             Capability.ProxyRecord,
             Capability.Templating,
             Capability.StatefulScenarios,
-            Capability.StateInspection
+            Capability.StateInspection,
+            Capability.Intercept
           ),
           s0 == ScenarioState.Started,
           stepped.status == 200 && stepped.body == "one",

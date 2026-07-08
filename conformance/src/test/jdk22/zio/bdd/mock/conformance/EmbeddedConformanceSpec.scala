@@ -41,7 +41,8 @@ object EmbeddedConformanceSpec extends ZIOSpecDefault:
         Capability.ProxyRecord,
         Capability.Templating,
         Capability.StatefulScenarios,
-        Capability.StateInspection
+        Capability.StateInspection,
+        Capability.Intercept
       ),
       Isolation.PerInstance,
       available = EmbeddedRift.available
