@@ -504,3 +504,26 @@ Only the **one** intercept proxy port needs to be container-reachable: the engin
 forwards intercepted traffic to the target space's imposter internally on
 loopback, so imposter ports stay private. See the `bindHost 0.0.0.0` case in
 `EmbeddedInterceptSpec` for a runnable check over a non-loopback interface.
+
+**CONTAINER variant (`Rift.managed`).** The containerized Rift adapter
+(#253) advertises `Capability.Intercept` too, opt-in: pass a
+container-internal `interceptPort` to `Rift.managed`, and testcontainers
+exposes + maps it alongside the admin and imposter ports:
+
+```scala
+import zio.bdd.mock.rift.Rift
+
+// Opt-in: without interceptPort, the container adapter doesn't advertise Intercept, exactly as before.
+val mock = Provisioning.live >>> Rift.managed(interceptPort = Some(8474))
+```
+
+The `Intercept` capability accessor and the `add`/`redirectTo`/`respondWith`/
+`trustStore`/`proxyPort` ergonomics are identical to the embedded provider — the
+DSL example above works unchanged against this layer. The one difference is the
+control plane: the container's intercept listener is started by the container
+itself at boot (`--intercept-port`), not lazily on first use, and every call
+here goes over the mapped admin port instead of an in-process FFI downcall. The
+SUT proxies through the **host-mapped** port (`ic.proxyPort` reports it, already
+translated), so it works the same whether the SUT is a host process or another
+container reaching the published port. See `RiftInterceptSpec` (RIFT_IT-gated)
+for the runnable end-to-end version against a real container.

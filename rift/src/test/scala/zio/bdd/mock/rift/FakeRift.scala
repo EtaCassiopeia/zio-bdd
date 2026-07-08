@@ -27,7 +27,8 @@ final case class FakeRift(
   failProvision: Ref[Boolean],
   scenarioPuts: Ref[Chunk[String]],
   scenarioGets: Ref[Chunk[String]],
-  scenariosView: Ref[String]
+  scenariosView: Ref[String],
+  interceptRulesRef: Ref[Vector[String]]
 ):
   /**
    * Preset the `GET /imposters/:port` view (e.g. to inject recorded requests).
@@ -43,6 +44,11 @@ final case class FakeRift(
    * Preset the body returned by `GET /imposters/:port/scenarios` (rift#190).
    */
   def setScenarios(json: String): UIO[Unit] = scenariosView.set(json)
+
+  /**
+   * The bodies posted to `POST /intercept/rules` (#253), in call order.
+   */
+  def interceptRules: UIO[Vector[String]] = interceptRulesRef.get
 
   val routes: Routes[Any, Response] =
     Routes(
@@ -106,11 +112,38 @@ final case class FakeRift(
       Method.GET / "imposters" / int("port") / "scenarios" -> handler { (port: Int, req: Request) =>
         val flow = req.url.queryParams.queryParam("flowId").getOrElse("")
         (scenarioGets.update(_ :+ s"$port?$flow") *> scenariosView.get).map(v => Response(body = Body.fromString(v)))
+      },
+      // Intercept rule admin (#253): POST /intercept/rules
+      Method.POST / "intercept" / "rules" -> handler { (req: Request) =>
+        req.body.asString.orDie.flatMap { body =>
+          interceptRulesRef.update(_ :+ body).as(Response.ok)
+        }
+      },
+      // Intercept truststore export (#253): GET /intercept/truststore.<pkcs12|jks>. Fixed canned
+      // bytes/password — the adapter only parses the header + bytes, never a real keystore, here.
+      Method.GET / "intercept" / "truststore.pkcs12" -> handler { (_: Request) =>
+        ZIO.succeed(
+          Response(status = Status.Ok, body = Body.fromArray(FakeRift.truststoreBytes))
+            .addHeader(FakeRift.TruststorePasswordHeader, FakeRift.truststorePassword)
+        )
+      },
+      Method.GET / "intercept" / "truststore.jks" -> handler { (_: Request) =>
+        ZIO.succeed(
+          Response(status = Status.Ok, body = Body.fromArray(FakeRift.truststoreBytes))
+            .addHeader(FakeRift.TruststorePasswordHeader, FakeRift.truststorePassword)
+        )
       }
     )
 
 object FakeRift:
   private def emptyView(port: Int): String = s"""{"port":$port,"requests":[]}"""
+
+  // Canned intercept truststore export (#253): the adapter only parses the header + bytes, so a
+  // real keystore isn't needed to exercise the HTTP path hermetically. Mirrors
+  // RiftIntercept's (private) header name — a literal here, not a cross-object reference.
+  val TruststorePasswordHeader: String = "x-truststore-password"
+  val truststoreBytes: Array[Byte]     = Array[Byte](1, 2, 3, 4)
+  val truststorePassword: String       = "changeit"
 
   def make: UIO[FakeRift] =
     for
@@ -127,7 +160,8 @@ object FakeRift:
       sp <- Ref.make(Chunk.empty[String])
       sg <- Ref.make(Chunk.empty[String])
       sv <- Ref.make("""{"flowId":"","scenarios":[]}""")
-    yield FakeRift(a, b, c, d, ss, sd, rm, fl, e, f, sp, sg, sv)
+      ir <- Ref.make(Vector.empty[String])
+    yield FakeRift(a, b, c, d, ss, sd, rm, fl, e, f, sp, sg, sv, ir)
 
   def portOf(body: String): Option[Int] =
     import zio.json.*
