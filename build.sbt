@@ -17,7 +17,7 @@ import java.security.MessageDigest
 // Single source of truth for the pinned Rift release (#195). Both the FFI natives (riftNativesVersion,
 // downloaded into the embedded-natives jar) and the container image tag (Rift.DefaultImage, via the
 // generated RiftBuildInfo below) derive from it, so a version bump touches exactly one line.
-val riftVersion        = "0.11.1"
+val riftVersion        = "0.11.2"
 val riftNativesVersion = riftVersion
 
 // The (os, arch, ext) cdylibs bundled into the natives jar — linux/macOS × x86_64/aarch64 (#134).
@@ -59,8 +59,59 @@ def installRiftProxyAuthenticator(): Unit =
     })
   }
 
+// Server (mirror) credentials for an authenticated RIFT_NATIVES_BASE_URL host — the mirror itself
+// answers 401 (distinct from a proxy 407, which installRiftProxyAuthenticator handles). Opt-in via
+// RIFT_NATIVES_USER/RIFT_NATIVES_PASSWORD, and ONLY applied when a mirror base is configured, so
+// credentials are never sent to the default GitHub CDN. Sent preemptively as Basic auth, so a
+// challenge-first server and a preemptive-only one both work.
+// The configured mirror base, if any (env RIFT_NATIVES_BASE_URL or sysprop rift.natives.baseUrl). The
+// same selection riftNativesBaseUrl uses, minus the GitHub default — so `None` means "no mirror".
+def riftMirrorBase(): Option[String] =
+  sys.env
+    .get("RIFT_NATIVES_BASE_URL")
+    .filter(_.nonEmpty)
+    .orElse(sys.props.get("rift.natives.baseUrl").filter(_.nonEmpty))
+    .map(_.stripSuffix("/"))
+
+def riftMirrorAuthHeader(): Option[String] =
+  // Only when a mirror is configured — credentials are never produced for the default GitHub CDN. Both
+  // user and pass must be non-empty, so a blank env var (e.g. an unresolved CI secret) disables auth and
+  // surfaces as a loud 401 rather than a silent `user:` credential.
+  if (riftMirrorBase().isEmpty) None
+  else
+    for {
+      user <- sys.env.get("RIFT_NATIVES_USER").filter(_.nonEmpty)
+      pass <- sys.env.get("RIFT_NATIVES_PASSWORD").filter(_.nonEmpty)
+    } yield "Basic " + java.util.Base64.getEncoder.encodeToString(s"$user:$pass".getBytes("UTF-8"))
+
+// Open `url` for reading. With no mirror auth this is a plain openStream (auto-following redirects) — the
+// default GitHub fetch is byte-for-byte unchanged. With mirror auth we follow redirects MANUALLY and
+// re-attach the Basic header ONLY while the host matches the mirror host: the JDK would otherwise forward
+// `Authorization` across a cross-host redirect (a mirror 302 to a blob store), leaking the credential.
+// (For an authenticated mirror, prefer an https:// base so the header isn't sent in cleartext.)
+def openRiftStream(url: String): java.io.InputStream =
+  riftMirrorAuthHeader() match {
+    case None => URI.create(url).toURL.openStream()
+    case Some(header) =>
+      val mirrorHost = riftMirrorBase().map(b => URI.create(b).toURL.getHost)
+      def open(u: java.net.URL, hops: Int): java.io.InputStream = {
+        if (hops > 5) sys.error(s"[rift-ffi] too many redirects fetching $url")
+        val conn = u.openConnection().asInstanceOf[java.net.HttpURLConnection]
+        conn.setInstanceFollowRedirects(false)
+        if (mirrorHost.contains(u.getHost)) conn.setRequestProperty("Authorization", header)
+        val code = conn.getResponseCode
+        if (code >= 300 && code < 400) {
+          val loc = conn.getHeaderField("Location")
+          conn.disconnect()
+          if (loc == null) sys.error(s"[rift-ffi] redirect ($code) with no Location fetching $u")
+          open(u.toURI.resolve(loc).toURL, hops + 1)
+        } else conn.getInputStream // 2xx → stream; 4xx/5xx → getInputStream throws (loud, as before)
+      }
+      open(URI.create(url).toURL, 0)
+  }
+
 def readRiftUrl(url: String): Array[Byte] = {
-  val in = URI.create(url).toURL.openStream()
+  val in = openRiftStream(url)
   try in.readAllBytes()
   finally in.close()
 }
@@ -74,11 +125,14 @@ def parseRiftSha256(bytes: Array[Byte]): String = new String(bytes, "UTF-8").tri
 //
 //   1. RIFT_NATIVES_DIR  — an offline directory of pre-provisioned `$asset` + `$asset.sha256`; copied
 //                          from disk with NO network access (air-gapped builds).
-//   2. RIFT_NATIVES_BASE_URL / -Drift.natives.baseUrl — an alternate base URL (internal mirror).
+//   2. RIFT_NATIVES_BASE_URL / -Drift.natives.baseUrl — an alternate base URL (internal mirror). If the
+//                          mirror itself needs credentials, set RIFT_NATIVES_USER/RIFT_NATIVES_PASSWORD
+//                          (opt-in Basic auth, applied only to a configured mirror — see openRiftStream).
 //   3. default — https://github.com/EtaCassiopeia/rift/releases/download/v$version.
 //
 // An authenticated HTTPS proxy is honored via the standard https.proxyHost/Port + https.proxyUser/
-// Password sysprops (see installRiftProxyAuthenticator). The `.sha256` checksum is verified on EVERY
+// Password sysprops (see installRiftProxyAuthenticator); an authenticated mirror host via
+// RIFT_NATIVES_USER/PASSWORD (see riftMirrorAuthHeader). The `.sha256` checksum is verified on EVERY
 // path — a mirror or offline dir must still match the expected digest.
 // Idempotent: skips the copy/download when `out` already matches the expected checksum. Returns `out`.
 def downloadRiftAsset(version: String, asset: String, out: File, log: sbt.util.Logger): File = {
@@ -114,7 +168,7 @@ def downloadRiftAsset(version: String, asset: String, out: File, log: sbt.util.L
         // passes, so `out` never exists in a corrupt/partial state (the idempotency guard trusts it).
         val tmp = new File(out.getParentFile, s".${out.getName}.part")
         try {
-          val in = URI.create(s"$base/$asset").toURL.openStream()
+          val in = openRiftStream(s"$base/$asset")
           try JFiles.copy(in, tmp.toPath, StandardCopyOption.REPLACE_EXISTING)
           finally in.close()
           val got = sha256Hex(tmp)
