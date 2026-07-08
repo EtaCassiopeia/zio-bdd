@@ -131,13 +131,13 @@ sbt "testOnly example.CartSpec"
 The `pretty` reporter prints a colour-coded tree. A passing run looks like this:
 
 ```
-◉ Feature: Shopping cart
-  ◑ Scenario: Adding an item increases the total
-    • Given an empty cart
-    • When the user adds 2 units of "Widget" at price 9.99
-    • Then the cart total should be 19.98
-
-Summary: 1 feature, 1 scenario passed  (47ms)
+◉ Feature: Shopping cart - PASSED [47ms]
+╰─ ✓ Scenario: Adding an item increases the total - PASSED [47ms]
+   ├─ • Given an empty cart [2ms]
+   ├─ • When the user adds 2 units of "Widget" at price 9.99 [3ms]
+   ╰─ • Then the cart total should be 19.98 [1ms]
+      Passed: 3  Failed: 0  Ignored: 0  Pending: 0
+Summary: Passed: 1  Failed: 0  Ignored: 0  Pending: 0
 ```
 
 Icons and colours at a glance:
@@ -146,23 +146,25 @@ Icons and colours at a glance:
 |------|---------|-----------------|
 | `◉`  | green   | feature passed  |
 | `◉`  | red     | feature failed  |
-| `◑`  | yellow  | scenario passed |
-| `◑`  | red     | scenario failed |
+| `✓`  | blue    | scenario passed |
+| `✗`  | red     | scenario failed |
 | `◑`  | grey    | scenario skipped / ignored |
-| `•`  | blue    | step passed     |
-| `•`  | red     | step failed     |
-| `•`  | grey    | step skipped (earlier step in scenario failed) |
-| `•`  | orange  | step pending    |
+| `•`  | mint    | step passed     |
+| `✗`  | red     | step failed     |
+| `○`  | grey    | step skipped (earlier step in scenario failed) |
+| `◌`  | orange  | step pending    |
 
 When a step fails the tree shows the exception message inline:
 
 ```
-◉ Feature: Shopping cart
-  ◑ Scenario: Adding an item increases the total
-    • Given an empty cart
-    • When the user adds 2 units of "Widget" at price 9.99
-    • Then the cart total should be 19.98
-        AssertionError: Expected 19.98, got 19.97
+◉ Feature: Shopping cart - FAILED [47ms]
+╰─ ✗ Scenario: Adding an item increases the total - FAILED [47ms]
+   ├─ • Given an empty cart [2ms]
+   ├─ • When the user adds 2 units of "Widget" at price 9.99 [3ms]
+   ╰─ ✗ Then the cart total should be 19.98 [1ms] [FAILED]
+      AssertionError: Expected 19.98, got 19.97
+      Passed: 2  Failed: 1  Ignored: 0  Pending: 0
+Summary: Passed: 0  Failed: 1  Ignored: 0  Pending: 0
 ```
 
 ## 6. Add a second scenario and a Background
@@ -189,23 +191,23 @@ A `Background` block runs before every scenario in the feature. It uses the same
 definitions — no extra Scala code is needed. The `And` keyword is interchangeable with
 `When` at the matching level; it is purely cosmetic in the feature file.
 
-Running `sbt test` now executes both scenarios. The background step appears in the pretty
-output as a separate group before each scenario's own steps:
+Running `sbt test` now executes both scenarios. The background step is spliced in before each
+scenario's own steps — it renders identically to any other step, with no special marker:
 
 ```
-◉ Feature: Shopping cart
-  ◑ Scenario: Adding one item
-    • Given an empty cart         (Background)
-    • When the user adds 2 units of "Widget" at price 9.99
-    • Then the cart total should be 19.98
-
-  ◑ Scenario: Adding two different items
-    • Given an empty cart         (Background)
-    • When the user adds 1 units of "Widget" at price 9.99
-    • And the user adds 3 units of "Gadget" at price 4.50
-    • Then the cart total should be 23.49
-
-Summary: 1 feature, 2 scenarios passed  (62ms)
+◉ Feature: Shopping cart - PASSED [62ms]
+├─ ✓ Scenario: Adding one item - PASSED [29ms]
+│  ├─ • Given an empty cart [2ms]
+│  ├─ • When the user adds 2 units of "Widget" at price 9.99 [3ms]
+│  ╰─ • Then the cart total should be 19.98 [1ms]
+│     Passed: 3  Failed: 0  Ignored: 0  Pending: 0
+╰─ ✓ Scenario: Adding two different items - PASSED [33ms]
+   ├─ • Given an empty cart [2ms]
+   ├─ • When the user adds 1 units of "Widget" at price 9.99 [3ms]
+   ├─ • And the user adds 3 units of "Gadget" at price 4.50 [3ms]
+   ╰─ • Then the cart total should be 23.49 [1ms]
+      Passed: 4  Failed: 0  Ignored: 0  Pending: 0
+Summary: Passed: 2  Failed: 0  Ignored: 0  Pending: 0
 ```
 
 From here, explore the [concepts document](concepts.md) to understand the execution model, or
