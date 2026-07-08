@@ -426,7 +426,8 @@ override def scenarioAspects: Map[String, ScenarioAspect] =
 - `@ignore` wins over a retry tag: an ignored scenario never runs and is not retried. Include/
   exclude tag filtering is unaffected — the retry tags are not treated as filter labels.
 - The pretty reporter appends `(k attempts)` to a scenario that ran more than once; the count is
-  also available as `ScenarioResult.attempts` for custom reporters.
+  also available as `ScenarioResult.attempts` for custom reporters, and carried into JUnit XML as an
+  `attempts="k"` attribute on the `<testcase>` (see `docs/reporters.md`).
 - Retry tags are **scenario-level only** — a `@retry(n)` placed above `Feature:` does not apply to
   the feature's scenarios; tag each scenario (or use `scenarioAspects`). An unrecognised or
   malformed argument (e.g. `@retry(abc)`) is ignored and the scenario runs once.
@@ -462,6 +463,10 @@ Scenario: refunds are not yet prorated
   validates step wiring). It is a scenario-level tag and is **not** applied to `@property`
   scenarios (which have their own execution path). `ScenarioResult` exposes `isExpectedFailure` /
   `isUnexpectedlyPassing` for custom reporters.
+- **In JUnit XML** an XFAIL is emitted as `<skipped message="expected failure: …"/>` (distinct from a
+  plain pass, so CI dashboards can track it) and an XPASS as a `<failure>` telling you to remove the
+  tag; the live streaming reporter marks them `⊗ (expected failure)` / `(unexpectedly passed …)`.
+  See `docs/reporters.md`.
 
 ---
 

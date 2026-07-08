@@ -76,16 +76,29 @@ object LiveProgressReporter extends StreamingReporter:
         Console.printLine(s"Running $n feature(s)$mode...").orDie
 
       case TestEvent.ScenarioFinished(result, featureName) =>
-        val icon = if (result.isPassed) "✓" else if (result.isIgnored) "○" else "✗"
-        val name = s"$featureName / ${result.scenario.name}"
-        Console.printLine(s"  $icon $name [${result.duration}ms]").orDie
+        // Same precedence as JUnitXMLFormatter/PrettyReporter: ignored first, then XFAIL/XPASS
+        // (which must precede isPassed — an expected failure has isPassed == true), then pass/fail.
+        val (icon, note) =
+          if (result.isIgnored) ("○", "")
+          else if (result.isExpectedFailure) ("⊗", " (expected failure)")
+          else if (result.isUnexpectedlyPassing) ("✗", " (unexpectedly passed — remove @expectedFailure)")
+          else if (result.isPassed) ("✓", "")
+          else ("✗", "")
+        val attempts = if (result.attempts > 1) s" (${result.attempts} attempts)" else ""
+        val name     = s"$featureName / ${result.scenario.name}"
+        Console.printLine(s"  $icon $name$note$attempts [${result.duration}ms]").orDie
 
       case TestEvent.SuiteFinished(results) =>
-        val total   = results.flatMap(_.scenarioResults).length
-        val passed  = results.flatMap(_.scenarioResults).count(_.isPassed)
-        val failed  = results.flatMap(_.scenarioResults).count(_.hasFailure)
-        val ignored = results.flatMap(_.scenarioResults).count(_.isIgnored)
-        Console.printLine(s"\nDone. $passed/$total passed, $failed failed, $ignored ignored").orDie
+        val scenarios = results.flatMap(_.scenarioResults)
+        val total     = scenarios.length
+        val passed    = scenarios.count(_.isPassed)
+        val failed    = scenarios.count(_.hasFailure)
+        val ignored   = scenarios.count(_.isIgnored)
+        val xfail     = scenarios.count(_.isExpectedFailure)
+        val xpass     = scenarios.count(_.isUnexpectedlyPassing)
+        val extra     = Seq(Option.when(xfail > 0)(s"$xfail xfail"), Option.when(xpass > 0)(s"$xpass xpass")).flatten
+        val suffix    = if (extra.nonEmpty) extra.mkString(" (", ", ", ")") else ""
+        Console.printLine(s"\nDone. $passed/$total passed, $failed failed, $ignored ignored$suffix").orDie
 
       case _ => ZIO.unit
     }
