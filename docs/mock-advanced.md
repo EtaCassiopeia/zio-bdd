@@ -398,6 +398,16 @@ ready-to-use JVM truststore (JKS by default) + password, and `proxyPort` is the
 loopback port the SUT proxies through. Starting the listener is lazy and opt-in:
 a suite that never calls `mc.intercept` pays nothing.
 
+> **Fail loudly in a hermetic CI suite.** The embedded specs guard on
+> `EmbeddedRift.available` and **SKIP** (pass) when no `librift_ffi` resolves —
+> right for a cross-platform matrix, but for a suite whose whole point is to
+> exercise intercept, a missing/misconfigured natives jar would then read as a
+> green run that never ran. Guard the setup so it fails loudly instead:
+> `EmbeddedRift.requireAvailable` (a `no-op` when a native resolves; otherwise a
+> `MockError.ProvisionFailed` naming the host `os-arch` and how to fix it — add
+> the `zio-bdd-rift-embedded-natives` dependency or set `-Drift.ffi.lib`). Use
+> the boolean `EmbeddedRift.available` only where a SKIP is genuinely desired.
+
 Build rules with the DSL — `intercept(host).redirectTo(space)` or
 `.respondWith(stub)` — and apply them through the capability:
 
