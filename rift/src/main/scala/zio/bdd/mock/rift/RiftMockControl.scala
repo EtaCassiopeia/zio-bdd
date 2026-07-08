@@ -48,12 +48,17 @@ private[rift] final case class RiftMockControl(
   spaces: Ref[Map[SpaceId, RiftMockControl.Imposter]],
   correlated: Ref[Map[SpaceId, RiftMockControl.CorrSpace]],
   sharedPort: Ref.Synchronized[Option[Int]],
-  ids: Ref[Int]
+  ids: Ref[Int],
+  interceptProxy: Option[(String, Int)]
 ) extends MockControl:
 
   import RiftMockControl.{CorrSpace, Imposter}
 
   def backendName: String = "rift"
+
+  // Intercept (#253) is advertised only when the container was started with an intercept port
+  // (Rift.managed(interceptPort = ...)) — an opt-in listener, unlike the embedded adapter's
+  // always-on capability.
   def capabilities: Set[Capability] =
     Set(
       Capability.Faults,
@@ -62,7 +67,7 @@ private[rift] final case class RiftMockControl(
       Capability.Scripting,
       Capability.ProxyRecord,
       Capability.Templating
-    )
+    ) ++ interceptProxy.map(_ => Capability.Intercept)
 
   override def isolation: Isolation = mode match
     case RiftMode.Correlated(_) => Isolation.Correlated
@@ -116,6 +121,31 @@ private[rift] final case class RiftMockControl(
   def scripting: IO[Unsupported, Scripting]             = ZIO.succeed(riftScripting)
   def proxyRecord: IO[Unsupported, ProxyRecord]         = ZIO.succeed(riftProxyRecord)
   def templating: IO[Unsupported, Templating]           = ZIO.succeed(riftTemplating)
+
+  // Built-in HTTPS intercept (#253) over the container's admin HTTP API — advertised only when
+  // Rift.managed started the container with an intercept port (interceptProxy is defined).
+  override def intercept: IO[Unsupported, Intercept] = interceptProxy match
+    case Some((h, p)) => ZIO.succeed(new RiftIntercept(client, endpoint.adminBase, h, p, internalPortOf))
+    case None         => ZIO.fail(Unsupported(Capability.Intercept, backendName))
+
+  // Resolve a space's container-internal imposter port (as opposed to `space.baseUri`'s
+  // host-mapped port) from this adapter's own tracking maps, for a Redirect intercept rule
+  // (#253) — the intercept listener forwards inside the container, where only the internal
+  // port is reachable. Fails for a space this adapter never provisioned (e.g. a foreign or
+  // hand-built MockSpace) rather than silently forwarding to a bogus port.
+  private def internalPortOf(space: MockSpace): IO[MockError, Int] =
+    for
+      imps  <- spaces.get
+      corrs <- correlated.get
+      port <- (imps.get(space.id).map(_.port).orElse(corrs.get(space.id).map(_.port))) match
+                case Some(p) => ZIO.succeed(p)
+                case None =>
+                  ZIO.fail(
+                    MockError.InvalidDefinition(
+                      s"intercept redirect target ${space.id.value} is not a known Rift space"
+                    )
+                  )
+    yield port
 
   // ===== Faults (#128) — `_rift.fault` (rift#239) =================================
 
@@ -605,8 +635,16 @@ private[rift] object RiftMockControl:
    * Build an adapter against an endpoint in the given isolation `mode`, taking
    * the zio-http [[Client]] and [[Provisioning]] from the environment. Scoped:
    * the shared Correlated imposter is torn down when the scope closes.
+   * `interceptProxy` — the intercept listener's (host, host-mapped port), when
+   * the container was started with `--intercept-port` (#253) — gates the
+   * `Intercept` capability; `None` (the default) leaves it unsupported, as
+   * before.
    */
-  def make(endpoint: RiftEndpoint, mode: RiftMode): URIO[Client & Provisioning & Scope, MockControl] =
+  def make(
+    endpoint: RiftEndpoint,
+    mode: RiftMode,
+    interceptProxy: Option[(String, Int)] = None
+  ): URIO[Client & Provisioning & Scope, MockControl] =
     for
       client     <- ZIO.service[Client]
       prov       <- ZIO.service[Provisioning]
@@ -614,6 +652,6 @@ private[rift] object RiftMockControl:
       correlated <- Ref.make(Map.empty[SpaceId, CorrSpace])
       sharedPort <- Ref.Synchronized.make(Option.empty[Int])
       ids        <- Ref.make(0)
-      control     = RiftMockControl(endpoint, client, prov, mode, spaces, correlated, sharedPort, ids)
+      control     = RiftMockControl(endpoint, client, prov, mode, spaces, correlated, sharedPort, ids, interceptProxy)
       _          <- ZIO.addFinalizer(control.teardownShared)
     yield control

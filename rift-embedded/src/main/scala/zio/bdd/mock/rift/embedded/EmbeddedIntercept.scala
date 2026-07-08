@@ -128,28 +128,9 @@ private[embedded] object EmbeddedIntercept:
 
   /**
    * Build the rift intercept-rule JSON from a portable [[InterceptRule]]. Left
-   * on a Redirect whose target space has no port in its `baseUri`.
+   * on a Redirect whose target space has no port in its `baseUri`. Delegates to
+   * the backend-neutral [[zio.bdd.mock.rift.InterceptRuleJson]] (#253), shared
+   * with the container adapter — both drive the same wire shape.
    */
   private[embedded] def ruleJson(rule: InterceptRule): Either[MockError, String] =
-    rule match
-      case InterceptRule.Redirect(host, space) =>
-        portOf(space.baseUri).map { port =>
-          Json
-            .Obj("host" -> Json.Str(host), "action" -> Json.Obj("forward" -> Json.Obj("port" -> Json.Num(port))))
-            .toJson
-        }
-      case InterceptRule.Serve(host, stub) =>
-        val headers = Json.Obj(stub.headers.map((k, v) => k -> Json.Str(v)).toSeq*)
-        val serve = Json.Obj(
-          "statusCode" -> Json.Num(stub.status),
-          "headers"    -> headers,
-          "body"       -> stub.body.fold[Json](Json.Null)(Json.Str(_))
-        )
-        Right(Json.Obj("host" -> Json.Str(host), "action" -> Json.Obj("serve" -> serve)).toJson)
-
-  private def portOf(baseUri: String): Either[MockError, Int] =
-    scala.util
-      .Try(java.net.URI.create(baseUri).getPort)
-      .toOption
-      .filter(_ > 0)
-      .toRight(MockError.InvalidDefinition(s"intercept redirect target has no port in its baseUri: $baseUri"))
+    zio.bdd.mock.rift.InterceptRuleJson.ruleJson(rule)

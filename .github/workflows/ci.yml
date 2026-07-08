@@ -43,10 +43,10 @@ jobs:
       # exercise Rift when RIFT_IT is set (dead in the hermetic `build` job above).
       # (The Rift unmatched-request-default bug that previously failed the matrix
       # column is fixed in #165, so the full module runs green here.)
-      - name: Real-container suites (RiftContainerSpec + conformance Rift column)
+      - name: Real-container suites (RiftContainerSpec + RiftInterceptSpec + conformance Rift column)
         env:
           RIFT_IT: "1"
-        run: sbt "rift/testOnly zio.bdd.mock.rift.RiftContainerSpec" "conformance/test"
+        run: sbt "rift/testOnly zio.bdd.mock.rift.RiftContainerSpec zio.bdd.mock.rift.RiftInterceptSpec" "conformance/test"
 
   # The embedded provider (#133/#193) drives Rift in-process over librift_ffi via the stable Panama
   # FFM API (JEP 454), finalized in JDK 22. It ships as a separate `zio-bdd-rift-embedded` artifact
