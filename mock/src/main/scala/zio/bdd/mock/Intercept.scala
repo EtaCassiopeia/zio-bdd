@@ -43,15 +43,31 @@ final case class TrustStore(path: Path, password: String, format: TrustStoreForm
 
 object TrustStore:
   /**
+   * The file a truststore export writes to. `None` → a fresh temp file (removed
+   * on JVM exit); `Some(p)` → `p` itself, with its parent directories created —
+   * a caller-chosen path, e.g. a host dir bind-mounted into a containerized SUT
+   * (#263). Does file-system work, so call it inside a blocking effect.
+   */
+  def exportPath(to: Option[Path], format: TrustStoreFormat): Path =
+    to match
+      case Some(p) =>
+        Option(p.getParent).foreach(Files.createDirectories(_))
+        p
+      case None =>
+        val tmp = Files.createTempFile("rift-intercept-", s".${format.wire}")
+        tmp.toFile.deleteOnExit()
+        tmp
+
+  /**
    * Return a copy of `caOnly` whose store ALSO contains the running JVM's
    * default trust anchors (its `cacerts`). Pointing a SUT at the CA-only export
    * via `-Djavax.net.ssl.trustStore` *replaces* the JVM default store, so the
    * SUT would trust the intercept CA but lose trust for every real HTTPS host;
-   * the merged store keeps both. Preserves `caOnly`'s format + password and
-   * writes a fresh temp file. Backend-neutral — pure `java.security`, no
-   * adapter types.
+   * the merged store keeps both. Preserves `caOnly`'s format + password. Writes
+   * a fresh temp file, or `to` when given (see [[exportPath]]). Backend-neutral
+   * — pure `java.security`, no adapter types.
    */
-  def plusSystemCAs(caOnly: TrustStore): IO[MockError, TrustStore] =
+  def plusSystemCAs(caOnly: TrustStore, to: Option[Path] = None): IO[MockError, TrustStore] =
     ZIO.attemptBlocking {
       // The whole point is to ADD the JVM defaults; an empty set means a misconfigured/empty cacerts
       // and a merged store that is silently CA-only — fail loudly rather than degrade to that.
@@ -74,8 +90,7 @@ object TrustStore:
         val alias = aliases.nextElement()
         Option(caStore.getCertificate(alias)).foreach(cert => merged.setCertificateEntry(s"intercept-$alias", cert))
 
-      val out = Files.createTempFile("rift-intercept-merged-", s".${caOnly.format.wire}")
-      out.toFile.deleteOnExit()
+      val out = exportPath(to, caOnly.format)
       Using.resource(Files.newOutputStream(out))(os => merged.store(os, caOnly.password.toCharArray))
       TrustStore(out, caOnly.password, caOnly.format)
     }

@@ -481,9 +481,18 @@ val mock = Provisioning.live >>> EmbeddedRift.layer(InterceptConfig(bindHost = "
 ```
 
 `proxyEndpoint` reports the **actually-bound** host and port (not just the
-loopback port), so you can log or inject them. The SUT container points its HTTPS
-proxy at the Docker host-gateway and trusts the exported truststore mounted into
-the container:
+loopback port), so you can log or inject them. Export the truststore **straight
+to a bind-mounted path** the container reads via `to` (default is a temp file),
+so there's no copy step — it also creates parent dirs and works with
+`trustStoreWithSystemCAs`:
+
+```scala
+// /host/mnt is bind-mounted to /mnt in the SUT container:
+ts <- ic.trustStore(to = Some(java.nio.file.Path.of("/host/mnt/intercept-truststore.p12")))
+```
+
+The SUT container points its HTTPS proxy at the Docker host-gateway and trusts
+that mounted truststore:
 
 ```
 # in the SUT container (host-gateway = host.docker.internal on Docker Desktop):

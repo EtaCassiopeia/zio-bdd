@@ -194,5 +194,34 @@ object EmbeddedInterceptSpec extends ZIOSpecDefault:
         // (b) the merged store also carries the JVM default anchors → strictly more entries than CA-only.
         yield assertTrue(res._1 == 200, res._2.contains("mocked"), caN >= 1, mergedN > caN))
           .provide(Provisioning.live, EmbeddedRift.layer.mapError(asT))
+    },
+    test(
+      "trustStore(to = Some(path)) / trustStoreWithSystemCAs(to = …): export to a caller path, JVM-loadable there (#263)"
+    ) {
+      if !EmbeddedRift.available then ZIO.succeed(assertCompletes)
+      else
+        (for
+          mc           <- ZIO.service[MockControl]
+          _            <- mc.provision(cdnConfig).mapError(asT)
+          ic           <- mc.intercept.mapError(u => new RuntimeException(u.message))
+          base         <- ZIO.attemptBlocking(Files.createTempDirectory("rift-mnt"))
+          caPath        = base.resolve("ca").resolve("intercept.p12")     // parent 'ca' does not exist yet
+          mergedPath    = base.resolve("merged").resolve("intercept.jks") // parent 'merged' does not exist yet
+          ca           <- ic.trustStore(to = Some(caPath)).mapError(asT)
+          merged       <- ic.trustStoreWithSystemCAs(TrustStoreFormat.Jks, to = Some(mergedPath)).mapError(asT)
+          caExists     <- ZIO.attemptBlocking(Files.exists(caPath))
+          mergedExists <- ZIO.attemptBlocking(Files.exists(mergedPath))
+          caN          <- anchorCount(ca)
+          mergedN      <- anchorCount(merged)
+        yield assertTrue(
+          ca.path == caPath,
+          caExists,
+          caN >= 1, // CA-only store written to + loaded from the caller path
+          merged.path == mergedPath,
+          merged.format == TrustStoreFormat.Jks,
+          mergedExists,
+          mergedN > caN // merged store (CA + system anchors) written to + loaded from the caller path
+        ))
+          .provide(Provisioning.live, EmbeddedRift.layer.mapError(asT))
     }
   ) @@ TestAspect.withLiveClock @@ TestAspect.sequential
