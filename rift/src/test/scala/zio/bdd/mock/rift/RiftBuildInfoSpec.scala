@@ -14,9 +14,9 @@ object RiftBuildInfoSpec extends ZIOSpecDefault:
   def spec = suite("RiftBuildInfo")(
     test("DefaultImage is derived from the single rift-version source of truth") {
       assertTrue(
-        RiftBuildInfo.riftVersion == "0.11.2",
+        RiftBuildInfo.riftVersion == "0.11.3",
         Rift.DefaultImage == s"zainalpour/rift-proxy:v${RiftBuildInfo.riftVersion}",
-        Rift.DefaultImage == "zainalpour/rift-proxy:v0.11.2"
+        Rift.DefaultImage == "zainalpour/rift-proxy:v0.11.3"
       )
     }
   )

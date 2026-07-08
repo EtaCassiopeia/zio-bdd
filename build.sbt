@@ -17,7 +17,7 @@ import java.security.MessageDigest
 // Single source of truth for the pinned Rift release (#195). Both the FFI natives (riftNativesVersion,
 // downloaded into the embedded-natives jar) and the container image tag (Rift.DefaultImage, via the
 // generated RiftBuildInfo below) derive from it, so a version bump touches exactly one line.
-val riftVersion        = "0.11.2"
+val riftVersion        = "0.11.3"
 val riftNativesVersion = riftVersion
 
 // The (os, arch, ext) cdylibs bundled into the natives jar — linux/macOS × x86_64/aarch64 (#134).

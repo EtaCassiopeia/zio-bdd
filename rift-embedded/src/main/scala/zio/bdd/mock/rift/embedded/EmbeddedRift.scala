@@ -69,8 +69,21 @@ object EmbeddedRift:
    * address) — the engine binds via a socket-address parse, so a hostname like
    * `localhost` is rejected with [[MockError.InvalidDefinition]] on first
    * intercept use (#262), not resolved.
+   *
+   * `caCert`/`caKey` (PEM file paths, **both or neither**) make the proxy load
+   * a **persistent, caller-provided** intercept CA instead of minting a fresh
+   * ephemeral one each start (#273, needs rift ≥ 0.11.3). Commit a rift CA once
+   * and a long-lived containerized SUT can trust it at JVM startup — before the
+   * test starts the proxy — so the ordering problem an ephemeral CA creates
+   * disappears. Absent → ephemeral CA, exactly as before. Supplying only one is
+   * rejected with [[MockError.InvalidDefinition]] on first intercept use.
    */
-  final case class InterceptConfig(bindHost: String = "127.0.0.1", port: Option[Int] = None)
+  final case class InterceptConfig(
+    bindHost: String = "127.0.0.1",
+    port: Option[Int] = None,
+    caCert: Option[Path] = None,
+    caKey: Option[Path] = None
+  )
 
   /**
    * A scoped [[MockControl]] backed by the in-process Rift engine, PerInstance

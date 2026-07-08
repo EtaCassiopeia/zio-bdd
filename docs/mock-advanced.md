@@ -515,6 +515,27 @@ forwards intercepted traffic to the target space's imposter internally on
 loopback, so imposter ports stay private. See the `bindHost 0.0.0.0` case in
 `EmbeddedInterceptSpec` for a runnable check over a non-loopback interface.
 
+**Committed CA — no run-model change (requires rift ≥ 0.11.3).** By default the
+embedded proxy mints a **fresh CA on every start**, so a long-lived SUT container
+can't trust it at JVM startup (the truststore doesn't exist until the test starts
+the proxy). Point `InterceptConfig` at a **persistent, committed** CA instead — the
+proxy loads it at runtime, so the truststore you exported and committed once already
+matches:
+
+```scala
+val ca  = java.nio.file.Path.of("test/ca/intercept-ca.pem")   // committed once
+val key = java.nio.file.Path.of("test/ca/intercept-ca.key")
+val mock = Provisioning.live >>>
+  EmbeddedRift.layer(InterceptConfig(bindHost = "0.0.0.0", port = Some(8888), caCert = Some(ca), caKey = Some(key)))
+```
+
+`caCert`/`caKey` are **both-or-neither** (supplying one fails with
+`MockError.InvalidDefinition`); absent, the ephemeral default is unchanged. Now the
+SUT container mounts the pre-exported truststore and starts normally via `docker
+compose` — no test-owned container lifecycle, no two-phase ordering. See the
+persistent-CA reuse case in `EmbeddedInterceptSpec` (two instances, one committed CA,
+mutually-trusted leaves).
+
 **CONTAINER variant (`Rift.managed`).** The containerized Rift adapter
 (#253) advertises `Capability.Intercept` too, opt-in: pass a
 container-internal `interceptPort` to `Rift.managed`, and testcontainers
