@@ -101,7 +101,11 @@ object JUnitXMLFormatter {
     logs: CollectedLogs,
     timestamp: Instant,
     durationSecs: Double,
-    outcome: ScenarioOutcome
+    outcome: ScenarioOutcome,
+    // How many times the scenario ran (retry aspects, #225). 1 unless a retry aspect applied;
+    // carried into JUnit XML so aggregation systems can tell "passed after N attempts" from a
+    // first-try pass.
+    attempts: Int = 1
   )
 
   enum ScenarioOutcome:
@@ -109,10 +113,17 @@ object JUnitXMLFormatter {
     case Failed(message: String, stackTrace: Option[String])
     case Skipped
     case Pending(reason: String)
+    // An `@expectedFailure` scenario whose body failed as expected (#232). Rendered as <skipped>
+    // (build stays green) but distinguishable from a plain pass — CI dashboards can surface it.
+    case ExpectedFailure(reason: String)
 
   object ScenarioOutcome:
     def from(r: ScenarioResult): ScenarioOutcome =
+      // XPASS/XFAIL must be checked before `isPassed`: an expected failure has isPassed == true
+      // (the inversion), so it would otherwise be indistinguishable from a genuine pass.
       if (r.isIgnored) Skipped
+      else if (r.isUnexpectedlyPassing) Failed("expected to fail but passed — remove @expectedFailure", None)
+      else if (r.isExpectedFailure) ExpectedFailure(r.error.map(_.getMessage).getOrElse("body failed as expected"))
       else if (r.isPassed) Passed
       else if (r.hasPending && !r.hasFailure)
         Pending(
@@ -133,11 +144,12 @@ object JUnitXMLFormatter {
     timestamp: Instant,
     durationSecs: Double
   ):
-    def total: Int    = cases.length
-    def failures: Int = cases.count(_.outcome.isInstanceOf[ScenarioOutcome.Failed])
-    def skipped: Int  = cases.count(_.outcome == ScenarioOutcome.Skipped)
-    def pending: Int  = cases.count(_.outcome.isInstanceOf[ScenarioOutcome.Pending])
-    def passed: Int   = cases.count(_.outcome == ScenarioOutcome.Passed)
+    def total: Int            = cases.length
+    def failures: Int         = cases.count(_.outcome.isInstanceOf[ScenarioOutcome.Failed])
+    def skipped: Int          = cases.count(_.outcome == ScenarioOutcome.Skipped)
+    def pending: Int          = cases.count(_.outcome.isInstanceOf[ScenarioOutcome.Pending])
+    def expectedFailures: Int = cases.count(_.outcome.isInstanceOf[ScenarioOutcome.ExpectedFailure])
+    def passed: Int           = cases.count(_.outcome == ScenarioOutcome.Passed)
 
   sealed trait Format
   object Format:
@@ -168,7 +180,8 @@ object JUnitXMLFormatter {
         logs = logs.getOrElse(r.scenario.id.toString, CollectedLogs()),
         timestamp = timestamp,
         durationSecs = r.duration / 1000.0,
-        outcome = ScenarioOutcome.from(r)
+        outcome = ScenarioOutcome.from(r),
+        attempts = r.attempts
       )
     }
     TestSuiteRecord(
@@ -194,7 +207,7 @@ object JUnitXMLFormatter {
       "name"      -> suite.name,
       "tests"     -> suite.total.toString,
       "failures"  -> suite.failures.toString,
-      "skipped"   -> (suite.skipped + suite.pending).toString,
+      "skipped"   -> (suite.skipped + suite.pending + suite.expectedFailures).toString,
       "time"      -> f"${suite.durationSecs}%.3f",
       "timestamp" -> iso.format(suite.timestamp)
     ) ++
@@ -213,6 +226,7 @@ object JUnitXMLFormatter {
     ) ++
       tc.file.map("file" -> _).toSeq ++
       tc.line.map("line" -> _.toString).toSeq ++
+      (if (tc.attempts > 1) Some("attempts" -> tc.attempts.toString) else None).toSeq ++
       (if (tc.tags.nonEmpty) Some("tags" -> tc.tags.map("@" + _).mkString(" ")) else None).toSeq ++
       (if (format == Format.JUnit4) Seq("assertions" -> tc.steps.count(_.outcome == StepOutcome.Passed).toString)
        else Nil)
@@ -253,6 +267,8 @@ object JUnitXMLFormatter {
     case ScenarioOutcome.Skipped => <skipped/>
     case ScenarioOutcome.Pending(r) =>
       <skipped message={s"Pending: $r"}/>
+    case ScenarioOutcome.ExpectedFailure(reason) =>
+      <skipped message={s"expected failure: $reason"}/>
     case ScenarioOutcome.Failed(msg, trace) =>
       buildElem(
         "failure",

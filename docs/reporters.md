@@ -161,6 +161,18 @@ target/test-reports/
 Both formats are compatible with Jenkins, GitLab CI, and GitHub Actions test report plugins.
 See `docs/adr/junit-report-formats.md` for a full comparison of the two XML structures.
 
+**Scenario aspects (retry, XFAIL/XPASS):**
+
+The retry (`@retry`/`@flaky`/`@nonFlaky`) and `@expectedFailure` aspects are surfaced in the XML so
+CI dashboards can distinguish tracked known-failures and flaky passes from ordinary results — build
+gating is unchanged (an expected failure never fails the build; an unexpected pass always does):
+
+| Aspect | XML representation |
+|---|---|
+| Ran more than once (retry) | `attempts="N"` attribute on the `<testcase>` (omitted when `N == 1`) |
+| `@expectedFailure` body **failed** (XFAIL) | `<skipped message="expected failure: …"/>` — counted under `skipped`, not `failures` |
+| `@expectedFailure` body **passed** (XPASS) | `<failure message="expected to fail but passed — remove @expectedFailure"/>` |
+
 **Duration:**
 
 The `time` attribute on each `<testcase>` is the real wall-clock duration of the scenario in
