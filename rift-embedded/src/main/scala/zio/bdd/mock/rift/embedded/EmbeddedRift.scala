@@ -37,11 +37,33 @@ object EmbeddedRift:
   def available: Boolean = NativeLibrary.available
 
   /**
+   * Bind configuration for the built-in [[Intercept]] TLS-MITM proxy. Defaults
+   * preserve today's behavior: loopback bind, OS-assigned port. Set `bindHost =
+   * "0.0.0.0"` (or a specific NIC address) so a SUT running elsewhere — e.g. a
+   * Docker container reaching the host engine via the host-gateway — can reach
+   * the proxy; a loopback socket refuses gateway-originated connections. Pin
+   * `port` when the SUT's proxy target must be known *before* the test assigns
+   * it (a compose-orchestrated SUT). Binding a wider interface is strictly
+   * opt-in — nothing is exposed off loopback unless asked.
+   */
+  final case class InterceptConfig(bindHost: String = "127.0.0.1", port: Option[Int] = None)
+
+  /**
    * A scoped [[MockControl]] backed by the in-process Rift engine, PerInstance
    * isolation (own port per space). See the `mode` overload below for
    * Correlated.
    */
-  def layer: ZLayer[Provisioning, MockError, MockControl] = layer(RiftMode.PerInstance)
+  def layer: ZLayer[Provisioning, MockError, MockControl] = layer(RiftMode.PerInstance, InterceptConfig())
+
+  /**
+   * As [[layer]], with the intercept proxy bound per `intercept` (bind host /
+   * fixed port).
+   */
+  def layer(intercept: InterceptConfig): ZLayer[Provisioning, MockError, MockControl] =
+    layer(RiftMode.PerInstance, intercept)
+
+  /** As the `mode` overload, with the intercept proxy bound per `intercept`. */
+  def layer(mode: RiftMode): ZLayer[Provisioning, MockError, MockControl] = layer(mode, InterceptConfig())
 
   /**
    * A scoped [[MockControl]] backed by the in-process Rift engine, in the given
@@ -51,14 +73,15 @@ object EmbeddedRift:
    * Correlated mode, the shared imposter's teardown) on close. Entirely FFI
    * (#244) — no loopback HTTP admin plane, so the public requirement stays just
    * [[Provisioning]]. Fails with [[MockError.ProvisionFailed]] when no native
-   * library resolves for the host, or it cannot be loaded.
+   * library resolves for the host, or it cannot be loaded. The `intercept`
+   * config governs the built-in intercept proxy's bind host + port (#254).
    */
-  def layer(mode: RiftMode): ZLayer[Provisioning, MockError, MockControl] =
+  def layer(mode: RiftMode, intercept: InterceptConfig): ZLayer[Provisioning, MockError, MockControl] =
     ZLayer.scoped {
       for
         prov    <- ZIO.service[Provisioning]
         engine  <- startEngine
-        control <- EmbeddedRiftMockControl.make(engine, prov, mode)
+        control <- EmbeddedRiftMockControl.make(engine, prov, mode, intercept)
       yield control
     }
 
