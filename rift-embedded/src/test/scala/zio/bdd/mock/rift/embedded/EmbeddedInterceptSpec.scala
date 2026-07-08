@@ -48,6 +48,17 @@ object EmbeddedInterceptSpec extends ZIOSpecDefault:
       finally s.close()
     }
 
+  // Count the trusted-cert entries in a truststore file — CA-only vs merged (#259).
+  private def anchorCount(ts: TrustStore): Task[Int] =
+    ZIO.attemptBlocking {
+      import scala.jdk.CollectionConverters.*
+      val ks = KeyStore.getInstance(ts.format.keystoreName)
+      val in = Files.newInputStream(ts.path)
+      try ks.load(in, ts.password.toCharArray)
+      finally in.close()
+      ks.aliases().asScala.count(ks.isCertificateEntry)
+    }
+
   // The stand-in SUT: a JDK HttpClient trusting `ts` and proxying HTTPS through the intercept port.
   // Forced HTTP/1.1 — the MITM tunnel serves 1.1 (an h2 upgrade over the tunnel would EOF, zb-183).
   // `proxyHost` is loopback by default; a non-loopback address exercises the wider-bind topology (#254).
@@ -58,10 +69,7 @@ object EmbeddedInterceptSpec extends ZIOSpecDefault:
     proxyHost: String = "127.0.0.1"
   ): Task[(Int, String)] =
     ZIO.attemptBlocking {
-      val ks = KeyStore.getInstance(ts.format match
-        case TrustStoreFormat.Pkcs12 => "PKCS12"
-        case TrustStoreFormat.Jks    => "JKS"
-      )
+      val ks = KeyStore.getInstance(ts.format.keystoreName)
       val in = Files.newInputStream(ts.path)
       try ks.load(in, ts.password.toCharArray)
       finally in.close()
@@ -167,5 +175,24 @@ object EmbeddedInterceptSpec extends ZIOSpecDefault:
         default == """{"host":"127.0.0.1","port":0}""",
         configured == """{"host":"0.0.0.0","port":8888}"""
       )
+    },
+    test("trustStoreWithSystemCAs: the merged store trusts the intercepted host AND keeps the JVM default anchors") {
+      if !EmbeddedRift.available then ZIO.succeed(assertCompletes)
+      else
+        (for
+          mc      <- ZIO.service[MockControl]
+          space   <- mc.provision(cdnConfig).mapError(asT).map(_.head)
+          ic      <- mc.intercept.mapError(u => new RuntimeException(u.message))
+          _       <- ic.redirectTo("cdn.example.com", space).mapError(asT)
+          caOnly  <- ic.trustStore().mapError(asT)
+          merged  <- ic.trustStoreWithSystemCAs().mapError(asT)
+          port    <- ic.proxyPort.mapError(asT)
+          caN     <- anchorCount(caOnly)
+          mergedN <- anchorCount(merged)
+          // (a) the merged store still trusts the intercept CA → the redirected HTTPS call succeeds through it.
+          res <- sutGet("https://cdn.example.com/config.json", port, merged)
+        // (b) the merged store also carries the JVM default anchors → strictly more entries than CA-only.
+        yield assertTrue(res._1 == 200, res._2.contains("mocked"), caN >= 1, mergedN > caN))
+          .provide(Provisioning.live, EmbeddedRift.layer.mapError(asT))
     }
   ) @@ TestAspect.withLiveClock @@ TestAspect.sequential

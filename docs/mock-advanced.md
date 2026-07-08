@@ -452,6 +452,19 @@ PerInstance (the default) for host redirects.
 > `trustedCertEntry` the default `TrustManagerFactory` reads out of the box, so
 > either works for a JVM SUT.
 
+**CA-only vs. merged truststore.** `trustStore` exports a store containing **only**
+the intercept CA. Pointing a SUT at it via `-Djavax.net.ssl.trustStore` *replaces*
+the JVM's default trust store (`cacerts`) wholesale — the SUT trusts the mocked
+hosts but **loses trust for every real HTTPS endpoint** (AWS, other downstreams).
+That's exactly right for a **fully hermetic** SUT (every external call mocked). For
+a **mostly hermetic** SUT that mocks one vendor yet still calls real infrastructure,
+use `trustStoreWithSystemCAs`, which exports the intercept CA **plus** the JVM's
+default trust anchors so both keep validating:
+
+```scala
+ts <- ic.trustStoreWithSystemCAs()   // intercept CA + the JVM's cacerts, one store
+```
+
 **Containerized SUT (bind a reachable interface).** The examples above bind the
 intercept proxy to **loopback** — right when the SUT is a host process. When the
 SUT runs in a **Docker container** while the test + engine run on the host, a
