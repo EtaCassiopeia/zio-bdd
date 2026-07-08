@@ -98,3 +98,15 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libluajit-5.1-dev
       - name: Preview embedded tests
         run: sbt "riftEmbedded21/test"
+      # The point of the -jdk21 cut is to load on JDK 21, where FFM is preview (class <= 65). Guard
+      # against a regression to class 66 (Java 22), which shipped in 1.3.1 (#247) and would break the
+      # documented JDK-21 + --enable-preview path.
+      - name: Assert the JDK-21 bridge is class <= 65
+        run: |
+          bridges=$(find rift-embedded-jdk21/target -name RiftFfiBridge.class)
+          count=$(printf '%s' "$bridges" | grep -c . || true)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::expected exactly one RiftFfiBridge.class under rift-embedded-jdk21/target, found $count"
+            exit 1
+          fi
+          bash scripts/assert-class-max-version.sh "$bridges" 65
