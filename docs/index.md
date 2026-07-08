@@ -33,6 +33,7 @@ New to zio-bdd?  Read in this order:
 | [Running Tests](running.md) | `@Suite` annotation, sbt commands, CLI flags, dry-run, tag filtering, parallelism, step timeout, IDE integration |
 | [Feature Flag Testing](testing-flags.md) | `@flags(k=v)` matrix expansion, `flagLayer`, `ScenarioMetadata.flagValues`, OpenFeature / Optimizely patterns |
 | [Reporters](reporters.md) | `pretty` (console tree), `junitxml` (CI reports), `StreamingReporter`, `LiveProgressReporter`, custom reporters |
+| [Performance](performance.md) | Parallelism tuning heuristics, log-capture memory characteristics, state-mechanism cost, startup & discovery |
 
 ---
 
