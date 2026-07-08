@@ -19,8 +19,13 @@ import java.nio.file.Files
  * use — so `proxyPort`/`proxyEndpoint` just report the already-bound,
  * host-mapped port handed in at construction.
  */
-private[rift] final class RiftIntercept(client: Client, adminBase: String, host: String, proxyMappedPort: Int)
-    extends Intercept:
+private[rift] final class RiftIntercept(
+  client: Client,
+  adminBase: String,
+  host: String,
+  proxyMappedPort: Int,
+  internalPortOf: zio.bdd.mock.MockSpace => IO[MockError, Int]
+) extends Intercept:
 
   def proxyPort: IO[MockError, Int] = ZIO.succeed(proxyMappedPort)
 
@@ -28,13 +33,22 @@ private[rift] final class RiftIntercept(client: Client, adminBase: String, host:
 
   def add(rule: InterceptRule): IO[MockError, Unit] =
     for
-      json <- ZIO.fromEither(InterceptRuleJson.ruleJson(rule))
+      json <- ruleJson(rule)
       u    <- url("/intercept/rules")
       res  <- send(jsonRequest(HttpMethod.POST, u, json))
       _    <- expectSuccess("add intercept rule", res)
     yield ()
 
-  def trustStore(format: TrustStoreFormat): IO[MockError, TrustStore] =
+  // A container Redirect must forward to the container-INTERNAL imposter port, not the
+  // host-mapped port carried in `space.baseUri`: the intercept listener and the imposters
+  // both run inside the same Rift process, so "forward" is a same-process/same-network
+  // hop that never crosses the host<->container port mapping (unlike the embedded adapter,
+  // where the baseUri port IS the process-local port InterceptRuleJson.ruleJson uses).
+  private def ruleJson(rule: InterceptRule): IO[MockError, String] = rule match
+    case InterceptRule.Redirect(host, space) => internalPortOf(space).map(InterceptRuleJson.forwardJson(host, _))
+    case InterceptRule.Serve(host, stub)     => ZIO.succeed(InterceptRuleJson.serveJson(host, stub))
+
+  def trustStore(format: TrustStoreFormat, to: Option[java.nio.file.Path]): IO[MockError, TrustStore] =
     // Rift's admin route uses the file extension (.p12 / .jks), NOT the format wire token
     // ("pkcs12", which the embedded FFI uses) — a `.pkcs12` route 404s on the real proxy.
     val ext = RiftIntercept.routeExt(format)
@@ -54,14 +68,16 @@ private[rift] final class RiftIntercept(client: Client, adminBase: String, host:
       bytes <- resp.body.asArray.mapError(t =>
                  MockError.CommunicationError(s"reading intercept truststore body: ${message(t)}")
                )
-      tmp <- ZIO.attemptBlocking {
-               val p = Files.createTempFile("rift-intercept-", s".${format.wire}")
-               p.toFile.deleteOnExit()
-               Files.write(p, bytes)
-               p
-             }
-               .mapError(t => MockError.CommunicationError(s"creating intercept truststore temp file: ${message(t)}"))
-    yield TrustStore(tmp, password, format)
+      out <- ZIO
+               // `to` = a caller-chosen path (e.g. a host dir bind-mounted into a containerized SUT,
+               // #263); None = a temp file removed on JVM exit. exportPath handles both.
+               .attemptBlocking {
+                 val p = TrustStore.exportPath(to, format)
+                 Files.write(p, bytes)
+                 p
+               }
+               .mapError(t => MockError.CommunicationError(s"writing intercept truststore: ${message(t)}"))
+    yield TrustStore(out, password, format)
 
   private def url(path: String): IO[MockError, URL] =
     ZIO

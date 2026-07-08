@@ -125,8 +125,27 @@ private[rift] final case class RiftMockControl(
   // Built-in HTTPS intercept (#253) over the container's admin HTTP API — advertised only when
   // Rift.managed started the container with an intercept port (interceptProxy is defined).
   override def intercept: IO[Unsupported, Intercept] = interceptProxy match
-    case Some((h, p)) => ZIO.succeed(new RiftIntercept(client, endpoint.adminBase, h, p))
+    case Some((h, p)) => ZIO.succeed(new RiftIntercept(client, endpoint.adminBase, h, p, internalPortOf))
     case None         => ZIO.fail(Unsupported(Capability.Intercept, backendName))
+
+  // Resolve a space's container-internal imposter port (as opposed to `space.baseUri`'s
+  // host-mapped port) from this adapter's own tracking maps, for a Redirect intercept rule
+  // (#253) — the intercept listener forwards inside the container, where only the internal
+  // port is reachable. Fails for a space this adapter never provisioned (e.g. a foreign or
+  // hand-built MockSpace) rather than silently forwarding to a bogus port.
+  private def internalPortOf(space: MockSpace): IO[MockError, Int] =
+    for
+      imps  <- spaces.get
+      corrs <- correlated.get
+      port <- (imps.get(space.id).map(_.port).orElse(corrs.get(space.id).map(_.port))) match
+                case Some(p) => ZIO.succeed(p)
+                case None =>
+                  ZIO.fail(
+                    MockError.InvalidDefinition(
+                      s"intercept redirect target ${space.id.value} is not a known Rift space"
+                    )
+                  )
+    yield port
 
   // ===== Faults (#128) — `_rift.fault` (rift#239) =================================
 

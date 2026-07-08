@@ -2,6 +2,7 @@ package zio.bdd.mock.rift
 
 import zio.*
 import zio.bdd.mock.*
+import zio.bdd.mock.dsl.*
 import zio.http.Client
 import zio.test.*
 
@@ -42,21 +43,70 @@ object RiftInterceptHermeticSpec extends ZIOSpecDefault:
   ): ZIO[Client & Provisioning, Throwable, TestResult] =
     withControl(Some(("localhost", 9999)))(use)
 
+  /**
+   * Like [[withControl]], but with a NON-IDENTITY `hostFor` mapping (`+10000`
+   * on the imposter's pool port) — mirrors a real container, where the
+   * SUT-reachable `baseUri` port (host-mapped) differs from the imposter's
+   * internal pool port. Lets a test prove `add(Redirect)` forwards to the
+   * internal port, not the one visible in `space.baseUri` (#253).
+   */
+  private def withOffsetHostMapping(
+    use: (MockControl, FakeRift) => UIO[TestResult]
+  ): ZIO[Client & Provisioning, Throwable, TestResult] =
+    ZIO.scoped {
+      for
+        adminAndFake <- FakeRift.started
+        (admin, fake) = adminAndFake
+        endpoint     <- RiftEndpoint.pooled(admin, (4545 until 4600).toList)(p => s"http://localhost:${p + 10000}")
+        control      <- RiftMockControl.make(endpoint, RiftMode.PerInstance, Some(("localhost", 9999)))
+        result       <- use(control, fake)
+      yield result
+    }
+
+  private val pingRule = MockRule(
+    `match` = RequestMatch(method = Some(Method.Get), path = PathMatch.Exact("/ping")),
+    respond = ResponseDef(status = 200, body = Body.Text("pong"))
+  )
+
+  private def portOf(baseUri: String): Int = baseUri.substring(baseUri.lastIndexOf(':') + 1).toInt
+
   def spec = suite("RiftMockControl Intercept (adapter vs fake admin API)")(
     test("Intercept is advertised only when the container was started with an intercept port (#253)") {
       withIntercept { (control, _) =>
         ZIO.succeed(assertTrue(control.capabilities.contains(Capability.Intercept)))
       }
     },
-    test("add(Redirect) posts a forward rule carrying the target space's port and host to /intercept/rules") {
-      withIntercept { (control, fake) =>
-        val space = MockSpace("http://localhost:4545", identity, SpaceId("y"))
+    test(
+      "add(Redirect) forwards to the target space's container-INTERNAL port, not the host-mapped port in its baseUri"
+    ) {
+      withOffsetHostMapping { (control, fake) =>
         for
-          ic    <- control.intercept.orDieWith(u => new RuntimeException(u.toString))
-          _     <- ic.add(InterceptRule.Redirect("cdn.example.com", space)).orDieWith(e => new RuntimeException(e.toString))
-          rules <- fake.interceptRules
+          space <- control
+                     .provision(MockSource.Dsl(MockSpec(List(pingRule))))
+                     .orDieWith(e => new RuntimeException(e.toString))
+                     .map(_.head)
+          mappedPort   = portOf(space.baseUri) // hostFor's `+10000` offset applied
+          internalPort = mappedPort - 10000    // the pool port actually bound inside "the container"
+          ic          <- control.intercept.orDieWith(u => new RuntimeException(u.toString))
+          _           <- ic.redirectTo("cdn.example.com", space).orDieWith(e => new RuntimeException(e.toString))
+          rules       <- fake.interceptRules
         yield assertTrue(
-          rules.exists(r => r.contains("\"forward\"") && r.contains("\"port\":4545") && r.contains("cdn.example.com"))
+          rules.exists(r =>
+            r.contains("\"forward\"") && r.contains(s"\"port\":$internalPort") && r.contains("cdn.example.com")
+          ),
+          !rules.exists(r => r.contains(s"\"port\":$mappedPort"))
+        )
+      }
+    },
+    test("add(Redirect) to a space this adapter never provisioned fails with InvalidDefinition (#253)") {
+      withIntercept { (control, _) =>
+        val foreign = MockSpace("http://localhost:4545", identity, SpaceId("not-provisioned"))
+        for
+          ic  <- control.intercept.orDieWith(u => new RuntimeException(u.toString))
+          res <- ic.add(InterceptRule.Redirect("cdn.example.com", foreign)).either
+        yield assertTrue(res match
+          case Left(_: MockError.InvalidDefinition) => true
+          case _                                    => false
         )
       }
     },
