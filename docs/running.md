@@ -17,6 +17,7 @@ public @interface Suite {
     String[] featureDirs()  default {"src/test/resources/features"};
     String[] reporters()    default {"pretty"};
     int      parallelism()  default 1;
+    int      scenarioParallelism() default 0;
     String[] includeTags()  default {};
     String[] excludeTags()  default {};
     String   logLevel()     default "info";
@@ -29,8 +30,9 @@ public @interface Suite {
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `featureDirs` | `String[]` | `{"src/test/resources/features"}` | One or more paths to directories or individual `.feature` files. Filesystem paths are resolved relative to the project root. Prefix with `classpath:` to load from the classpath (e.g. from a shared test-jar): `"classpath:features"` or `"classpath:features/my.feature"`. |
-| `reporters` | `String[]` | `{"pretty"}` | Reporter names to use. Built-in values: `"pretty"` (coloured console output), `"junitxml"` (JUnit 5 XML in `target/test-results/`). |
+| `reporters` | `String[]` | `{"pretty"}` | Reporter names to use. Built-in values: `"pretty"` (coloured console output), `"junitxml"` (JUnit 5 XML in `target/test-reports/`). |
 | `parallelism` | `int` | `1` | Maximum number of features executed concurrently. `1` means sequential. |
+| `scenarioParallelism` | `int` | `0` | Maximum number of scenarios executed concurrently within a single feature. `0` means auto (use available processors); `1` forces sequential. See [Parallelism](#parallelism) below. |
 | `includeTags` | `String[]` | `{}` | When non-empty, only scenarios that carry at least one of these tags are executed. |
 | `excludeTags` | `String[]` | `{}` | Scenarios carrying any of these tags are skipped. |
 | `logLevel` | `String` | `"info"` | Minimum log level captured during step execution: `"debug"`, `"info"`, `"error"`. |
@@ -139,6 +141,7 @@ sbt "testOnly com.example.MySuite -- \
 | `--parallelism` | `<n>` | Maximum number of features executed concurrently. Overrides `parallelism` from the annotation. | `--parallelism 4` |
 | `--scenario-parallelism` | `<n>` | Maximum number of scenarios executed concurrently within a single feature. Independent from feature-level parallelism. Default: `1`. | `--scenario-parallelism 2` |
 | `--dry-run` | _(none)_ | Enable dry-run mode (see below). | `--dry-run` |
+| `--focused` | _(none)_ | Strips scenarios excluded by a name or tag filter from the report entirely, instead of listing them as `IGNORED`. Execution is unaffected — only report output changes. Intended for IDE test runners driving a single scenario/feature. | `--focused` |
 | `--log-level` | `debug\|info\|error` | Minimum log level captured during step execution. Overrides `logLevel` from the annotation. | `--log-level debug` |
 | `--reporter` | `pretty\|junitxml` | Reporter to use. May be repeated. Overrides `reporters` from the annotation when specified. | `--reporter junitxml` |
 
@@ -221,7 +224,9 @@ treated as ignored and produces no step results.
 ## Scenario name filter
 
 The `--scenario-name` flag accepts a glob pattern matched case-insensitively against
-scenario names. `*` matches zero or more characters.
+scenario names. `*` matches zero or more characters. It is the only special character —
+`?` and character classes like `[abc]` are **not** wildcards and are matched literally
+against the scenario name.
 
 ```sh
 # Run all scenarios whose name starts with "Provision"
@@ -393,7 +398,23 @@ When("a very slow operation completes") {
 ## Scenario retry tags
 
 For environmentally flaky acceptance tests, a scenario can be re-run automatically. Tag it in
-Gherkin with an integer argument, or configure it in code via `scenarioAspects`.
+Gherkin with an integer argument, or configure it in code via `scenarioAspects`. Both paths
+resolve to the same `zio.bdd.core.ScenarioAspect` enum:
+
+```scala
+enum ScenarioAspect:
+  case Retry(n: Int)
+  case Flaky(n: Int)
+  case NonFlaky(n: Int)
+  case ExpectedFailure
+```
+
+Gherkin tags are parsed into this enum by `ScenarioAspect.fromTag` (a single tag, with or
+without a leading `@`) and `ScenarioAspect.fromTags` (the first match found among a
+scenario's tags, used by the executor). In both, the `n` argument is clamped with
+`n.max(1)`, so `@retry(0)` behaves like `@retry(1)`. A tag that doesn't match the expected
+shape (unknown name, non-integer argument) is simply not recognised by `fromTag` and falls
+through — the scenario runs once, as if untagged.
 
 | Tag | Semantics |
 |---|---|
@@ -415,6 +436,10 @@ Or, without touching the feature file, override `scenarioAspects` (keyed by scen
 override def scenarioAspects: Map[String, ScenarioAspect] =
   Map("provisions a fresh tenant" -> ScenarioAspect.Retry(3))
 ```
+
+The map key must match the scenario name **exactly** — there is no glob or regex support
+here, unlike `--scenario-name`. A key that doesn't match any scenario name verbatim is
+silently unused.
 
 **Semantics & interactions**
 
