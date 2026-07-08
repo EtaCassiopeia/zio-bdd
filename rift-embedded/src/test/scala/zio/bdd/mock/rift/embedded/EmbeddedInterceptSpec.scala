@@ -176,6 +176,19 @@ object EmbeddedInterceptSpec extends ZIOSpecDefault:
         configured == """{"host":"0.0.0.0","port":8888}"""
       )
     },
+    // Pure bind-host validation (#262); runs without the native library.
+    test("validateBindHost: IP literals pass; a hostname is rejected with a clear InvalidDefinition naming it") {
+      val ok  = List("127.0.0.1", "0.0.0.0", "192.168.1.5", "10.0.0.1", "255.255.255.255", "::1", "fe80::1")
+      val bad = List("localhost", "myhost.local", "example.com", "not-an-ip", "999.1.1.1", "127.0.0.01", "1.2.3")
+      assertTrue(
+        ok.forall(h => EmbeddedIntercept.validateBindHost(h).isRight),
+        bad.forall { h =>
+          EmbeddedIntercept.validateBindHost(h) match
+            case Left(MockError.InvalidDefinition(msg)) => msg.contains(h)
+            case _                                      => false
+        }
+      )
+    },
     test("trustStoreWithSystemCAs: the merged store trusts the intercepted host AND keeps the JVM default anchors") {
       if !EmbeddedRift.available then ZIO.succeed(assertCompletes)
       else

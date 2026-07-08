@@ -45,6 +45,11 @@ object EmbeddedRift:
    * `port` when the SUT's proxy target must be known *before* the test assigns
    * it (a compose-orchestrated SUT). Binding a wider interface is strictly
    * opt-in — nothing is exposed off loopback unless asked.
+   *
+   * `bindHost` must be an **IP literal** (e.g. `127.0.0.1`, `0.0.0.0`, a NIC
+   * address) — the engine binds via a socket-address parse, so a hostname like
+   * `localhost` is rejected with [[MockError.InvalidDefinition]] on first
+   * intercept use (#262), not resolved.
    */
   final case class InterceptConfig(bindHost: String = "127.0.0.1", port: Option[Int] = None)
 
