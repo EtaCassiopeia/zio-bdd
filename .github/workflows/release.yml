@@ -86,3 +86,39 @@ jobs:
             *) flags="$flags --latest" ;;
           esac
           gh release create "${GITHUB_REF_NAME}" $flags
+
+  # Keep the docs/README install snippets from lagging a published tag: bump them to the released version
+  # and open a PR. A PR (not a direct push) respects branch protection; the change is docs-only. No-op when
+  # the docs already carry this version. Note: a bot-opened PR does not re-trigger CI, so a maintainer merges
+  # it (admin merge is fine — docs-only). Skipped for pre-releases, which don't move the "current version".
+  docs-version-bump:
+    needs: github-release
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          fetch-depth: 0
+      - name: Open a docs version-bump PR for this release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          bash scripts/bump-doc-versions.sh "$version"
+          if git diff --quiet; then
+            echo "docs already at $version — nothing to bump"
+            exit 0
+          fi
+          branch="docs/bump-${version}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "docs: bump install snippets to ${version}"
+          git push -u origin "$branch"
+          gh pr create --base master --head "$branch" \
+            --title "docs: bump install snippets to ${version}" \
+            --body "Automated by the release workflow — sync the README/docs install snippets to the freshly-published \`${version}\`. Docs-only; safe to admin-merge (a bot-opened PR does not re-trigger CI)."
