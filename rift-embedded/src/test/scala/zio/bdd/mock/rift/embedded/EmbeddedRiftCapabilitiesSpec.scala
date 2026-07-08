@@ -60,8 +60,11 @@ object EmbeddedRiftCapabilitiesSpec extends ZIOSpecDefault:
 
     // Intercept FFI (#219): count listener starts (to prove memoization), capture the rule JSON and
     // the truststore-export args the adapter drives.
+    // The interceptUrl host (a documentation address, RFC 5737) deliberately differs from the default
+    // bindHost (127.0.0.1) so a test can prove proxyEndpoint reports the engine's bound host (#264) rather
+    // than echoing the requested bindHost.
     def startIntercept(optionsJson: String): IO[MockError, EmbeddedEngine.InterceptInfo] =
-      interceptStarts.update(_ + 1).as(EmbeddedEngine.InterceptInfo(38080, "http://127.0.0.1:38080"))
+      interceptStarts.update(_ + 1).as(EmbeddedEngine.InterceptInfo(38080, "http://192.0.2.10:38080"))
     def interceptAddRules(rulesJson: String): IO[MockError, Unit] = interceptRules.update(_ :+ rulesJson)
     def interceptExportTruststore(format: String, password: String, outPath: String): IO[MockError, Unit] =
       truststoreExports.update(_ :+ (format, password, outPath))
@@ -378,12 +381,15 @@ object EmbeddedRiftCapabilitiesSpec extends ZIOSpecDefault:
           _      <- ic.redirectTo("cdn.example.com", space)
           _      <- ic.respondWith("api.example.com", InterceptStub(status = 418, body = Some("teapot")))
           p      <- ic.proxyPort
+          ep     <- ic.proxyEndpoint
           rules  <- engine.interceptRules.get
           starts <- engine.interceptStarts.get
         yield assertTrue(
           control.capabilities.contains(Capability.Intercept),
           p == 38080,
-          starts == 1, // one listener despite redirect + serve + proxyPort (memoized)
+          // proxyEndpoint reports the engine's bound host from interceptUrl (#264), not the requested bindHost.
+          ep == ("192.0.2.10", 38080),
+          starts == 1, // one listener despite redirect + serve + proxyPort + proxyEndpoint (memoized)
           rules.exists(j =>
             j.contains("\"forward\"") && j.contains(s"\"port\":$port") && j.contains("cdn.example.com")
           ),
