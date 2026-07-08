@@ -2,7 +2,7 @@ import xerial.sbt.Sonatype.sonatypeCentralHost
 import StepGeneratorPlugin.autoImport.*
 import com.typesafe.tools.mima.core.*
 
-import java.net.URI
+import java.net.{Authenticator, PasswordAuthentication, URI}
 import java.nio.file.{Files => JFiles, StandardCopyOption}
 import java.security.MessageDigest
 
@@ -31,32 +31,98 @@ val riftNativeTriples: Seq[(String, String, String)] = Seq(
 def sha256Hex(f: File): String =
   MessageDigest.getInstance("SHA-256").digest(JFiles.readAllBytes(f.toPath)).map(b => f"$b%02x").mkString
 
-// Download `asset` from the Rift release to `out`, verifying it against the sibling .sha256.
-// Idempotent: skips the download when `out` already matches the expected checksum. Returns `out`.
-def downloadRiftAsset(version: String, asset: String, out: File, log: sbt.util.Logger): File = {
-  val base = s"https://github.com/EtaCassiopeia/rift/releases/download/v$version"
-  val expected = {
-    val in = URI.create(s"$base/$asset.sha256").toURL.openStream()
-    try new String(in.readAllBytes(), "UTF-8").trim.split("\\s+").head
-    finally in.close()
+// Base URL the natives are fetched from. Defaults to the Rift GitHub releases, overridable to an
+// internal mirror (Artifactory, …) for networks that reach an internal host but not the GitHub CDN.
+def riftNativesBaseUrl(version: String): String =
+  sys.env
+    .get("RIFT_NATIVES_BASE_URL")
+    .filter(_.nonEmpty)
+    .orElse(sys.props.get("rift.natives.baseUrl").filter(_.nonEmpty))
+    .map(_.stripSuffix("/"))
+    .getOrElse(s"https://github.com/EtaCassiopeia/rift/releases/download/v$version")
+
+// Install a proxy Authenticator so `URL.openStream` can authenticate to an HTTPS proxy when
+// `https.proxyUser`/`https.proxyPassword` are set — otherwise a proxied build fails the fetch with a
+// 407. Clearing `jdk.http.auth.tunneling.disabledSchemes` is required: since 8u111 the JDK disables
+// Basic auth on the CONNECT tunnel used for HTTPS-through-proxy, which is exactly this case. A plain
+// def (re-installing an equivalent default Authenticator is harmless) keeps this .sbt-friendly.
+def installRiftProxyAuthenticator(): Unit =
+  for {
+    user <- sys.props.get("https.proxyUser").filter(_.nonEmpty)
+    pass <- sys.props.get("https.proxyPassword")
+  } {
+    System.setProperty("jdk.http.auth.tunneling.disabledSchemes", "")
+    Authenticator.setDefault(new Authenticator {
+      override protected def getPasswordAuthentication(): PasswordAuthentication =
+        if (getRequestorType == Authenticator.RequestorType.PROXY) new PasswordAuthentication(user, pass.toCharArray)
+        else null
+    })
   }
-  if (out.exists() && sha256Hex(out) == expected) {
-    log.info(s"[rift-ffi] cached $asset")
-  } else {
-    JFiles.createDirectories(out.toPath.getParent)
-    log.info(s"[rift-ffi] downloading $asset (v$version) ...")
-    // Download to a sibling temp file and atomically move into place only after the checksum passes,
-    // so `out` never exists in a corrupt/partial state (the idempotency guard above trusts it).
-    val tmp = new File(out.getParentFile, s".${out.getName}.part")
-    try {
-      val in = URI.create(s"$base/$asset").toURL.openStream()
-      try JFiles.copy(in, tmp.toPath, StandardCopyOption.REPLACE_EXISTING)
-      finally in.close()
-      val got = sha256Hex(tmp)
+
+def readRiftUrl(url: String): Array[Byte] = {
+  val in = URI.create(url).toURL.openStream()
+  try in.readAllBytes()
+  finally in.close()
+}
+
+// A .sha256 sibling is "<hex>  <filename>"; take the leading digest token.
+def parseRiftSha256(bytes: Array[Byte]): String = new String(bytes, "UTF-8").trim.split("\\s+").head
+
+// Obtain `asset` (a librift_ffi cdylib) into `out`, verifying it against the expected sha256. The
+// source is chosen, in order, from three opt-in escape hatches for restricted networks — the default
+// (none set) is byte-for-byte the original GitHub-releases fetch:
+//
+//   1. RIFT_NATIVES_DIR  — an offline directory of pre-provisioned `$asset` + `$asset.sha256`; copied
+//                          from disk with NO network access (air-gapped builds).
+//   2. RIFT_NATIVES_BASE_URL / -Drift.natives.baseUrl — an alternate base URL (internal mirror).
+//   3. default — https://github.com/EtaCassiopeia/rift/releases/download/v$version.
+//
+// An authenticated HTTPS proxy is honored via the standard https.proxyHost/Port + https.proxyUser/
+// Password sysprops (see installRiftProxyAuthenticator). The `.sha256` checksum is verified on EVERY
+// path — a mirror or offline dir must still match the expected digest.
+// Idempotent: skips the copy/download when `out` already matches the expected checksum. Returns `out`.
+def downloadRiftAsset(version: String, asset: String, out: File, log: sbt.util.Logger): File = {
+  installRiftProxyAuthenticator()
+  // Blank env vars are treated as unset (fall back to the network default) rather than firing the
+  // offline branch — an accidentally-empty RIFT_NATIVES_DIR in CI shouldn't hard-fail the build.
+  sys.env.get("RIFT_NATIVES_DIR").filter(_.nonEmpty).map(d => new File(d)) match {
+    case Some(dir) =>
+      // Offline: copy from disk and verify against the pre-provisioned sibling .sha256. No network.
+      val src     = new File(dir, asset)
+      val shaFile = new File(dir, s"$asset.sha256")
+      if (!src.exists()) sys.error(s"[rift-ffi] RIFT_NATIVES_DIR=$dir is set but $asset is missing")
+      if (!shaFile.exists()) sys.error(s"[rift-ffi] RIFT_NATIVES_DIR=$dir is set but $asset.sha256 is missing")
+      val expected = parseRiftSha256(JFiles.readAllBytes(shaFile.toPath))
+      val got      = sha256Hex(src)
       if (got != expected) sys.error(s"[rift-ffi] checksum mismatch for $asset: got $got, expected $expected")
-      JFiles.move(tmp.toPath, out.toPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-      log.info(s"[rift-ffi] downloaded + verified $asset")
-    } finally if (tmp.exists()) tmp.delete()
+      if (out.exists() && sha256Hex(out) == expected) {
+        log.info(s"[rift-ffi] cached $asset (RIFT_NATIVES_DIR)")
+      } else {
+        JFiles.createDirectories(out.toPath.getParent)
+        JFiles.copy(src.toPath, out.toPath, StandardCopyOption.REPLACE_EXISTING)
+        log.info(s"[rift-ffi] copied $asset from RIFT_NATIVES_DIR")
+      }
+    case None =>
+      val base     = riftNativesBaseUrl(version)
+      val expected = parseRiftSha256(readRiftUrl(s"$base/$asset.sha256"))
+      if (out.exists() && sha256Hex(out) == expected) {
+        log.info(s"[rift-ffi] cached $asset")
+      } else {
+        JFiles.createDirectories(out.toPath.getParent)
+        log.info(s"[rift-ffi] downloading $asset (v$version) from $base ...")
+        // Download to a sibling temp file and atomically move into place only after the checksum
+        // passes, so `out` never exists in a corrupt/partial state (the idempotency guard trusts it).
+        val tmp = new File(out.getParentFile, s".${out.getName}.part")
+        try {
+          val in = URI.create(s"$base/$asset").toURL.openStream()
+          try JFiles.copy(in, tmp.toPath, StandardCopyOption.REPLACE_EXISTING)
+          finally in.close()
+          val got = sha256Hex(tmp)
+          if (got != expected) sys.error(s"[rift-ffi] checksum mismatch for $asset: got $got, expected $expected")
+          JFiles.move(tmp.toPath, out.toPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+          log.info(s"[rift-ffi] downloaded + verified $asset")
+        } finally if (tmp.exists()) tmp.delete()
+      }
   }
   out
 }
@@ -240,13 +306,38 @@ lazy val aggregatedProjects: Seq[Project] =
   if (previewFfm) Seq(riftEmbedded21)
   else Seq(core, gherkin, mock, rift, wiremock, conformance) ++ (if (stableFfm) Seq(riftEmbedded, embeddedNatives) else Seq.empty)
 
+// Diagnostic: fetch the host-platform cdylib through the real downloadRiftAsset into a temp dir. Lets
+// a restricted-network build validate its RIFT_NATIVES_DIR / RIFT_NATIVES_BASE_URL / https.proxy*
+// config on any JDK, without a full JDK-21+ embedded build (where the natives fetch normally runs). #255
+lazy val riftNativesSelfCheck = taskKey[Unit](
+  "Fetch the host-platform librift_ffi via downloadRiftAsset (honors RIFT_NATIVES_DIR / RIFT_NATIVES_BASE_URL / proxy) into a temp dir."
+)
+
 lazy val root = (project in file("."))
   .aggregate(aggregatedProjects.map(p => LocalProject(p.id)): _*)
   .settings(
     name                  := "zio-bdd-root",
     description           := "A ZIO-based BDD testing framework for Scala 3",
     publish / skip        := true,
-    mimaPreviousArtifacts := Set.empty // not published — MiMa is a no-op here
+    mimaPreviousArtifacts := Set.empty, // not published — MiMa is a no-op here
+    riftNativesSelfCheck := {
+      val log    = streams.value.log
+      val osName = sys.props.getOrElse("os.name", "").toLowerCase
+      val osArch = sys.props.getOrElse("os.arch", "").toLowerCase
+      // librift_ffi is published for linux + macOS only (riftNativeTriples). Windows/other dev boxes
+      // have no native — fail clearly rather than fetch a wrong-OS asset. CI runs on Linux.
+      val (os, ext) =
+        if (osName.contains("mac") || osName.contains("darwin")) ("darwin", "dylib")
+        else if (osName.contains("linux")) ("linux", "so")
+        else sys.error(s"[rift-ffi] no librift_ffi native is published for os.name='$osName' (linux and macOS only)")
+      val arch =
+        if (osArch.contains("aarch64") || osArch.contains("arm64")) "aarch64"
+        else if (osArch.contains("amd64") || osArch.contains("x86_64") || osArch.contains("x86-64")) "x86_64"
+        else sys.error(s"[rift-ffi] unsupported os.arch='$osArch' (x86_64 or aarch64 only)")
+      val out = IO.createTemporaryDirectory / s"librift_ffi.$ext"
+      downloadRiftAsset(riftNativesVersion, s"librift_ffi-$os-$arch.$ext", out, log)
+      log.info(s"[rift-ffi] self-check OK: $os-$arch -> ${out.length()} bytes at $out")
+    }
   )
   .dependsOn(core, gherkin)
 
