@@ -189,6 +189,18 @@ object EmbeddedInterceptSpec extends ZIOSpecDefault:
         }
       )
     },
+    // Pure parse of the engine's interceptUrl into the reported host (#264); runs on any host. The engine
+    // value is ground truth (rift#425); a malformed / host-less URL yields None (caller → bindHost fallback).
+    test("hostOf reads the engine's bound host from interceptUrl; None when absent") {
+      assertTrue(
+        EmbeddedIntercept.hostOf("http://127.0.0.1:38080").contains("127.0.0.1"),
+        EmbeddedIntercept.hostOf("http://0.0.0.0:38080").contains("0.0.0.0"),
+        // a specific-NIC ground truth is surfaced verbatim (it would win over a requested wildcard bind)
+        EmbeddedIntercept.hostOf("http://192.168.1.5:38080").contains("192.168.1.5"),
+        EmbeddedIntercept.hostOf("").isEmpty,         // no host → None
+        EmbeddedIntercept.hostOf("not a url").isEmpty // unparseable → None
+      )
+    },
     test("trustStoreWithSystemCAs: the merged store trusts the intercepted host AND keeps the JVM default anchors") {
       if !EmbeddedRift.available then ZIO.succeed(assertCompletes)
       else

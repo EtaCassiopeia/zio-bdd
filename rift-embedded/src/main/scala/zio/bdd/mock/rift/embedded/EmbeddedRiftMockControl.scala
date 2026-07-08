@@ -59,7 +59,7 @@ private[embedded] final case class EmbeddedRiftMockControl(
   correlated: Ref[Map[SpaceId, EmbeddedRiftMockControl.CorrSpace]],
   sharedPort: Ref.Synchronized[Option[Int]],
   ids: Ref[Int],
-  interceptStarted: Ref.Synchronized[Option[Int]],
+  interceptStarted: Ref.Synchronized[Option[(String, Int)]],
   interceptConfig: EmbeddedRift.InterceptConfig
 ) extends MockControl:
 
@@ -645,7 +645,7 @@ private[embedded] object EmbeddedRiftMockControl:
       correlated <- Ref.make(Map.empty[SpaceId, CorrSpace])
       sharedPort <- Ref.Synchronized.make(Option.empty[Int])
       ids        <- Ref.make(0)
-      intercept  <- Ref.Synchronized.make(Option.empty[Int])
+      intercept  <- Ref.Synchronized.make(Option.empty[(String, Int)])
       control =
         EmbeddedRiftMockControl(
           engine,
