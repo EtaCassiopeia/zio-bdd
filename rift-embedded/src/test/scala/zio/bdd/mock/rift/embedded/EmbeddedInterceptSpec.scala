@@ -26,9 +26,37 @@ object EmbeddedInterceptSpec extends ZIOSpecDefault:
 
   private def asT(e: MockError): Throwable = new RuntimeException(s"MockError: $e")
 
+  // A non-loopback site-local IPv4 of this host — what a container reaches the host engine at (the
+  // Docker host-gateway routes to it). None on hosts with no such NIC (e.g. loopback-only CI) → skip.
+  private def siteLocalIPv4: Option[String] =
+    import scala.jdk.CollectionConverters.*
+    scala.util
+      .Try(
+        java.net.NetworkInterface.getNetworkInterfaces.asScala.toList
+          .filter(ni => ni.isUp && !ni.isLoopback)
+          .flatMap(_.getInetAddresses.asScala.toList)
+          .collectFirst { case a: java.net.Inet4Address if a.isSiteLocalAddress => a.getHostAddress }
+      )
+      .toOption
+      .flatten
+
+  // Reserve a currently-free TCP port, then release it — a pinned port for the fixed-port test.
+  private val reserveFreePort: Task[Int] =
+    ZIO.attemptBlocking {
+      val s = new java.net.ServerSocket(0)
+      try s.getLocalPort
+      finally s.close()
+    }
+
   // The stand-in SUT: a JDK HttpClient trusting `ts` and proxying HTTPS through the intercept port.
   // Forced HTTP/1.1 — the MITM tunnel serves 1.1 (an h2 upgrade over the tunnel would EOF, zb-183).
-  private def sutGet(url: String, proxyPort: Int, ts: TrustStore): Task[(Int, String)] =
+  // `proxyHost` is loopback by default; a non-loopback address exercises the wider-bind topology (#254).
+  private def sutGet(
+    url: String,
+    proxyPort: Int,
+    ts: TrustStore,
+    proxyHost: String = "127.0.0.1"
+  ): Task[(Int, String)] =
     ZIO.attemptBlocking {
       val ks = KeyStore.getInstance(ts.format match
         case TrustStoreFormat.Pkcs12 => "PKCS12"
@@ -45,7 +73,7 @@ object EmbeddedInterceptSpec extends ZIOSpecDefault:
         .newBuilder()
         .version(HttpClient.Version.HTTP_1_1)
         .sslContext(ssl)
-        .proxy(ProxySelector.of(new InetSocketAddress("127.0.0.1", proxyPort)))
+        .proxy(ProxySelector.of(new InetSocketAddress(proxyHost, proxyPort)))
         .build()
       val resp =
         client.send(HttpRequest.newBuilder(URI.create(url)).GET().build(), HttpResponse.BodyHandlers.ofString())
@@ -91,5 +119,53 @@ object EmbeddedInterceptSpec extends ZIOSpecDefault:
           res  <- sutGet("https://api.example.com/anything", port, ts)
         yield assertTrue(res._1 == 418, res._2.contains("inline-teapot")))
           .provide(Provisioning.live, EmbeddedRift.layer.mapError(asT))
+    },
+    test("bindHost 0.0.0.0: the proxy binds a wider interface, reports it, and a redirect completes through it") {
+      if !EmbeddedRift.available then ZIO.succeed(assertCompletes)
+      else
+        // Bind 0.0.0.0 (all interfaces). Prefer a real non-loopback NIC — the container-via-host-gateway
+        // topology — but fall back to loopback, which a 0.0.0.0 socket also accepts, so this always
+        // exercises the bind + `proxyEndpoint` reporting instead of silently skipping on a loopback-only host.
+        val proxyHost = siteLocalIPv4.getOrElse("127.0.0.1")
+        (for
+          mc    <- ZIO.service[MockControl]
+          space <- mc.provision(cdnConfig).mapError(asT).map(_.head)
+          ic    <- mc.intercept.mapError(u => new RuntimeException(u.message))
+          _     <- ic.redirectTo("cdn.example.com", space).mapError(asT)
+          ts    <- ic.trustStore().mapError(asT)
+          ep    <- ic.proxyEndpoint.mapError(asT)
+          res   <- sutGet("https://cdn.example.com/config.json", ep._2, ts, proxyHost = proxyHost)
+        yield assertTrue(res._1 == 200, res._2.contains("mocked"), ep._1 == "0.0.0.0"))
+          .provide(
+            Provisioning.live,
+            EmbeddedRift.layer(EmbeddedRift.InterceptConfig(bindHost = "0.0.0.0")).mapError(asT)
+          )
+    },
+    test("fixed port: the intercept listener binds the pinned port instead of an OS-assigned one") {
+      if !EmbeddedRift.available then ZIO.succeed(assertCompletes)
+      else
+        reserveFreePort.flatMap { pinned =>
+          (for
+            mc   <- ZIO.service[MockControl]
+            ic   <- mc.intercept.mapError(u => new RuntimeException(u.message))
+            port <- ic.proxyPort.mapError(asT)
+            ep   <- ic.proxyEndpoint.mapError(asT)
+          yield assertTrue(port == pinned, ep == ("127.0.0.1", pinned)))
+            .provide(
+              Provisioning.live,
+              EmbeddedRift.layer(EmbeddedRift.InterceptConfig(port = Some(pinned))).mapError(asT)
+            )
+        }
+    },
+    // Pure translation of InterceptConfig -> FFI start-options JSON; runs even without the native library,
+    // so the host/port wiring is covered on any host (the e2e tests above SKIP when no library resolves).
+    test("startOptions maps InterceptConfig to the FFI host/port JSON; default stays loopback + OS-assigned") {
+      val default = EmbeddedIntercept.startOptions(EmbeddedRift.InterceptConfig())
+      val configured =
+        EmbeddedIntercept.startOptions(EmbeddedRift.InterceptConfig(bindHost = "0.0.0.0", port = Some(8888)))
+      assertTrue(
+        default == """{"host":"127.0.0.1","port":0}""",
+        configured == """{"host":"0.0.0.0","port":8888}"""
+      )
     }
   ) @@ TestAspect.withLiveClock @@ TestAspect.sequential

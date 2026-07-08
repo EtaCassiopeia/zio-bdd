@@ -59,7 +59,8 @@ private[embedded] final case class EmbeddedRiftMockControl(
   correlated: Ref[Map[SpaceId, EmbeddedRiftMockControl.CorrSpace]],
   sharedPort: Ref.Synchronized[Option[Int]],
   ids: Ref[Int],
-  interceptStarted: Ref.Synchronized[Option[Int]]
+  interceptStarted: Ref.Synchronized[Option[Int]],
+  interceptConfig: EmbeddedRift.InterceptConfig
 ) extends MockControl:
 
   import EmbeddedRiftMockControl.{CorrSpace, Imposter}
@@ -177,7 +178,7 @@ private[embedded] final case class EmbeddedRiftMockControl(
 
   // Built-in HTTPS intercept (#219) over the intercept FFI (rift#410); one instance per adapter so the
   // TLS-MITM listener starts at most once (memoized in interceptStarted).
-  private val embeddedIntercept: Intercept           = EmbeddedIntercept(engine, interceptStarted)
+  private val embeddedIntercept: Intercept           = EmbeddedIntercept(engine, interceptStarted, interceptConfig)
   override def intercept: IO[Unsupported, Intercept] = ZIO.succeed(embeddedIntercept)
   def templating: IO[Unsupported, Templating]        = ZIO.succeed(embeddedTemplating)
 
@@ -636,7 +637,8 @@ private[embedded] object EmbeddedRiftMockControl:
   def make(
     engine: EmbeddedEngine,
     provisioning: Provisioning,
-    mode: RiftMode = RiftMode.PerInstance
+    mode: RiftMode = RiftMode.PerInstance,
+    interceptConfig: EmbeddedRift.InterceptConfig = EmbeddedRift.InterceptConfig()
   ): URIO[Scope, MockControl] =
     for
       spaces     <- Ref.make(Map.empty[SpaceId, Imposter])
@@ -644,6 +646,17 @@ private[embedded] object EmbeddedRiftMockControl:
       sharedPort <- Ref.Synchronized.make(Option.empty[Int])
       ids        <- Ref.make(0)
       intercept  <- Ref.Synchronized.make(Option.empty[Int])
-      control     = EmbeddedRiftMockControl(engine, provisioning, mode, spaces, correlated, sharedPort, ids, intercept)
-      _          <- ZIO.addFinalizer(control.teardownShared)
+      control =
+        EmbeddedRiftMockControl(
+          engine,
+          provisioning,
+          mode,
+          spaces,
+          correlated,
+          sharedPort,
+          ids,
+          intercept,
+          interceptConfig
+        )
+      _ <- ZIO.addFinalizer(control.teardownShared)
     yield control

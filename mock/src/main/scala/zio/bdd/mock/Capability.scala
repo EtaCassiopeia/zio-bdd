@@ -121,6 +121,17 @@ trait Intercept:
   def proxyPort: IO[MockError, Int]
 
   /**
+   * The host and port the SUT points its HTTPS proxy at — the interface the
+   * intercept listener actually bound. Defaults to [[proxyPort]] on loopback;
+   * an adapter that can bind a wider interface (e.g. `0.0.0.0`, so a SUT in a
+   * container reaches the proxy via the Docker host-gateway) reports its
+   * configured bind host here. Starts the listener on first use (memoized). An
+   * adapter that can bind a non-loopback interface MUST override this — the
+   * default assumes the listener bound loopback.
+   */
+  def proxyEndpoint: IO[MockError, (String, Int)] = proxyPort.map(("127.0.0.1", _))
+
+  /**
    * Install an intercept `rule` — build it with
    * `dsl.intercept(host).redirectTo(space)` / `.respondWith(stub)`. Rules are
    * first-match in installation order.
