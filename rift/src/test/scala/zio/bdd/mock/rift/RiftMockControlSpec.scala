@@ -249,7 +249,8 @@ object RiftMockControlSpec extends ZIOSpecDefault:
           proxyE    <- control.proxyRecord.either
           templateE <- control.templating.either
         yield assertTrue(
-          control.capabilities == Capability.values.toSet,
+          // The container adapter advertises every capability except Intercept (#219 — embedded-only).
+          control.capabilities == Capability.values.toSet - Capability.Intercept,
           faultsE.isRight,
           scenE.isRight,
           siE.isRight,

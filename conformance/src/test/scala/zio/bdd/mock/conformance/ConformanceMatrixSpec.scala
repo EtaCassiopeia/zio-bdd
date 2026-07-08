@@ -97,7 +97,7 @@ object ConformanceMatrixSpec extends ZIOSpecDefault:
     MockBackendUnderTest(
       "rift",
       (Client.default ++ Provisioning.live) >>> Rift.managed().mapError(asT),
-      Capability.values.toSet, // Rift advertises every capability (#132)
+      Capability.values.toSet - Capability.Intercept, // the container advertises all but Intercept (#219, embedded-only)
       Isolation.PerInstance,
       available = riftEnabled
     )

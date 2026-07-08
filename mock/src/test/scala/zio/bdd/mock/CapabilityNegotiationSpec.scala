@@ -95,6 +95,13 @@ object CapabilityNegotiationSpec extends ZIOSpecDefault:
         noneRequired == Right(())
       )
     },
+    test("intercept defaults to the Unsupported fallback for an adapter that doesn't override it (#219)") {
+      // AC1: Capability.Intercept is backend-neutral — the accessor is a default `Unsupported` on
+      // MockControl, so an adapter that doesn't run an intercept listener (here the stub) inherits it.
+      val backend = StubMockControl("rift", Set.empty)
+      for either <- backend.intercept.either
+      yield assertTrue(either == Left(Unsupported(Capability.Intercept, "rift")))
+    },
     test("advertised accessors and require both succeed for every capability") {
       // AC2: for an advertised capability the accessor never returns Unsupported,
       // and require for that capability succeeds — the two sides of the honesty

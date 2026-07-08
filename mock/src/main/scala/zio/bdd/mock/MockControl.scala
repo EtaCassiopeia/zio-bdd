@@ -111,3 +111,11 @@ trait MockControl:
   def scripting: IO[Unsupported, Scripting]
   def proxyRecord: IO[Unsupported, ProxyRecord]
   def templating: IO[Unsupported, Templating]
+
+  /**
+   * Built-in HTTPS intercept (#219). Defaults to the [[Unsupported]] fallback
+   * so only an adapter that actually runs an intercept listener (the embedded
+   * Rift provider) overrides it — the container/WireMock adapters inherit the
+   * fallback, keeping the capability backend-neutral.
+   */
+  def intercept: IO[Unsupported, Intercept] = ZIO.fail(Unsupported(Capability.Intercept, backendName))

@@ -9,7 +9,7 @@ import zio.IO
  * un-advertised one the accessor fails fast with [[Unsupported]].
  */
 enum Capability:
-  case Faults, StatefulScenarios, StateInspection, Scripting, ProxyRecord, Templating
+  case Faults, StatefulScenarios, StateInspection, Scripting, ProxyRecord, Templating, Intercept
 
 /**
  * How a backend keeps mock spaces isolated under parallel features/scenarios.
@@ -96,6 +96,60 @@ trait ProxyRecord:
    * mutate rules after the first recorded call.
    */
   def proxy(space: MockSpace, m: RequestMatch, upstream: String): IO[MockError, RuleId]
+
+/**
+ * Built-in HTTPS intercept (#219): a TLS-MITM forward-proxy that intercepts
+ * matched hosts and either forwards them to a mock space or answers them inline
+ * — so a SUT that hard-codes an external HTTPS host (whose address you cannot
+ * change) can be redirected to a mock without an external mitmproxy container.
+ * Capability: [[Capability.Intercept]].
+ *
+ * The SUT is wired in two steps (both automated by this port): it trusts the
+ * intercept CA (via the [[trustStore]] file + password) and points its HTTPS
+ * proxy at [[proxyPort]] on loopback. The MITM constraint is intrinsic — the
+ * SUT must trust the CA — so the goal is to *provision* that trust, not
+ * eliminate it.
+ *
+ * Starting the intercept listener is opt-in and lazy: it happens on the first
+ * call to any method here, so a suite that never intercepts pays nothing.
+ */
+trait Intercept:
+  /**
+   * The loopback port the SUT points its HTTPS proxy at. Starts the intercept
+   * listener on first use (memoized), so repeat calls return the same port.
+   */
+  def proxyPort: IO[MockError, Int]
+
+  /**
+   * Install an intercept `rule` — build it with
+   * `dsl.intercept(host).redirectTo(space)` / `.respondWith(stub)`. Rules are
+   * first-match in installation order.
+   */
+  def add(rule: InterceptRule): IO[MockError, Unit]
+
+  /**
+   * Export a truststore containing the intercept CA to a fresh temp file,
+   * returning its path + password — hand both to the SUT's JVM so it trusts the
+   * intercept's per-host leaf certificates. Defaults to JKS: it loads as a JVM
+   * truststore out of the box (a `trustedCertEntry` the default
+   * `TrustManagerFactory` reads); PKCS#12 is selectable but see rift#417 —
+   * rift's PKCS#12 export is not yet exposed as a trust anchor by the JVM's
+   * `KeyStore`.
+   */
+  def trustStore(format: TrustStoreFormat = TrustStoreFormat.Jks): IO[MockError, TrustStore]
+
+  /**
+   * Convenience: intercept `host` and forward its requests to `space`'s
+   * imposter.
+   */
+  final def redirectTo(host: String, space: MockSpace): IO[MockError, Unit] =
+    add(InterceptRule.Redirect(host, space))
+
+  /**
+   * Convenience: intercept `host` and answer its requests inline with `stub`.
+   */
+  final def respondWith(host: String, stub: InterceptStub): IO[MockError, Unit] =
+    add(InterceptRule.Serve(host, stub))
 
 /** Response templating. Capability: [[Capability.Templating]]. */
 trait Templating:

@@ -169,3 +169,21 @@ object dsl:
 
     private def add(thenState: Option[ScenarioState]): ScenarioBuilder =
       sb.copy(rules = sb.rules :+ StatefulRule(whenState, request, response, thenState))
+
+  // --- intercept (HTTPS intercept capability, #219) -------------------------
+
+  /**
+   * Begin an intercept rule for HTTPS `host`:
+   * `intercept("cdn.example.com").redirectTo(space)` or `.respondWith(stub)`.
+   * Produces a portable [[InterceptRule]] applied via the [[Intercept]]
+   * capability
+   * (`mc.intercept.flatMap(_.add(intercept(host).redirectTo(space)))`).
+   */
+  def intercept(host: String): InterceptBuilder = InterceptBuilder(host)
+
+  final case class InterceptBuilder private[dsl] (host: String):
+    /** Forward the intercepted host's requests to `space`'s imposter. */
+    def redirectTo(space: MockSpace): InterceptRule = InterceptRule.Redirect(host, space)
+
+    /** Answer the intercepted host's requests inline with `stub`. */
+    def respondWith(stub: InterceptStub): InterceptRule = InterceptRule.Serve(host, stub)

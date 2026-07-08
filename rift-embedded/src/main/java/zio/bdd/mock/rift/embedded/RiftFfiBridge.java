@@ -98,6 +98,12 @@ public final class RiftFfiBridge implements AutoCloseable {
   private final MethodHandle spaceDelete;
   private final MethodHandle spaceRecorded;
 
+  // v0.11.0 intercept (rift#410): start the TLS-MITM forward-proxy + drive its rule store + export
+  // the CA truststore, so the embedded provider offers built-in HTTPS intercept over the C-ABI.
+  private final MethodHandle startIntercept;
+  private final MethodHandle interceptAddRules;
+  private final MethodHandle interceptExportTruststore;
+
   private RiftFfiBridge(Arena arena, SymbolLookup lookup, MemorySegment handle) {
     this.arena = arena;
     this.handle = handle;
@@ -130,6 +136,12 @@ public final class RiftFfiBridge implements AutoCloseable {
         ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_SHORT, ValueLayout.ADDRESS));
     this.spaceRecorded = downcall(lookup, "rift_space_recorded", FunctionDescriptor.of(
         ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_SHORT, ValueLayout.ADDRESS));
+    this.startIntercept = downcall(lookup, "rift_start_intercept",
+        FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+    this.interceptAddRules = downcall(lookup, "rift_intercept_add_rules",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
+    this.interceptExportTruststore = downcall(lookup, "rift_intercept_export_truststore", FunctionDescriptor.of(
+        ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS));
   }
 
   /**
@@ -281,6 +293,52 @@ public final class RiftFfiBridge implements AutoCloseable {
       return readAndFree(result);
     } catch (Throwable t) {
       throw failure("rift_space_recorded", t);
+    }
+  }
+
+  /**
+   * Start the intercept/TLS-MITM forward-proxy listener; returns its bound-endpoint JSON
+   * ({@code {"interceptPort":N,"interceptUrl":"http://127.0.0.1:N"}}). Throws with the engine's
+   * {@code rift_last_error} on a null sentinel (bad options, bind failure, or already started).
+   */
+  public String startIntercept(String optionsJson) {
+    MemorySegment result;
+    try (Arena call = Arena.ofConfined()) {
+      result = (MemorySegment) startIntercept.invoke(handle, (MemorySegment) ALLOC_STRING.invoke(call, optionsJson));
+    } catch (Throwable t) {
+      throw failure("rift_start_intercept", t);
+    }
+    String json;
+    try {
+      json = readAndFree(result);
+    } catch (Throwable t) {
+      throw failure("rift_start_intercept", t);
+    }
+    if (json == null) {
+      throw new IllegalStateException("rift_start_intercept returned null" + lastErrorSuffix());
+    }
+    return json;
+  }
+
+  /** Add one intercept rule (a bare object) or many (a JSON array). Returns {@code 0}/{@code -1}. */
+  public int interceptAddRules(String rulesJson) {
+    try (Arena call = Arena.ofConfined()) {
+      return (int) interceptAddRules.invoke(handle, (MemorySegment) ALLOC_STRING.invoke(call, rulesJson));
+    } catch (Throwable t) {
+      throw failure("rift_intercept_add_rules", t);
+    }
+  }
+
+  /**
+   * Write a truststore for the intercept CA to {@code outPath} ({@code format} = {@code "pkcs12"}/
+   * {@code "jks"}). Returns {@code 0}/{@code -1}.
+   */
+  public int interceptExportTruststore(String format, String password, String outPath) {
+    try (Arena call = Arena.ofConfined()) {
+      return (int) interceptExportTruststore.invoke(handle, (MemorySegment) ALLOC_STRING.invoke(call, format),
+          (MemorySegment) ALLOC_STRING.invoke(call, password), (MemorySegment) ALLOC_STRING.invoke(call, outPath));
+    } catch (Throwable t) {
+      throw failure("rift_intercept_export_truststore", t);
     }
   }
 
