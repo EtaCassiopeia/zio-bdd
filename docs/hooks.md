@@ -183,7 +183,42 @@ Within each tier, hooks registered earlier run before hooks registered later.
   The state still contains whatever the last step left behind.
 - `beforeStep` / `afterStep` fire around **each individual step**, including Background steps
   that are prepended to a scenario.
-- `afterAll` always runs, even if features fail.
+- `afterAll` runs after all features have completed, provided nothing upstream died. Unlike
+  `afterScenario`/`afterFeature`, the `beforeAll → features → afterAll` sequence is a plain
+  for-comprehension with no `.ensuring` guard — a defect in `beforeAll` or an unrecovered
+  feature-level defect skips `afterAll`.
+
+---
+
+## `afterStep` execution guarantees
+
+`afterStep` always runs after the step body, whether the step passed or failed:
+
+- If the step body **passed** and `afterStep` **fails**, the step is flipped to **failed** —
+  `afterStep` can turn a passing step into a failing one.
+- If the step body **failed**, the step keeps its **original failure cause** even if
+  `afterStep` also fails; `afterStep`'s outcome does not overwrite an existing failure.
+- If `beforeStep` fails, neither the step body nor `afterStep` runs — the step is recorded as
+  failed from the `beforeStep` cause alone.
+
+## Hook error propagation
+
+Every hook type is a `URIO` (see [`Hooks.scala`](../core/src/main/scala/zio/bdd/core/Hooks.scala))
+— hooks have no typed error channel, so a failure only reaches the test run as a **defect**.
+How that defect is handled differs by hook:
+
+| Hook | On failure | Guarded by `.ensuring`? |
+|------|------------|--------------------------|
+| `beforeScenario` | Recorded as the scenario's `setupError`; steps are skipped | No |
+| `afterScenario` | Fails the scenario (even if all steps passed) | Yes — always runs |
+| `beforeFeature` | Propagates as a defect, skipping the feature's scenarios | No |
+| `afterFeature` | Propagates as a defect after teardown | Yes — always runs |
+| `beforeAll` | Propagates as a defect, skipping all features and `afterAll` | No |
+| `afterAll` | Propagates as a defect | No |
+
+A genuine interruption (fiber cancellation / shutdown), as opposed to a hook failure, is never
+treated as a retryable error — an interrupt-only `Cause` always propagates rather than being
+recorded as a setup/step failure (see #231).
 
 ---
 
@@ -281,3 +316,11 @@ afterScenario { _ => cleanupResource() }
 // Good — log the cleanup failure without propagating
 afterScenario { _ => cleanupResource().catchAll(e => ZIO.logWarning(s"cleanup failed: $e")) }
 ```
+
+### Don't call `pending()` inside a hook
+
+`pending()` returns `ZIO[Any, Throwable, Unit]` and is meant for step bodies only — it fails
+with a `PendingException` that the step executor specifically recognizes and renders as
+"pending" rather than "failed". Hooks are `URIO[R, Unit]` (no error channel), so they cannot
+run a `Task`-typed effect like `pending()` at all; the call won't type-check inside a
+`beforeScenario`/`afterStep`/etc. body.
