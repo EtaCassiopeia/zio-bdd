@@ -72,10 +72,11 @@ object Rift:
   def connect(
     adminBase: String,
     imposterPorts: List[Int],
-    mode: RiftMode = RiftMode.PerInstance
+    mode: RiftMode = RiftMode.PerInstance,
+    interceptProxy: Option[(String, Int)] = None
   )(hostFor: Int => String): URLayer[Client & Provisioning, MockControl] =
     ZLayer.scoped {
-      RiftEndpoint.pooled(adminBase, imposterPorts)(hostFor).flatMap(RiftMockControl.make(_, mode))
+      RiftEndpoint.pooled(adminBase, imposterPorts)(hostFor).flatMap(RiftMockControl.make(_, mode, interceptProxy))
     }
 
   /**
@@ -94,16 +95,23 @@ object Rift:
     poolSize: Int = DefaultPoolSize,
     adminPort: Int = DefaultAdminPort,
     imposterBasePort: Int = DefaultImposterBase,
-    mode: RiftMode = RiftMode.PerInstance
+    mode: RiftMode = RiftMode.PerInstance,
+    interceptPort: Option[Int] = None
   ): ZLayer[Client & Provisioning, MockError, MockControl] =
     ZLayer.scoped {
       val imposterPorts = (0 until poolSize).map(imposterBasePort + _).toList
+      // Opt-in intercept (#253): pass the container-internal listener port as a `--intercept-port`
+      // command override, and expose it alongside the admin + imposter ports so it maps to a host
+      // port. Unlike the embedded adapter's lazy start, the container's listener binds at boot —
+      // there is no separate "start" downcall to make on first use.
+      val command = interceptPort.fold(Seq.empty[String])(p => Seq("--intercept-port", p.toString))
       for
         container <- ZIO.acquireRelease(
                        ZIO.attemptBlocking {
                          val c = GenericContainer(
                            dockerImage = image,
-                           exposedPorts = adminPort :: imposterPorts,
+                           exposedPorts = adminPort :: interceptPort.toList ::: imposterPorts,
+                           command = command,
                            waitStrategy = Wait.forHttp("/imposters").forPort(adminPort)
                          )
                          c.start()
@@ -111,10 +119,11 @@ object Rift:
                        }
                          .mapError(t => MockError.ProvisionFailed(s"starting Rift container '$image': ${message(t)}"))
                      )(c => ZIO.attemptBlocking(c.stop()).orDie)
-        host      = container.host
-        admin     = s"http://$host:${container.mappedPort(adminPort)}"
-        endpoint <- RiftEndpoint.pooled(admin, imposterPorts)(p => s"http://$host:${container.mappedPort(p)}")
-        control  <- RiftMockControl.make(endpoint, mode)
+        host           = container.host
+        admin          = s"http://$host:${container.mappedPort(adminPort)}"
+        endpoint      <- RiftEndpoint.pooled(admin, imposterPorts)(p => s"http://$host:${container.mappedPort(p)}")
+        interceptProxy = interceptPort.map(p => (host, container.mappedPort(p)))
+        control       <- RiftMockControl.make(endpoint, mode, interceptProxy)
       yield control
     }
 
