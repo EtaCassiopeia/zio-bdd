@@ -9,11 +9,11 @@ pick one.
 
 ## 1. The three backends at a glance
 
-| Adapter | Coordinates (1.3.1) | Docker? | JDK | Isolation default | Capabilities |
+| Adapter | Coordinates (1.4.1) | Docker? | JDK | Isolation default | Capabilities |
 |---|---|---|---|---|---|
-| Rift container | `zio-bdd-rift` | yes (testcontainers) | 11+ | PerInstance | all six |
+| Rift container | `zio-bdd-rift` | yes (testcontainers) | 11+ | PerInstance | all six core + Intercept opt-in |
 | WireMock | `zio-bdd-wiremock` | no | 11+ | Correlated (via `.correlated`) | Faults, StatefulScenarios, StateInspection only |
-| Rift embedded | `zio-bdd-rift-embedded` / `zio-bdd-rift-embedded-jdk21` | no (FFM) | 22+ / 21 | PerInstance (default) / Correlated | all six |
+| Rift embedded | `zio-bdd-rift-embedded` / `zio-bdd-rift-embedded-jdk21` | no (FFM) | 22+ / 21 | PerInstance (default) / Correlated | all seven, always on |
 
 ### Capability × adapter matrix
 
@@ -25,11 +25,17 @@ pick one.
 | Scripting | yes | yes | no |
 | ProxyRecord | yes | yes | no |
 | Templating | yes | yes | no |
+| Intercept | opt-in (`interceptPort`) | yes | no |
 
-Rift container and Rift embedded are **capability-complete** — embedded is a
-pure backend swap for the container adapter, not a reduced subset. WireMock
-implements exactly the three capabilities in the first column; requesting
-`Capability.Scripting`, `Capability.ProxyRecord`, or `Capability.Templating`
+Rift container and Rift embedded are **capability-complete** on the six core
+capabilities — embedded is a pure backend swap for the container adapter, not
+a reduced subset. `Intercept` (built-in HTTPS intercept) is always-on for
+embedded but opt-in for the container adapter: pass `interceptPort` to
+`Rift.managed` (or `interceptProxy` to `Rift.connect`) to advertise it; without
+that, the container adapter's `intercept` accessor fails with `Unsupported`
+just like WireMock's. WireMock implements exactly the three capabilities in
+the first column of the top table; requesting `Capability.Scripting`,
+`Capability.ProxyRecord`, `Capability.Templating`, or `Capability.Intercept`
 against it fails with `Unsupported` (§3 below, and see
 [Mocking overview](mocking.md) for the `MockError`/`Unsupported` model).
 
@@ -53,13 +59,17 @@ the environment:
     poolSize: Int = DefaultPoolSize,
     adminPort: Int = DefaultAdminPort,
     imposterBasePort: Int = DefaultImposterBase,
-    mode: RiftMode = RiftMode.PerInstance
+    mode: RiftMode = RiftMode.PerInstance,
+    interceptPort: Option[Int] = None
   ): ZLayer[Client & Provisioning, MockError, MockControl]
   ```
 
-  `DefaultImage` is the pinned Rift image, currently `zainalpour/rift-proxy:v0.9.0`
+  `DefaultImage` is the pinned Rift image, currently `zainalpour/rift-proxy:v0.11.3`
   — derived from the single `riftVersion` in `build.sbt`, so treat it as "the
-  pinned Rift image" rather than a hardcoded tag.
+  pinned Rift image" rather than a hardcoded tag. Pass `interceptPort` to also
+  start the container's HTTPS-intercept listener and advertise
+  `Capability.Intercept` (§9 of [Advanced mocking](mock-advanced.md)); omitted,
+  the container behaves exactly as before.
 
 - **`Rift.connect(...)`** targets an already-running Rift admin endpoint
   instead of starting a container (used by tests, or when Rift runs
@@ -69,7 +79,8 @@ the environment:
   def connect(
     adminBase: String,
     imposterPorts: List[Int],
-    mode: RiftMode = RiftMode.PerInstance
+    mode: RiftMode = RiftMode.PerInstance,
+    interceptProxy: Option[(String, Int)] = None
   )(hostFor: Int => String): URLayer[Client & Provisioning, MockControl]
   ```
 
@@ -133,9 +144,9 @@ capability negotiation working as intended, not a bug to work around.
 
 The embedded provider drives the Rift engine in-process over `librift_ffi` via
 Project Panama FFM — no container, no external process — while remaining
-**capability-complete** (parity with the container adapter, all six
-capabilities). This is the adapter to reach for when you want full fidelity
-without Docker.
+**capability-complete** (parity with the container adapter's six core
+capabilities, plus `Capability.Intercept` always on — all seven). This is the
+adapter to reach for when you want full fidelity without Docker.
 
 ### Two version-locked artifacts
 
@@ -245,8 +256,8 @@ document is `PerInstance`-only via `provisionNative`.
 
 ## 5. Choosing an adapter
 
-- **No Docker, need all six capabilities, JDK 22+ available** → Rift embedded
-  (`zio-bdd-rift-embedded`). Full fidelity, zero container overhead.
+- **No Docker, need all seven capabilities, JDK 22+ available** → Rift
+  embedded (`zio-bdd-rift-embedded`). Full fidelity, zero container overhead.
 - **No Docker, stuck on JDK 21** → Rift embedded
   (`zio-bdd-rift-embedded-jdk21`) with `--enable-preview`, or fall back to
   WireMock if the three-capability limit is acceptable.
@@ -254,8 +265,9 @@ document is `PerInstance`-only via `provisionNative`.
   (`zio-bdd-wiremock`). Cheapest to stand up; covers Faults,
   StatefulScenarios, StateInspection.
 - **Full fidelity and Docker is available (e.g. CI with testcontainers)** →
-  Rift container (`zio-bdd-rift`). Same capability set as embedded, closer to
-  a production Rift deployment.
+  Rift container (`zio-bdd-rift`). Same six core capabilities as embedded,
+  closer to a production Rift deployment; pass `interceptPort` to also match
+  embedded's `Capability.Intercept`.
 
 The sample corpus's `support/Backends.scala` shows the pattern for switching
 adapters at runtime via an environment variable, so a suite's `environment`

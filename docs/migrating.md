@@ -37,10 +37,10 @@ Remove:
 Add:
 
 ```scala
-"dev.zio" %% "zio-bdd-core" % zioBddVersion
+"io.github.etacassiopeia" %% "zio-bdd" % "1.4.1"
 ```
 
-The `zio-bdd-core` artifact includes the sbt test framework integration. You do not need a
+The `zio-bdd` artifact includes the sbt test framework integration. You do not need a
 separate runner or test framework dependency.
 
 In `build.sbt`, register the framework:
@@ -116,6 +116,8 @@ Then("""the balance of "([^"]+)" should be (\d+\.\d+)""") {
 
 **zio-bdd:**
 ```scala
+import zio.bdd.core.Assertions.assertTrue
+
 Then("the balance of " / string / " should be " / double) {
   (account: String, balance: Double) =>
     for {
@@ -178,6 +180,8 @@ created fresh for each scenario. The `ScenarioContext` object (generated via the
 mixin) provides `get` and `update`:
 
 ```scala
+import zio.bdd.core.Assertions.assertTrue
+
 case class AppState(userName: String = "", lastResponse: Option[Response] = None)
 
 object AppState:
@@ -390,7 +394,7 @@ All hook variants:
 | `afterStep { meta => ... }` | After each step |
 
 `ScenarioMetadata` carries: `name: String`, `tags: List[String]`,
-`file: Option[String]`, `line: Option[Int]`.
+`file: Option[String]`, `line: Option[Int]`, `flagValues: Map[String, String] = Map.empty`.
 
 Multiple calls to the same hook method compose — they do not replace each other:
 
@@ -656,6 +660,8 @@ The feature file is unchanged.
 
 `steps/OrderSpec.scala`:
 ```scala
+import zio.bdd.core.Assertions.assertTrue
+
 case class OrderState(productName: String = "", orderId: String = "")
 
 object OrderState:

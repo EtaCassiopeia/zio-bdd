@@ -46,10 +46,18 @@ trait ProvisionSteps { self: ZIOSteps[AppEnv, AppState] => ... }
 
 ---
 
-### "Cannot derive Default for AppState: field 'id' has no default value"
+### "Cannot derive Default for `<schema class>`: field 'id' has no default value"
+
+```
+java.lang.IllegalStateException: Cannot derive Default for <some Schema-derived class name>: field 'id' has no default value
+Hint: add default values to all fields of your state case class, or provide an explicit Default[T] instance.
+```
 
 **Cause:** `ZIOSteps[R, S]` requires a `Default[S]` instance.  When `Default[S]` is derived
-automatically from `Schema[S]`, every field must have a default value.
+automatically from `Schema[S]`, every field must have a default value.  The message interpolates
+`schema.getClass.getSimpleName` — the runtime class name of the derived `Schema[S]` instance, not
+`S`'s own name — so it will **not** literally say `AppState`; grep for `Cannot derive Default for`
+instead of the state type name.
 
 **Fix:** Add default values to all fields of `S`:
 
@@ -132,7 +140,7 @@ Given("the cache is cleared") { ZIO.attempt(cache.clear()).orDie }
 ```
 Ambiguous step definitions detected at suite startup.
 The following step expressions are registered multiple times:
-  GivenStep "a valid provision request" — registered 2 times
+  GivenStep 'a valid provision request' — registered 2 times
 ```
 
 **Cause:** Two step definitions with identical text and keyword were registered.  This often
@@ -143,11 +151,15 @@ in the same trait.
 
 ---
 
-### "StepLookupError: no matching step definition for …"
+### "No matching step found for …"
 
 ```
 FAILED: Given a valid provision request dated -7 days
-  StepLookupError: no step definition matches "a valid provision request dated -7 days"
+  No matching step found for Given 'a valid provision request dated -7 days'.
+
+  Implement it as:
+
+    Given("a valid provision request dated -7 days") { ZIO.unit }
 ```
 
 **Cause:** The Gherkin step text does not match any registered step expression.  Common reasons:
@@ -192,11 +204,11 @@ object MySuite extends ZIOSteps[AppEnv, AppState]   // ← object, not class
 
 ## Runtime failures
 
-### "StagingError.NotFound: no staged value of type Order"
+### "StagingError.NotFound: No staged value of type Order"
 
 ```
 Failed: When the order is submitted
-  zio.bdd.core.step.StagingError$NotFound: no staged value of type Order
+  No staged value of type Order. Call Stage.put before Stage.get.
 ```
 
 **Cause:** `Stage.get[Order]` was called but no prior step called `Stage.put(order)`.  This
@@ -206,6 +218,10 @@ can happen when:
    scenario structure, or dry-run output).
 2. The type passed to `Stage.put` differs from the type passed to `Stage.get` (e.g. `Stage.put`
    stores an `ProvisionEvent` but `Stage.get[PostEvent]` is called).
+
+`StagingError` is a sealed trait, not a `Throwable` — it cannot surface directly as an exception
+from a step body.  A step that wants to fail the scenario on a missing value must map it
+explicitly, e.g. `Stage.get[Order].mapError(e => new RuntimeException(e.message))`.
 
 **Fix:** Use `Stage.getOrElse(defaultValue)` if the missing value should fall back gracefully,
 or `Stage.getOption[T]` to handle absence explicitly:
@@ -260,7 +276,11 @@ for {
 
 ---
 
-### "FeatureContextError.NotFound: no value of type TestAccountId"
+### "FeatureContextError.NotFound: No feature-scoped value of type TestAccountId"
+
+```
+No feature-scoped value of type TestAccountId. Call FeatureContext.put before FeatureContext.get.
+```
 
 **Cause:** `FeatureContext.get[TestAccountId]` was called in a scenario, but no earlier step
 called `FeatureContext.put(TestAccountId(...))` in the same feature.
@@ -268,6 +288,10 @@ called `FeatureContext.put(TestAccountId(...))` in the same feature.
 This often happens when the `Given` step that populates `FeatureContext` is in a `Background`
 block that runs before each scenario — but the first scenario fails before reaching
 `FeatureContext.put`, and later scenarios also fail when they try to read it.
+
+`FeatureContextError` is a sealed trait, not a `Throwable` — it cannot surface directly as an
+exception from a step body.  A step that wants to fail the scenario on a missing value must map
+it explicitly, e.g. `FeatureContext.get[TestAccountId].mapError(e => new RuntimeException(e.message))`.
 
 **Fix:** Use `FeatureContext.getOrElse` or `FeatureContext.getOption` to handle a missing value,
 or ensure the `Background` step populates the context before other steps depend on it.
@@ -306,7 +330,8 @@ TIMEOUT after 30s: When the request is sent
 ### Reporter produces no output
 
 **Cause:** The reporter name in `@Suite(reporters = ...)` is misspelled.  Unknown reporter
-names fall back to `"pretty"` with a warning, but the warning may be lost in build output.
+names fall back to the pretty reporter with a warning — `Unknown reporter '<name>', defaulting
+to ConsoleReporter` — but the warning may be lost in build output.
 
 **Fix:** Use exactly `"pretty"` or `"junitxml"`:
 

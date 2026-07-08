@@ -45,7 +45,7 @@ shared in-process server and routes requests to the right scenario's stubs via a
 correlation header — no per-scenario process to start or stop.
 
 **Alternatives:** the Rift container adapter (`Rift.managed()`, needs Docker, gives you
-all six capabilities including Faults and Scripting) and embedded Rift
+all seven capabilities including Faults and Scripting) and embedded Rift
 (`EmbeddedRift.layer`, capability-complete, no Docker, but needs a JDK-matched native
 build). See [Adapters](mock-adapters.md) for the full comparison and setup steps for both.
 

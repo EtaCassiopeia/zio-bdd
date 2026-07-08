@@ -135,7 +135,7 @@ provisioning *and* becomes statically discoverable:
 ```scala
 object MySuite extends ZIOSteps[MockControl, S] with MockSteps[MockControl, S]:
   override def mockCatalog: Map[String, MockSource] = Catalog.entries
-  override def scenarioLayer = MockFixtures.scenario(meta, mockCatalog)
+  override def scenarioLayer(meta: ScenarioMetadata) = MockFixtures.scenario(meta, mockCatalog)
 ```
 
 `MockSteps.allMocks` then returns a `List[MockSummary]` (each `name` +
