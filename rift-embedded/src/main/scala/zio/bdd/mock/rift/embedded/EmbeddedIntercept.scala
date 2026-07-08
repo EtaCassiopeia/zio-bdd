@@ -25,10 +25,15 @@ import java.nio.file.Files
  */
 private[embedded] final class EmbeddedIntercept(
   engine: EmbeddedEngine,
-  started: Ref.Synchronized[Option[Int]]
+  started: Ref.Synchronized[Option[Int]],
+  config: EmbeddedRift.InterceptConfig
 ) extends Intercept:
 
   def proxyPort: IO[MockError, Int] = ensureStarted
+
+  // The listener binds `config.bindHost` (loopback by default), so report that as the reachable host —
+  // a wider bind (e.g. 0.0.0.0 for a containerized SUT) is where a caller points its proxy, not 127.0.0.1.
+  override def proxyEndpoint: IO[MockError, (String, Int)] = ensureStarted.map((config.bindHost, _))
 
   def add(rule: InterceptRule): IO[MockError, Unit] =
     ZIO.fromEither(EmbeddedIntercept.ruleJson(rule)).flatMap(json => ensureStarted *> engine.interceptAddRules(json))
@@ -50,15 +55,21 @@ private[embedded] final class EmbeddedIntercept(
     started.modifyZIO {
       case s @ Some(p) => ZIO.succeed((p, s))
       case None =>
-        engine.startIntercept(EmbeddedIntercept.StartOptions).map(i => (i.interceptPort, Some(i.interceptPort)))
+        engine
+          .startIntercept(EmbeddedIntercept.startOptions(config))
+          .map(i => (i.interceptPort, Some(i.interceptPort)))
     }
 
   private def message(t: Throwable): String = Option(t.getMessage).getOrElse(t.getClass.getSimpleName)
 
 private[embedded] object EmbeddedIntercept:
-  // Loopback, OS-assigned port — the listener binds where the SUT proxies through.
-  private val StartOptions: String    = Json.Obj("host" -> Json.Str("127.0.0.1"), "port" -> Json.Num(0)).toJson
   private val DefaultPassword: String = "changeit"
+
+  // Start options for the TLS-MITM listener. `bindHost` defaults to loopback (127.0.0.1); a wider bind
+  // (0.0.0.0 / a NIC address) makes the proxy reachable from another host or container. `port` defaults
+  // to 0 (OS-assigned); a pinned value binds a known port for a SUT whose proxy target is fixed up front.
+  private[embedded] def startOptions(config: EmbeddedRift.InterceptConfig): String =
+    Json.Obj("host" -> Json.Str(config.bindHost), "port" -> Json.Num(config.port.getOrElse(0))).toJson
 
   /**
    * Build the rift intercept-rule JSON from a portable [[InterceptRule]]. Left

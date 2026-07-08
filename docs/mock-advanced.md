@@ -451,3 +451,34 @@ PerInstance (the default) for host redirects.
 > keystore type since JDK 9); `TrustStoreFormat.Jks` is selectable. Both load as a
 > `trustedCertEntry` the default `TrustManagerFactory` reads out of the box, so
 > either works for a JVM SUT.
+
+**Containerized SUT (bind a reachable interface).** The examples above bind the
+intercept proxy to **loopback** — right when the SUT is a host process. When the
+SUT runs in a **Docker container** while the test + engine run on the host, a
+loopback socket refuses the container's gateway-originated connection. Bind a
+wider interface with `InterceptConfig` (opt-in — the default stays `127.0.0.1`,
+so nothing is exposed off loopback unless you ask):
+
+```scala
+import zio.bdd.mock.rift.embedded.EmbeddedRift.InterceptConfig
+
+// Reachable from another container/host via the Docker host-gateway; pin the port
+// so a compose-orchestrated SUT can be told its proxy target up front.
+val mock = Provisioning.live >>> EmbeddedRift.layer(InterceptConfig(bindHost = "0.0.0.0", port = Some(8888)))
+```
+
+`proxyEndpoint` reports the **actually-bound** host and port (not just the
+loopback port), so you can log or inject them. The SUT container points its HTTPS
+proxy at the Docker host-gateway and trusts the exported truststore mounted into
+the container:
+
+```
+# in the SUT container (host-gateway = host.docker.internal on Docker Desktop):
+-Djavax.net.ssl.trustStore=/mnt/intercept-truststore.p12 -Djavax.net.ssl.trustStorePassword=<pw>
+-Dhttps.proxyHost=host.docker.internal -Dhttps.proxyPort=8888
+```
+
+Only the **one** intercept proxy port needs to be container-reachable: the engine
+forwards intercepted traffic to the target space's imposter internally on
+loopback, so imposter ports stay private. See the `bindHost 0.0.0.0` case in
+`EmbeddedInterceptSpec` for a runnable check over a non-loopback interface.
