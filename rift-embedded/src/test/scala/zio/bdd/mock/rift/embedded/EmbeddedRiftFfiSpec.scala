@@ -212,7 +212,11 @@ object EmbeddedRiftFfiSpec extends ZIOSpecDefault:
           s1      <- si.currentState(space, "checkout").mapError(asT)
           _       <- ss.reset(space, "checkout").mapError(asT)
           s2      <- si.currentState(space, "checkout").mapError(asT)
-          _       <- control.destroy(space).mapError(asT)
+          // rift#416 over the live engine: an undeclared scenario is a clean not-found
+          // (`found:false` → None → InvalidDefinition), NOT a null pointer (which would be a
+          // CommunicationError). Proves the revert's load-bearing assumption against the real crate.
+          notFound <- si.currentState(space, "neverDefined").either
+          _        <- control.destroy(space).mapError(asT)
         yield assertTrue(
           control.capabilities == Set(
             Capability.Faults,
@@ -226,7 +230,10 @@ object EmbeddedRiftFfiSpec extends ZIOSpecDefault:
           s0 == ScenarioState.Started,
           stepped.status == 200 && stepped.body == "one",
           s1 == ScenarioState("Done"), // serving /step advanced the FSM
-          s2 == ScenarioState.Started  // reset re-pinned the initial state
+          s2 == ScenarioState.Started, // reset re-pinned the initial state
+          notFound match
+            case Left(MockError.InvalidDefinition(_)) => true
+            case _                                    => false
         )).provide(Provisioning.live, EmbeddedRift.layer.mapError(asT))
     },
     test("v2: destroy frees the port via rift_delete_imposter — an immediate re-provision serves again") {

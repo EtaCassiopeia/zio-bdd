@@ -125,13 +125,33 @@ private[embedded] object EmbeddedEngine:
     given JsonDecoder[BuildInfo] = DeriveJsonDecoder.gen[BuildInfo]
 
   /**
-   * The `value` field of a `rift_flow_state_get` result
-   * (`{"flowId","key","value"}`), decoded as its string form — scenario state
-   * (the sole reader) is stored as a JSON string. Extra fields ignored.
+   * A `rift_flow_state_get` result envelope
+   * (`{"found","flowId","key","value"}`, rift#416): `found` disambiguates an
+   * absent key (`found=false`, a non-error outcome) from a value present, while
+   * a null pointer means a genuine error alone. `value` is the scenario state's
+   * string form (or absent when not found). Extra fields ignored.
    */
-  private[embedded] final case class FlowStateValue(value: String)
-  private[embedded] object FlowStateValue:
-    given JsonDecoder[FlowStateValue] = DeriveJsonDecoder.gen[FlowStateValue]
+  private[embedded] final case class FlowStateResult(found: Boolean, value: Option[String] = None)
+  private[embedded] object FlowStateResult:
+    given JsonDecoder[FlowStateResult] = DeriveJsonDecoder.gen[FlowStateResult]
+
+  /**
+   * Interpret a `rift_flow_state_get` non-null envelope: `found=false` → `None`
+   * (a clean not-found); `found=true` → `Some(value)`. A `found=true` with no
+   * value is a contract violation — surfaced as a CommunicationError, not
+   * silently coerced to not-found (so an engine anomaly never masquerades as
+   * "no scenario"). Unparseable JSON is likewise a CommunicationError.
+   */
+  private[embedded] def interpretFlowState(json: String): Either[MockError, Option[String]] =
+    json
+      .fromJson[FlowStateResult]
+      .left
+      .map(e => MockError.CommunicationError(s"rift_flow_state_get returned unparseable JSON: $e ($json)"))
+      .flatMap {
+        case FlowStateResult(true, None) =>
+          Left(MockError.CommunicationError(s"rift_flow_state_get returned found=true with no value ($json)"))
+        case r => Right(if r.found then r.value else None)
+      }
 
   /**
    * The bound endpoint of the intercept listener, from `rift_start_intercept`.
@@ -212,17 +232,15 @@ private[embedded] object EmbeddedEngine:
             .mapError(e => MockError.CommunicationError(s"rift_build_info returned unparseable build info: $e ($json)"))
       }
 
-    // A null return is "key absent" (mapped to None) — the crate also returns null on a genuine
-    // error, but the adapter only reads a scenario it defined on a live imposter, so absence is the
-    // meaningful case (mirrors the HTTP path's `Option[String]`). rift's null conflates the two.
+    // rift#416: a null pointer is a genuine error (→ CommunicationError); an absent key is the
+    // non-error `{"found":false}` envelope (→ None). So absence and failure are no longer conflated.
     def flowStateGet(port: Int, flowId: String, key: String): IO[MockError, Option[String]] =
-      blocking("rift_flow_state_get")(Option(bridge.flowStateGet(port, flowId, key))).flatMap {
-        case None => ZIO.none
-        case Some(json) =>
-          ZIO
-            .fromEither(json.fromJson[FlowStateValue])
-            .mapError(e => MockError.CommunicationError(s"rift_flow_state_get returned unparseable JSON: $e ($json)"))
-            .map(v => Some(v.value))
+      blocking("rift_flow_state_get") {
+        val json = bridge.flowStateGet(port, flowId, key)
+        if json == null then Left(withReason(s"rift_flow_state_get returned null for port $port")) else Right(json)
+      }.flatMap {
+        case Left(msg)   => ZIO.fail(MockError.CommunicationError(msg))
+        case Right(json) => ZIO.fromEither(interpretFlowState(json))
       }
 
     def flowStatePut(port: Int, flowId: String, key: String, valueJson: String): IO[MockError, Unit] =
