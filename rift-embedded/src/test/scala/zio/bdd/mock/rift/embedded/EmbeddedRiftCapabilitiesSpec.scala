@@ -76,7 +76,10 @@ object EmbeddedRiftCapabilitiesSpec extends ZIOSpecDefault:
 
   private def portFromUri(baseUri: String): Int = baseUri.substring(baseUri.lastIndexOf(':') + 1).toInt
 
-  private def withControl(mode: RiftMode = RiftMode.PerInstance)(
+  private def withControl(
+    mode: RiftMode = RiftMode.PerInstance,
+    intercept: EmbeddedRift.InterceptConfig = EmbeddedRift.InterceptConfig()
+  )(
     use: (MockControl, RecordingEngine) => IO[Any, TestResult]
   ): ZIO[Provisioning, Any, TestResult] =
     ZIO.scoped {
@@ -90,7 +93,7 @@ object EmbeddedRiftCapabilitiesSpec extends ZIOSpecDefault:
         icRules    <- Ref.make(Chunk.empty[String])
         icExports  <- Ref.make(Chunk.empty[(String, String, String)])
         engine      = RecordingEngine(replaced, deleted, flowState, spaceStubs, icStarts, icRules, icExports)
-        control    <- EmbeddedRiftMockControl.make(engine, prov, mode)
+        control    <- EmbeddedRiftMockControl.make(engine, prov, mode, intercept)
         result     <- use(control, engine)
       yield result
     }
@@ -388,6 +391,21 @@ object EmbeddedRiftCapabilitiesSpec extends ZIOSpecDefault:
             j.contains("\"serve\"") && j.contains("418") && j.contains("teapot") && j.contains("api.example.com")
           )
         )
+      }
+    },
+    test(
+      "intercept: a non-IP bindHost fails with InvalidDefinition on first use, without starting the listener (#262)"
+    ) {
+      withControl(intercept = EmbeddedRift.InterceptConfig(bindHost = "localhost")) { (control, engine) =>
+        for
+          ic     <- control.intercept
+          res    <- ic.proxyPort.either
+          starts <- engine.interceptStarts.get
+        yield
+          val rejected = res match
+            case Left(MockError.InvalidDefinition(m)) => m.contains("localhost")
+            case _                                    => false
+          assertTrue(rejected, starts == 0) // validation short-circuits before engine.startIntercept
       }
     },
     test("intercept: a redirect whose target space has no port in its baseUri fails with InvalidDefinition") {
