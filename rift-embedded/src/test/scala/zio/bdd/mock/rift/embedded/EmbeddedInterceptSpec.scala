@@ -72,7 +72,7 @@ object EmbeddedInterceptSpec extends ZIOSpecDefault:
           space <- mc.provision(cdnConfig).mapError(asT).map(_.head)
           ic    <- mc.intercept.mapError(u => new RuntimeException(u.message))
           _     <- ic.redirectTo("cdn.example.com", space).mapError(asT)
-          ts    <- ic.trustStore(TrustStoreFormat.Jks).mapError(asT)
+          ts    <- ic.trustStore().mapError(asT) // default PKCS#12 (JVM-loadable since rift#418)
           port  <- ic.proxyPort.mapError(asT)
           res   <- sutGet("https://cdn.example.com/config.json", port, ts)
         yield assertTrue(res._1 == 200, res._2.contains("mocked")))
