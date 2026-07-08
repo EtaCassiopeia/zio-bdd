@@ -55,6 +55,7 @@ private[embedded] final class EmbeddedIntercept(
       case s @ Some(ep) => ZIO.succeed((ep, s))
       case None =>
         ZIO.fromEither(EmbeddedIntercept.validateBindHost(config.bindHost)) *>
+          ZIO.fromEither(EmbeddedIntercept.validateCaPair(config)) *>
           engine
             .startIntercept(EmbeddedIntercept.startOptions(config))
             .flatMap { i =>
@@ -86,8 +87,23 @@ private[embedded] object EmbeddedIntercept:
   // Start options for the TLS-MITM listener. `bindHost` defaults to loopback (127.0.0.1); a wider bind
   // (0.0.0.0 / a NIC address) makes the proxy reachable from another host or container. `port` defaults
   // to 0 (OS-assigned); a pinned value binds a known port for a SUT whose proxy target is fixed up front.
+  // `caCertPath`/`caKeyPath` (both-or-neither) load a persistent caller CA (#273) — emitted only when both
+  // are set (rift's InterceptOptions uses deny_unknown_fields, so only known keys may appear).
   private[embedded] def startOptions(config: EmbeddedRift.InterceptConfig): String =
-    Json.Obj("host" -> Json.Str(config.bindHost), "port" -> Json.Num(config.port.getOrElse(0))).toJson
+    val base = List("host" -> Json.Str(config.bindHost), "port" -> Json.Num(config.port.getOrElse(0)))
+    val ca = (config.caCert, config.caKey) match
+      case (Some(cert), Some(key)) =>
+        List("caCertPath" -> Json.Str(cert.toString), "caKeyPath" -> Json.Str(key.toString))
+      case _ => Nil
+    Json.Obj((base ++ ca)*).toJson
+
+  // Both-or-neither: a lone caCert/caKey is a misconfiguration (rift needs the pair to load a CA). Reject
+  // it early with a clear message rather than silently dropping to an ephemeral CA / an opaque engine error.
+  private[embedded] def validateCaPair(config: EmbeddedRift.InterceptConfig): Either[MockError, Unit] =
+    (config.caCert, config.caKey) match
+      case (Some(_), None) | (None, Some(_)) =>
+        Left(MockError.InvalidDefinition("intercept caCert and caKey must be set together (both or neither)"))
+      case _ => Right(())
 
   // rift binds the intercept listener via SocketAddr::parse, which accepts only IP literals — a hostname
   // (`localhost` / a DNS name) fails there with an opaque error. Reject it early, DNS-free (no resolution),
