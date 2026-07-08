@@ -297,6 +297,16 @@ need full-fidelity access to a backend's raw feature set (e.g. a Mountebank
 imposter field or a WireMock stub-mapping option the canonical model doesn't
 expose), not for anything you expect to run against a second adapter.
 
+A malformed `NativeSpec` fails fast at provision-time — invalid JSON syntax is
+rejected locally with `MockError.InvalidDefinition`, and a syntactically valid
+document the backend itself refuses surfaces as `MockError.CommunicationError`
+— but a document that's valid and accepted yet semantically wrong isn't caught
+there at all: matching against it is delegated entirely to the backend's own
+matcher, so the defect only shows up later as an unexpected match result, not
+a typed error. Contrast the portable model's `MatchClause`, which is opaque
+and never user-constructible outside the DSL builders (`header(..)`,
+`bodyEquals(..)`, …), so a malformed match can't be built in the first place.
+
 From `Native17Suite` — each scenario is tagged for its backend and the
 harness runs the matching one:
 
@@ -490,6 +500,11 @@ import zio.bdd.mock.rift.embedded.EmbeddedRift.InterceptConfig
 val mock = Provisioning.live >>> EmbeddedRift.layer(InterceptConfig(bindHost = "0.0.0.0", port = Some(8888)))
 ```
 
+`bindHost` must be an IP literal — `0.0.0.0`, a specific NIC address, and the
+like; a hostname such as `localhost` is rejected with
+`MockError.InvalidDefinition` the first time the intercept listener starts
+(#262).
+
 `proxyEndpoint` reports the **actually-bound** host and port (not just the
 loopback port), so you can log or inject them. Export the truststore **straight
 to a bind-mounted path** the container reads via `to` (default is a temp file),
@@ -558,3 +573,51 @@ SUT proxies through the **host-mapped** port (`ic.proxyPort` reports it, already
 translated), so it works the same whether the SUT is a host process or another
 container reaching the published port. See `RiftInterceptSpec` (RIFT_IT-gated)
 for the runnable end-to-end version against a real container.
+
+---
+
+## 10. Scoped overlays — `MockOverlay`
+
+`MockOverlay` (#116) layers revertible rule mutation on top of the core
+`MockControl` port. `scoped` installs each rule at `Priority.Overlay` (highest
+priority, shadowing the base rules) on acquire and removes it on release, so
+rules applied inside a `ZIO.scoped` block — in a hook, or a `When` step —
+auto-revert exactly when the scope closes. Each rule registers its own
+finalizer, so a failure partway through still tears down only the rules that
+were actually added; a teardown failure is logged and skipped so one bad
+removal can't strand its siblings. `remove` and `replaceAll` are the
+non-scoped counterparts — targeted and wholesale mutation for steps that
+permanently change a live space (e.g. "now everything times out").
+
+```scala
+import zio.bdd.mock.MockOverlay
+
+ZIO.scoped {
+  for
+    _ <- MockOverlay.scoped(space)(MockRule(get("/flaky"), ResponseDef(status = 503)))
+    _ <- runScenarioAgainstFlakyEndpoint(space) // sees the 503 overlay
+  yield ()
+} // scope closes here — the overlay rule is removed, base rules resume
+```
+
+`MockOverlay.remove(space, id)` deletes a single rule by its `RuleId`;
+`MockOverlay.replaceAll(space, rules*)` swaps every rule in `space` at once.
+
+---
+
+## 11. Mock test aspects — `MockAspects`
+
+`MockAspects` wraps `MockOverlay.scoped` as `TestAspect`s that override a
+`MockSpace`'s behavior for one test and auto-revert afterward — mirroring
+zio-openfeature's `TestFeatureProvider` delay/error aspects. `withLatency(d)`
+adds delay `d` to every response in the space for the duration of the test;
+`withImposter(rules*)` overlays an arbitrary set of rules as a scoped
+imposter. Both require `MockControl & MockSpace` in the test environment.
+
+```scala
+import zio.bdd.mock.MockAspects.*
+
+test("times out under latency") {
+  ...
+} @@ withLatency(2.seconds)
+```
