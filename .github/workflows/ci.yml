@@ -18,6 +18,26 @@ jobs:
       - uses: sbt/setup-sbt@v1
       - run: sbt scalafmtCheckAll mimaReportBinaryIssues test
 
+  # Compile-check the canonical doc snippets (#283): `docs/mdoc` compiles every `scala mdoc` block in
+  # mdoc-src/ against the real API (so an API change that breaks a documented example fails CI here) and
+  # regenerates docs/verified-examples.md; the diff check then fails if the committed output is stale.
+  docs:
+    name: Docs — mdoc verified examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 11
+          cache: sbt
+      - uses: sbt/setup-sbt@v1
+      - run: sbt docs/mdoc
+      - name: Fail if docs/verified-examples.md is out of date (run `sbt docs/mdoc`)
+        run: git diff --exit-code docs/verified-examples.md
+
   # The Rift adapter's real-container acceptance test (#113) is gated by RIFT_IT
   # so the hermetic `build` job above stays Docker-free. ubuntu-latest ships a
   # running Docker daemon at /var/run/docker.sock that testcontainers resolves
