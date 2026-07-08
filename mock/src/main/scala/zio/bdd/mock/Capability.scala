@@ -2,6 +2,8 @@ package zio.bdd.mock
 
 import zio.IO
 
+import java.nio.file.Path
+
 /**
  * Optional capabilities an adapter MAY implement beyond the total core port. An
  * adapter advertises a capability via [[MockControl.capabilities]]; for each
@@ -139,15 +141,21 @@ trait Intercept:
   def add(rule: InterceptRule): IO[MockError, Unit]
 
   /**
-   * Export a truststore containing the intercept CA to a fresh temp file,
-   * returning its path + password — hand both to the SUT's JVM so it trusts the
-   * intercept's per-host leaf certificates. Defaults to PKCS#12 (the JVM's
-   * default keystore type since JDK 9); JKS is selectable. Both load as a JVM
-   * truststore out of the box — a `trustedCertEntry` the default
-   * `TrustManagerFactory` reads (rift's PKCS#12 export was made JVM-loadable in
-   * rift#418).
+   * Export a truststore containing the intercept CA, returning its path +
+   * password — hand both to the SUT's JVM so it trusts the intercept's per-host
+   * leaf certificates. Defaults to PKCS#12 (the JVM's default keystore type
+   * since JDK 9); JKS is selectable. Both load as a JVM truststore out of the
+   * box — a `trustedCertEntry` the default `TrustManagerFactory` reads (rift's
+   * PKCS#12 export was made JVM-loadable in rift#418).
+   *
+   * `to` chooses where the file lands: `None` (default) writes a fresh temp
+   * file; `Some(path)` writes to that exact path (creating parent dirs,
+   * overwriting) — e.g. a host dir bind-mounted into a containerized SUT.
    */
-  def trustStore(format: TrustStoreFormat = TrustStoreFormat.Pkcs12): IO[MockError, TrustStore]
+  def trustStore(
+    format: TrustStoreFormat = TrustStoreFormat.Pkcs12,
+    to: Option[Path] = None
+  ): IO[MockError, TrustStore]
 
   /**
    * As [[trustStore]], but the exported store ALSO contains the JVM's default
@@ -158,9 +166,15 @@ trait Intercept:
    * that mocks some hosts yet still calls real ones; the CA-only [[trustStore]]
    * is right for a fully hermetic SUT. Built on [[trustStore]], so it is
    * backend-neutral — every `Intercept` adapter gets it for free.
+   *
+   * `to` places the merged store: `None` (default) a fresh temp file;
+   * `Some(path)` that exact path (parent dirs created) — for a mounted SUT.
    */
-  def trustStoreWithSystemCAs(format: TrustStoreFormat = TrustStoreFormat.Pkcs12): IO[MockError, TrustStore] =
-    trustStore(format).flatMap(TrustStore.plusSystemCAs)
+  def trustStoreWithSystemCAs(
+    format: TrustStoreFormat = TrustStoreFormat.Pkcs12,
+    to: Option[Path] = None
+  ): IO[MockError, TrustStore] =
+    trustStore(format).flatMap(TrustStore.plusSystemCAs(_, to))
 
   /**
    * Convenience: intercept `host` and forward its requests to `space`'s

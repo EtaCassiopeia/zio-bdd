@@ -5,8 +5,6 @@ import zio.bdd.mock.*
 import zio.json.*
 import zio.json.ast.Json
 
-import java.nio.file.Files
-
 /**
  * The [[Intercept]] capability over the embedded engine's intercept FFI
  * (rift#410, #219): starts the TLS-MITM forward-proxy lazily on first use
@@ -38,17 +36,16 @@ private[embedded] final class EmbeddedIntercept(
   def add(rule: InterceptRule): IO[MockError, Unit] =
     ZIO.fromEither(EmbeddedIntercept.ruleJson(rule)).flatMap(json => ensureStarted *> engine.interceptAddRules(json))
 
-  def trustStore(format: TrustStoreFormat): IO[MockError, TrustStore] =
+  def trustStore(format: TrustStoreFormat, to: Option[java.nio.file.Path]): IO[MockError, TrustStore] =
     for
       _ <- ensureStarted
-      tmp <- ZIO.attemptBlocking {
-               val p = Files.createTempFile("rift-intercept-", s".${format.wire}")
-               p.toFile.deleteOnExit()
-               p
-             }
-               .mapError(t => MockError.CommunicationError(s"creating intercept truststore temp file: ${message(t)}"))
-      _ <- engine.interceptExportTruststore(format.wire, EmbeddedIntercept.DefaultPassword, tmp.toString)
-    yield TrustStore(tmp, EmbeddedIntercept.DefaultPassword, format)
+      out <- ZIO
+               // Local filesystem work (temp file / caller path), not a backend round-trip → ProvisionFailed,
+               // per the package's error taxonomy (CommunicationError is reserved for backend comms).
+               .attemptBlocking(TrustStore.exportPath(to, format))
+               .mapError(t => MockError.ProvisionFailed(s"resolving intercept truststore path: ${message(t)}"))
+      _ <- engine.interceptExportTruststore(format.wire, EmbeddedIntercept.DefaultPassword, out.toString)
+    yield TrustStore(out, EmbeddedIntercept.DefaultPassword, format)
 
   // Start the listener at most once (race-safe), memoizing its bound proxy port. Validate the bind host
   // first so a hostname fails with a clear message here, not opaquely inside the engine (#262).
