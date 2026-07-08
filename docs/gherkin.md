@@ -156,8 +156,8 @@ or, when the `Examples:` block has a name:
 ```
 
 If a placeholder used in a step has no matching column header in the `Examples:` table
-the step is skipped (not failed at parse time; the mismatch becomes a step-not-found
-error at runtime).
+the step is silently dropped from the expanded scenario — no step-not-found error or
+warning is raised.
 
 ---
 
@@ -288,8 +288,8 @@ Produces tags: `smoke`, `regression`, `priority-high`.
 
 **Placement:**
 - Before `Feature:` — feature-level tags. These are NOT inherited by scenarios.
-- Before a `Rule:` — rule tags (currently stored only on the rule; not propagated to
-  scenarios).
+- Before a `Rule:` — rule tags are discarded entirely; the parser never stores them
+  (`RawRule` has no tags field) and they are not propagated to scenarios.
 - Before `Scenario:` / `Scenario Outline:` — scenario-level tags.
 - Before `Examples:` — applied to all scenarios expanded from that block.
 
@@ -479,7 +479,7 @@ either be silently ignored or cause a parse failure.
 | Inline comments (`Given a step # comment`) | `#` inside a step line is part of the step text |
 | `@ColumnName` derivation without annotation | Plain case-class mapping requires explicit `@ColumnName` on fields |
 | `DocString` content type hints (`` ```json ``) | The type hint after `` ``` `` is captured as part of the delimiter but not stored separately |
-| Nested `Rule:` blocks | `Rule:` inside `Rule:` is not parsed; the inner `Rule:` line is skipped |
+| Nested `Rule:` blocks | Not parsed as nested; the inner `Rule:` is promoted to a sibling top-level rule, so its scenarios get only the feature's `Background:`, not the outer rule's |
 | Multi-feature files | Not supported; use separate `.feature` files |
 | `Ability:` / `Business Need:` as aliases for `Feature:` | Not recognised |
 | Step argument ordering constraints | The parser places a data table or doc string on the immediately following step; two arguments on one step are not supported |
