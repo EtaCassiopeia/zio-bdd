@@ -79,17 +79,20 @@ Extractors are values in scope via `DefaultTypedExtractor` (mixed into
 
 ### `string`
 
-Matches any text, optionally surrounded by double quotes.  Quotes are stripped
-from the captured value.
+Matches any text, optionally surrounded by double quotes. The quoted branch is
+escape-aware and non-spanning — it stops at its own unescaped closing quote
+rather than running greedily to the last quote on the line. Quotes are
+stripped from the captured value, and `\"` / `\\` are unescaped to `"` / `\`.
 
 ```
-pattern: (".*"|.*)
+pattern: ("(?:\\.|[^"\\])*"|.*)
 ```
 
 ```scala
 Given("the account id is " / string) { (id: String) =>
   // id == "abc123"  for step text: the account id is "abc123"
   // id == abc123    for step text: the account id is abc123
+  // id == say "hi"  for step text: the account id is "say \"hi\""
 }
 ```
 
@@ -519,7 +522,7 @@ If two or more steps share an identical expression text and keyword,
 ```
 Ambiguous step definitions detected at suite startup.
 The following step expressions are registered multiple times:
-  GivenStep "the account is initialised" — registered 2 times
+  GivenStep 'the account is initialised' — registered 2 times
 Rename or merge duplicate step definitions.
 ```
 
@@ -643,9 +646,15 @@ Each `*S` method registers a step whose body is:
 `State.get[S].flatMap(s => f(s)(extractedParams...))` — one `FiberRef.get`
 per step invocation, equivalent cost to the manual pattern.
 
-Available arities: 0 (no Gherkin params), 1, 2, and 3 extracted parameters.
-For higher arities, use the manual `ScenarioContext.get` pattern or decompose
-the step into helper methods.
+Available arities: `GivenS` / `WhenS` / `ThenS` / `AndS` support 0 (no Gherkin
+params), 1, 2, and 3 extracted parameters. `ButS` only supports 0 and 1 —
+`ButS[A, B]` / `ButS[A, B, C]` are not defined on `ZIOSteps`. A `But` step
+needing 2+ params must use the code-gen-free `InlineStepMethods` (§6), whose
+`ButS` is arity-unbounded, or fall back to the manual `ScenarioContext.get`
+pattern.
+
+For higher arities on `GivenS` / `WhenS` / `ThenS` / `AndS`, use the manual
+`ScenarioContext.get` pattern or decompose the step into helper methods.
 
 ### Related patterns
 
@@ -885,15 +894,24 @@ Then("charging a declined card raises PaymentError") {
 
 ### API
 
+`assertRaises` is a two-stage builder: first fix the exception type (which
+supplies its own `ClassTag` via a `using` parameter), then apply it to the
+effect to inspect:
+
 ```scala
-Assertions.assertRaises[E <: Throwable : ClassTag, R, A](
+Assertions.assertRaises[E <: Throwable](using ClassTag[E]): AssertRaises[E]
+
+// AssertRaises[E]#apply
+def apply[R, A](
   effect: ZIO[R, Throwable, A],
-  message: String = s"Expected <E> to be raised"
+  message: String = ""
 )(inspect: E => ZIO[Any, Throwable, Unit]): ZIO[R, Throwable, Unit]
 ```
 
 - **Passes** when `effect` raises an `E` and `inspect` succeeds. **Fails** when the effect succeeds
   (nothing raised), raises a *different* type, or when `inspect` fails.
+- `message` defaults to `""`; when left at the default, the failure text ("Expected `<E>` to be
+  raised, but …") is computed from the `ClassTag` at runtime, not from a literal default.
 - The exception is caught whether it surfaces as a typed failure or a defect; **interruption** is
   not treated as a raised exception and propagates (cancellation is honored).
 - `inspect` is a `ZIO[Any, Throwable, Unit]`, so it composes with the other `assert*` helpers.
