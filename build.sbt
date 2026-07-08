@@ -432,6 +432,23 @@ lazy val mock = (project in file("mock"))
     mimaPreviousArtifacts := Set.empty
   )
 
+// Compile-checked documentation examples (mdoc, #283). NOT published and NOT aggregated into the root,
+// so `sbt test` / `ci-release` ignore it — run `sbt docs/mdoc` to regenerate docs/verified-examples.md
+// from mdoc-src/ and fail the build if any canonical copy-paste snippet drifts from the real API. The
+// other docs/*.md stay plain Markdown (mostly illustrative fragments that don't compile standalone).
+lazy val docs = (project in file("docs-mdoc"))
+  .enablePlugins(MdocPlugin)
+  .dependsOn(core, mock)
+  .settings(
+    name                  := "zio-bdd-docs",
+    publish / skip        := true,
+    mimaPreviousArtifacts := Set.empty,
+    mdocIn                := file("mdoc-src"),
+    mdocOut               := file("docs"),
+    // Snippets show idiomatic imports for copy-paste; don't fail the doc build on an unused one.
+    scalacOptions ~= (_.filterNot(_ == "-Wunused:imports"))
+  )
+
 // Rift adapter (#113): implements the portable MockControl SPI over the Rift
 // (Mountebank-compatible) backend. Drives the admin API via zio-http and can
 // stand up the published image via testcontainers. Depends on `mock`, never the
