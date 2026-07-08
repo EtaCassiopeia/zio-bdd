@@ -17,8 +17,10 @@ This document describes how to publish a new release of zio-bdd to Maven Central
 1. All tests pass: `sbt clean test`
 2. No scalafmt violations: `sbt scalafmtCheckAll`
 3. No compilation warnings: `sbt compile` (check output for `-Wunused:imports` warnings)
-4. `CHANGELOG.md` updated with the new version entry.
-5. `README.md` version badge reflects the new version.
+4. `CHANGELOG.md` updated with the new version entry (move `[Unreleased]` → `[X.Y.Z] — <date>`).
+5. Docs install snippets bumped to the new version — run `./scripts/bump-doc-versions.sh X.Y.Z`
+   (idempotent; only touches `io.github.etacassiopeia` coordinates). Optional: the release workflow
+   opens this bump as a PR afterward if you skip it here (see step 4 below).
 6. All new public APIs are documented.
 
 ## Versioning
@@ -39,13 +41,20 @@ zio-bdd follows [Semantic Versioning](https://semver.org/):
    ```bash
    git push origin v1.0.0
    ```
-   The GitHub Actions workflow (`.github/workflows/release.yml`) runs `sbt ci-release`,
-   which signs and publishes the artifacts to Sonatype Central.
+   The GitHub Actions workflow (`.github/workflows/release.yml`) runs three jobs on the tag:
+   - **publish** / **publish-preview** — `sbt ci-release` signs and publishes the stable bundle
+     (JDK 22) and the JDK 21 preview variant to Sonatype Central.
+   - **github-release** — creates the GitHub Release with auto-generated notes; `--latest` for a
+     plain `vX.Y.Z`, `--prerelease` for a hyphenated `vX.Y.Z-RCn`. (#275)
+   - **docs-version-bump** — opens a `docs/bump-X.Y.Z` PR syncing the README/docs install snippets
+     to the new version (skipped for pre-releases). (#282)
 
 3. **Verify on Maven Central** (can take 10-30 minutes to propagate):
    - `https://search.maven.org/artifact/io.github.etacassiopeia/zio-bdd_3`
 
-4. **Create a GitHub release** from the tag with the CHANGELOG entry as description.
+4. **Merge the docs-bump PR** if step 5 of the checklist was skipped — it's docs-only, so a repo
+   admin can merge it directly (a bot-opened PR does not re-trigger CI, which is expected). The
+   GitHub Release is already created by the workflow — no manual step.
 
 ## Local test publish
 
