@@ -192,6 +192,10 @@ lazy val mimaSettings = Seq(
     ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.ScenarioResult.apply"),
     ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.ScenarioResult.this"),
     ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.ScenarioResult.copy"),
+    // #238: TestCaseRecord gains an `attempts` field (retry aspect in JUnit XML) — additive, defaulted.
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.report.JUnitXMLFormatter#TestCaseRecord.apply"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.report.JUnitXMLFormatter#TestCaseRecord.this"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.report.JUnitXMLFormatter#TestCaseRecord.copy"),
     ProblemFilters.exclude[MissingFieldProblem]("zio.bdd.core.report.Color.Yellow"),
     ProblemFilters.exclude[MissingFieldProblem]("zio.bdd.core.report.Color.PaleGreen"),
     ProblemFilters.exclude[MissingFieldProblem]("zio.bdd.core.report.Color.PaleCyan"),
