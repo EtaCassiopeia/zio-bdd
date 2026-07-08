@@ -61,3 +61,28 @@ jobs:
           PGP_SECRET: ${{ secrets.PGP_SECRET }}
           SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
           SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
+
+  # GitHub Release object (the "Releases" page): `ci-release` only publishes to Maven Central, so without
+  # this step a pushed tag never appears under Releases (only under Tags). Runs after both Sonatype bundles
+  # succeed, so a failed publish never yields a Release. A pre-release tag (contains a hyphen, e.g. v1.0.0-RC1)
+  # is flagged --prerelease (never marked Latest); a plain vX.Y.Z is marked --latest. Notes are auto-generated
+  # from the merged PRs since the previous release.
+  github-release:
+    needs: [publish, publish-preview]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Create the GitHub Release for this tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          flags="--verify-tag --generate-notes"
+          case "${GITHUB_REF_NAME}" in
+            *-*) flags="$flags --prerelease" ;;
+            *) flags="$flags --latest" ;;
+          esac
+          gh release create "${GITHUB_REF_NAME}" $flags
