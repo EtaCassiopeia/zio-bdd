@@ -30,18 +30,23 @@ _  <- sc.define(space, defineRetry(path))
 | `Capability.Scripting` | `scripting: IO[Unsupported, Scripting]` | yes | yes | no |
 | `Capability.ProxyRecord` | `proxyRecord: IO[Unsupported, ProxyRecord]` | yes | yes | no |
 | `Capability.Templating` | `templating: IO[Unsupported, Templating]` | yes | yes | no |
-| `Capability.Intercept` | `intercept: IO[Unsupported, Intercept]` | no | yes | no |
+| `Capability.Intercept` | `intercept: IO[Unsupported, Intercept]` | opt-in¹ | yes | no |
 
 Faults, StatefulScenarios, and StateInspection are portable across all three
 adapters. Scripting, ProxyRecord, and Templating are Rift-only (container or
 embedded — embedded is capability-complete, a pure backend swap for the
 container, not a reduced subset); WireMock does not advertise them. `Intercept`
-(built-in HTTPS intercept, §9) is **embedded-only**: it runs the TLS-MITM
-listener in-process over the FFI; the container and WireMock adapters inherit
-the `Unsupported` fallback. See
+(built-in HTTPS intercept, §9) runs the TLS-MITM listener over the **embedded**
+FFI always-on, and over the **container** adapter opt-in (#253) — only when
+`Rift.managed`/`Rift.connect` is given an `interceptPort`/`interceptProxy`;
+WireMock inherits the `Unsupported` fallback. See
 [Adapters](mock-adapters.md) for the full per-adapter breakdown and
 [Mocking overview](mocking.md) for the `MockControl` port these accessors sit
 on.
+
+¹ The container adapter advertises `Capability.Intercept` only when started with
+an `interceptPort` (`Rift.managed`) or `interceptProxy` (`Rift.connect`); without
+one, `intercept` returns `Unsupported`.
 
 ---
 
