@@ -314,38 +314,32 @@ private[embedded] final case class EmbeddedRiftMockControl(
     )
 
   private val embeddedStateInspection: StateInspection = new StateInspection:
-    // Guard `currentState` on the locally-tracked scenarios (like `setState`/`reset`) so an undeclared
-    // name is an accurate InvalidDefinition from the Ref — not inferred from a `flow_state_get` null,
-    // which the crate also returns on a genuine engine error (rift#415: null conflates absent-key and
-    // error).
     def currentState(space: MockSpace, name: String): IO[MockError, ScenarioState] =
-      dispatch(space)(cs => guardDefined(cs.scenarios, space.id, name)(readState(cs.port, cs.flowId, space.id, name)))(
-        imp => guardDefined(imp.scenarios, space.id, name)(readState(imp.port, imp.port.toString, space.id, name))
+      dispatch(space)(cs => readState(cs.port, cs.flowId, space.id, name))(imp =>
+        readState(imp.port, imp.port.toString, space.id, name)
       )
     def setState(space: MockSpace, name: String, to: ScenarioState): IO[MockError, Unit] =
       dispatch(space)(cs => guardDefined(cs.scenarios, space.id, name)(putScenarioState(cs.port, cs.flowId, name, to)))(
         imp => guardDefined(imp.scenarios, space.id, name)(putScenarioState(imp.port, imp.port.toString, name, to))
       )
 
-  private def guardDefined[A](
+  private def guardDefined(
     scenarios: Ref[Map[String, ScenarioState]],
     spaceId: SpaceId,
     name: String
-  )(action: => IO[MockError, A]): IO[MockError, A] =
+  )(action: => IO[MockError, Unit]): IO[MockError, Unit] =
     scenarios.get.flatMap(s =>
       if s.contains(name) then action
       else ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${spaceId.value}"))
     )
 
-  // Reached only for a scenario the guard confirmed is declared (so `define` has pinned its state):
-  // a `Some` is its current state. A `None` here is anomalous — a declared scenario whose flow-state
-  // key vanished, or a genuine engine error the null-return can't distinguish — surfaced as a
-  // CommunicationError rather than masked as "no scenario" (which the guard already rules out).
+  // rift#416 gives `flow_state_get` an unambiguous not-found signal, so a `None` accurately means the
+  // scenario was never declared (`define` always pins its initial state) — mapped to InvalidDefinition,
+  // not masked over a genuine engine error (which now surfaces from `flowStateGet` as a CommunicationError).
   private def readState(port: Int, flowId: String, spaceId: SpaceId, name: String): IO[MockError, ScenarioState] =
     engine.flowStateGet(port, flowId, name).flatMap {
       case Some(s) => ZIO.succeed(ScenarioState(s))
-      case None =>
-        ZIO.fail(MockError.CommunicationError(s"scenario '$name' on space ${spaceId.value} has no readable state"))
+      case None    => ZIO.fail(MockError.InvalidDefinition(s"no scenario '$name' on space ${spaceId.value}"))
     }
 
   // flowId = the imposter port (PerInstance) / the correlation value (Correlated): the slice a

@@ -447,8 +447,7 @@ isolation-independent. Because a Correlated space shares one imposter port and i
 separated by a correlation header the intercepted request does not carry, use
 PerInstance (the default) for host redirects.
 
-> **Truststore format.** `trustStore` defaults to **JKS**, which the JVM's
-> default `TrustManagerFactory` loads as a `trustedCertEntry` out of the box.
-> `TrustStoreFormat.Pkcs12` is selectable, but rift's PKCS#12 export is not yet
-> surfaced as a trust anchor by the JVM `KeyStore` (rift#417) — prefer JKS for a
-> JVM SUT.
+> **Truststore format.** `trustStore` defaults to **PKCS#12** (the JVM's default
+> keystore type since JDK 9); `TrustStoreFormat.Jks` is selectable. Both load as a
+> `trustedCertEntry` the default `TrustManagerFactory` reads out of the box, so
+> either works for a JVM SUT.

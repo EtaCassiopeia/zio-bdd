@@ -130,13 +130,13 @@ trait Intercept:
   /**
    * Export a truststore containing the intercept CA to a fresh temp file,
    * returning its path + password — hand both to the SUT's JVM so it trusts the
-   * intercept's per-host leaf certificates. Defaults to JKS: it loads as a JVM
-   * truststore out of the box (a `trustedCertEntry` the default
-   * `TrustManagerFactory` reads); PKCS#12 is selectable but see rift#417 —
-   * rift's PKCS#12 export is not yet exposed as a trust anchor by the JVM's
-   * `KeyStore`.
+   * intercept's per-host leaf certificates. Defaults to PKCS#12 (the JVM's
+   * default keystore type since JDK 9); JKS is selectable. Both load as a JVM
+   * truststore out of the box — a `trustedCertEntry` the default
+   * `TrustManagerFactory` reads (rift's PKCS#12 export was made JVM-loadable in
+   * rift#418).
    */
-  def trustStore(format: TrustStoreFormat = TrustStoreFormat.Jks): IO[MockError, TrustStore]
+  def trustStore(format: TrustStoreFormat = TrustStoreFormat.Pkcs12): IO[MockError, TrustStore]
 
   /**
    * Convenience: intercept `host` and forward its requests to `space`'s

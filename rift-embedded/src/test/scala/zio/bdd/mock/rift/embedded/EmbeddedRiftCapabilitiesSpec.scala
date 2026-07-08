@@ -400,23 +400,35 @@ object EmbeddedRiftCapabilitiesSpec extends ZIOSpecDefault:
           case Left(_)  => false
       )
     },
-    test("intercept.trustStore defaults to JKS, exports to a temp file, and returns its path + password") {
+    test("intercept.trustStore defaults to PKCS#12, exports to a temp file, and returns its path + password") {
       withControl() { (control, engine) =>
         for
           ic      <- control.intercept
           ts      <- ic.trustStore()
-          p12     <- ic.trustStore(TrustStoreFormat.Pkcs12)
+          jks     <- ic.trustStore(TrustStoreFormat.Jks)
           exports <- engine.truststoreExports.get
         yield assertTrue(
-          ts.format == TrustStoreFormat.Jks,
+          ts.format == TrustStoreFormat.Pkcs12,
           ts.password == "changeit",
-          ts.path.toString.endsWith(".jks"),
-          exports.exists((fmt, pw, path) => fmt == "jks" && pw == "changeit" && path == ts.path.toString),
-          // the format is honoured — PKCS#12 is still selectable
-          p12.format == TrustStoreFormat.Pkcs12,
-          exports.exists((fmt, _, path) => fmt == "pkcs12" && path == p12.path.toString)
+          ts.path.toString.endsWith(".pkcs12"),
+          exports.exists((fmt, pw, path) => fmt == "pkcs12" && pw == "changeit" && path == ts.path.toString),
+          // the format is honoured — JKS is still selectable
+          jks.format == TrustStoreFormat.Jks,
+          exports.exists((fmt, _, path) => fmt == "jks" && path == jks.path.toString)
         )
       }
+    },
+    test("interpretFlowState: found→Some, not-found→None, found-without-value→error, garbage→error (rift#416)") {
+      assertTrue(
+        EmbeddedEngine.interpretFlowState("""{"found":true,"flowId":"5","key":"s","value":"Paid"}""") == Right(
+          Some("Paid")
+        ),
+        EmbeddedEngine.interpretFlowState("""{"found":false,"value":null}""") == Right(None),
+        // a null pointer is the error path (handled in Live before parse); a found=true with no value is
+        // a contract violation surfaced as an error, never silently coerced to not-found.
+        EmbeddedEngine.interpretFlowState("""{"found":true,"value":null}""").isLeft,
+        EmbeddedEngine.interpretFlowState("not json").isLeft
+      )
     },
     test("destroy frees the port via rift_delete_imposter; later ops on the space fail SpaceNotFound") {
       withControl() { (control, engine) =>
