@@ -43,6 +43,18 @@ jobs:
           java-version: 21
           cache: sbt
       - uses: sbt/setup-sbt@v1
+      # Gate the artifact BEFORE publishing: the -jdk21 cut must be class <= 65 so it loads on JDK 21.
+      # v1.3.1 published it as class 66 (#247); this check would have caught that.
+      - name: Assert the JDK-21 bridge is class <= 65 before publishing
+        run: |
+          sbt "riftEmbedded21/Compile/compile"
+          bridges=$(find rift-embedded-jdk21/target -name RiftFfiBridge.class)
+          count=$(printf '%s' "$bridges" | grep -c . || true)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::expected exactly one RiftFfiBridge.class under rift-embedded-jdk21/target, found $count"
+            exit 1
+          fi
+          bash scripts/assert-class-max-version.sh "$bridges" 65
       - run: sbt ci-release
         env:
           PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
