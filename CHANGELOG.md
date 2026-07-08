@@ -4,6 +4,52 @@ All notable changes to zio-bdd are documented here.
 
 ## [Unreleased]
 
+## [1.4.1] — 2026-07-08
+
+### Added
+
+- **Caller-provided persistent CA for the embedded intercept proxy** — `EmbeddedRift.InterceptConfig`
+  now accepts `caCert` / `caKey` (PEM file paths, both-or-neither). When set, the built-in TLS-MITM
+  proxy loads that committed CA instead of minting a fresh ephemeral one each start, so a long-lived
+  containerized SUT can trust a pre-committed truststore at JVM startup — before the test starts the
+  proxy. Absent → ephemeral CA, unchanged. (#273)
+
+### Changed
+
+- Bumped Rift to **v0.11.3** — adds `caCertPath` / `caKeyPath` to the intercept FFI. (#273)
+
+## [1.4.0] — 2026-07-07
+
+### Added
+
+- **Built-in HTTPS intercept — a mitmproxy replacement.** The `MockControl.Intercept` capability + DSL:
+  a TLS-MITM forward proxy that redirects a hard-coded external host to a mock imposter space, with an
+  exported CA truststore for the SUT to trust. (#249)
+  - Embedded (no-Docker) intercept driven entirely over the `librift_ffi` FFI. (#246)
+  - Configurable intercept bind host + optional fixed port, reachable from another container/host. (#257)
+  - Intercept over the containerized Rift adapter (`Rift.managed`). (#253)
+  - Merged intercept truststore (intercept CA **+** the JVM default anchors). (#261)
+  - `bindHost` validated as an IP literal, with a clear error for a hostname. (#269)
+  - Optional caller-specified export path for the intercept truststore. (#270)
+  - `EmbeddedRift.requireAvailable` — fail loudly (vs SKIP) when no native resolves. (#272)
+- **New assertions & combinators** — `eventually` / `eventuallyAssert` (#221), `during` (#226),
+  collection quantifiers (#227), `assertChange` (#228), `assertSatisfies` (#239), `assertRaises` (#240),
+  `poll` (#241), `assertApproxEquals` (#243).
+- **Scenario control** — `@retry(n)` / `@flaky(n)` / `@nonFlaky(n)` retry tags (#229),
+  `@expectedFailure` / `@failing` (#237), and env-aware, suite-overridable parallelism.
+- Scenario-aspect states surfaced in the JUnit XML and the streaming reporter. (#248)
+
+### Changed
+
+- Bumped Rift to **v0.11.2** (through 0.10.0 → 0.11.0 → 0.11.1). (#242, #245, #251, #267)
+- The rift-natives fetch now works behind a proxy / mirror / offline, with an optional credentialed
+  `RIFT_NATIVES_BASE_URL` mirror host. (#260, #266)
+
+### Fixed
+
+- Propagate step/hook interruption instead of retrying it. (#231)
+- Guard that the JDK-21 embedded FFM bridge class stays within the method-count limit. (#252)
+
 ## [1.3.1] — 2026-07-05
 
 ### Added
