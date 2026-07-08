@@ -234,4 +234,58 @@ or a direct `.scripting` call, since it lacks Scripting/ProxyRecord/Templating.
 
 ---
 
+## 7. Calling the mock: `SutClient`
+
+`SutClient` is the built-in HTTP client for driving a provisioned `MockSpace`
+from a step — it plays the role of "the SUT" in a scenario that doesn't wire
+up a real system under test. It's bound to one `MockSpace`: it derives its
+target from `space.baseUri` and applies `space.inject` to every request, so
+the isolation decoration (e.g. a `Correlated` backend's correlation header,
+§3) rides along automatically — steps never need to branch on isolation mode.
+
+Construct it either way:
+
+- **`SutClient.make(space)`** — a plain value, handy inline in a step.
+- **`SutClient.layer(space)`** — the same client as a `ULayer[SutClient]`, for
+  wiring into a suite's environment.
+
+```scala
+trait SutClient:
+  def baseUrl: String
+
+  def send(
+    method: Method,
+    path: String,
+    headers: Headers = Headers.empty,
+    body: Option[String] = None
+  ): IO[Throwable, SutResponse]
+```
+
+`send` resolves `path` against `baseUrl` and sends the (injected) request;
+the result is a `SutResponse`:
+
+```scala
+final case class SutResponse(status: Int, body: String, headers: Headers)
+```
+
+A step calling it against a space obtained elsewhere (e.g. from `MockFixture`,
+§1), adapted from the sample corpus:
+
+```scala
+When("the client sends " / string / " " / string) { (m: String, path: String) =>
+  for
+    method <- ZIO
+                .fromOption(Method.values.find(_.toString.equalsIgnoreCase(m)))
+                .orElseFail(new IllegalArgumentException(s"bad method $m"))
+    resp  <- SutClient.make(space).send(method, path)
+    _     <- Stage.put(resp)
+  yield ()
+}
+```
+
+The full worked example — including how `space` is obtained from a tagged
+fixture — is in [the Gherkin guide](mock-gherkin.md).
+
+---
+
 Next: [the DSL](mock-dsl.md) · [Adapters](mock-adapters.md)

@@ -114,13 +114,18 @@ for detection, so either location works.
 |---|---|---|
 | `samples` | `100` | Number of generated samples to run |
 | `seed` | random | Fixed `Long` seed for reproducible runs. Always logged so any failure carries a reproducer. |
-| `shrink` | `true` | Walk the ZIO Test shrink tree on failure to find a minimal counterexample |
-| `maxShrinks` | `1000` | Cap on shrink-tree steps |
+| `shrink` | `true` | Walk the ZIO Test shrink tree on failure to find a minimal counterexample. **Parsed, not yet functional (v1)** — see [What is NOT yet supported](#what-is-not-yet-supported) |
+| `maxShrinks` | `1000` | Cap on shrink-tree steps. **Parsed, not yet functional (v1)** — see [What is NOT yet supported](#what-is-not-yet-supported) |
 | `maxDiscarded` | `samples × 5` | Reserved for a future `Assume` step; not yet active |
-| `verbose` | `false` | Print full shrink path in failure output |
+| `verbose` | `false` | Print full shrink path in failure output. **Parsed, not yet functional (v1)** — see [What is NOT yet supported](#what-is-not-yet-supported) |
 | `replay` | `true` | Consult and update the failure replay file (see [Failure replay](#failure-replay)) |
 
 A bare `@property` with no arguments is valid and equivalent to `@property(samples=100)`.
+
+`shrink`, `maxShrinks`, and `verbose` are all accepted by the tag parser and stored on
+`PropertyConfig`, but v1's executor never reads them — full shrink-tree walking is deferred
+to v2 (v1 always records the failing seed instead; see [Failure replay](#failure-replay)).
+Setting them today has no effect on behavior.
 
 ---
 
@@ -441,6 +446,18 @@ override def flagLayer(meta: ScenarioMetadata, flags: Map[String, String]) =
 
 If you don't override `flagLayer`, it defaults to `scenarioLayer(meta)` — flags are visible in
 `meta.flagValues` but not injected into the environment, same as for literal scenarios.
+
+---
+
+## Combining with `@retry` / `@flaky` / `@nonFlaky`
+
+These scenario aspects apply **per generated sample**, not once for the whole property run.
+Each sample is executed as its own scenario run that carries the original `scenario.tags`
+forward unchanged, so a `@retry(n)` (or `@flaky(n)`/`@nonFlaky(n)`) tag alongside `@property(...)`
+re-runs *every individual sample* up to `n` times until it passes (or fails, for `@nonFlaky`) —
+multiplying the worst-case number of scenario executions by `n` (e.g. `@retry(3)` with
+`samples=500` is up to 1500 runs, not 500). Keep this in mind before combining a large `samples`
+count with a retry aspect.
 
 ---
 

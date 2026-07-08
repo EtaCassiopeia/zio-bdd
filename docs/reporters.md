@@ -30,6 +30,17 @@ sbt "testOnly -- --reporter pretty --reporter junitxml"
 
 ## Built-in reporters
 
+Both built-in reporters implement the batch `Reporter` trait:
+
+```scala
+trait Reporter:
+  def report(results: List[FeatureResult]): ZIO[LogCollector, Throwable, Unit]
+```
+
+`report` receives the full `List[FeatureResult]` after the run completes and requires a
+`LogCollector` in its environment (used to fetch step/scenario logs while rendering — see
+"LogCollector" below).
+
 ### pretty
 
 `PrettyReporter` writes a Unicode tree to the console using ANSI colors. It is the default
@@ -37,20 +48,38 @@ reporter when `reporters` is not specified.
 
 **Color palette:**
 
+Colors are theme-aware (`Theme.Dark` / `Theme.Light` / `Theme.Plain`, auto-detected from
+`NO_COLOR`/`TERM`/`COLORFGBG` — see `PrettyReporter.scala`). `Plain` emits no ANSI codes.
+Icon and status come from the `StatusColor[A]` given instances; dark-theme codes are shown
+below.
+
 | Element | Color | Icon |
 |---|---|---|
-| Feature — passed | Green (`\e[92m`) | `◉` |
+| Feature — passed | Green (`\e[38;5;35m`) | `◉` |
 | Feature — ignored | Gray (`\e[90m`) | `◉` |
 | Feature — failed | Red (`\e[91m`) | `◉` |
-| Scenario — passed | Yellow (`\e[93m`) | `◑` |
+| Scenario — passed | Blue (`\e[38;5;75m`) | `✓` |
 | Scenario — ignored | Gray (`\e[90m`) | `◑` |
 | Scenario — pending | Orange (`\e[38;5;214m`) | `◑` |
-| Scenario — failed | Red (`\e[91m`) | `◑` |
-| Step — passed | Blue (`\e[94m`) | `•` |
-| Step — skipped | Gray (`\e[90m`) | `•` |
-| Step — pending | Orange (`\e[38;5;214m`) | `•` |
-| Step — failed | Red (`\e[91m`) | `•` |
+| Scenario — failed | Red (`\e[91m`) | `✗` |
+| Scenario — XFAIL (expected failure) | Gray (`\e[90m`) | `✓` |
+| Scenario — unexpectedly passing (XPASS) | Red (`\e[91m`) | `✗` |
+| Step — passed | Mint (`\e[38;5;121m`) | `•` |
+| Step — skipped | Gray (`\e[90m`) | `○` |
+| Step — pending | Orange (`\e[38;5;214m`) | `◌` |
+| Step — failed | Red (`\e[91m`) | `✗` |
+| Step — timed out | Red (`\e[91m`) | `⏱` |
 | Summary / headings | Cyan (`\e[96m`) | — |
+
+**Internal log level palette** (used when rendering `LogCollector` entries under a step):
+
+| Level | Color | Icon |
+|---|---|---|
+| Debug | Steel gray (`\e[38;5;242m`) | — |
+| Info | Dusty teal (`\e[38;2;100;180;160m`) | — |
+| Warning | Muted gold (`\e[38;2;200;170;80m`) | `⚠` |
+| Error | Muted rose (`\e[38;2;210;100;100m`) | `✖` |
+| Fatal | Bright red (`\e[91m`) | `✖` |
 
 **Sample output:**
 
@@ -181,11 +210,85 @@ is measured in milliseconds by the scenario executor and converted to seconds fo
 
 ---
 
+## LogCollector
+
+`LogCollector` captures log output (`ZIO.log*` calls made from step bodies, tagged with
+`scenarioId`/`stepId` annotations) during a run so reporters can attach it to the relevant
+step or scenario when rendering.
+
+```scala
+trait LogCollector:
+  def log(scenarioId: String, stepId: String, message: String, level: InternalLogLevel): ZIO[Any, Nothing, Unit]
+  def getLogs(scenarioId: String, stepId: String): ZIO[Any, Nothing, CollectedLogs]
+  def getScenarioLogs(scenarioId: String): ZIO[Any, Nothing, CollectedLogs]
+```
+
+Supporting types:
+
+```scala
+enum InternalLogLevel:
+  case Debug, Info, Warning, Error, Fatal
+
+enum LogSource:
+  case Stdout
+  case Stderr
+
+case class LogEntry(
+  message:   String,
+  timestamp: Instant,
+  source:    LogSource,
+  level:     InternalLogLevel,
+  stepId:    String
+)
+
+case class CollectedLogs(entries: List[LogEntry] = Nil):
+  def add(entry: LogEntry): CollectedLogs
+  def toStepResultLogs: List[(String, Instant, InternalLogLevel)]
+
+case class LogLevelConfig(minLevel: InternalLogLevel = InternalLogLevel.Info)
+```
+
+Entries below `minLevel` are dropped at capture time and never stored.
+
+**Entry point:**
+
+```scala
+val layer: ZLayer[Any, Nothing, LogCollector] = LogCollector.live(LogLevelConfig(InternalLogLevel.Debug))
+```
+
+`LogCollector.live` installs a custom `ZLogger` (replacing, not augmenting, the runtime default)
+so `ZIO.log*` calls inside step bodies are captured only by the collector, not also echoed to
+stdout.
+
+**Real consumers:**
+
+- `PrettyReporter` calls `lc.getLogs(scenarioId, stepId)` per step (`PrettyReporter.scala:525`)
+  to render log lines as children of the step's `Doc` branch.
+- `JUnitXMLReporter` calls `logCollector.getScenarioLogs(scenarioId)` per scenario
+  (`JUnitXMLReporter.scala:65`) to embed logs in the generated XML.
+
+**Configuring the minimum level (`@Suite(logLevel)` / `--log-level`):**
+
+Only three strings are recognized (case-insensitive): `"debug"`, `"info"`, `"error"`.
+`"warning"` and `"fatal"` are **not** parseable as a minimum level — passing either falls back
+to `Info`. On the CLI (`--log-level warning`) the fallback is logged as a warning
+(`Unknown log level '...', defaulting to Info`); on the `@Suite(logLevel = "...")` annotation
+path the fallback is silent. See `ZIOBDDFramework.scala:322-343`.
+
+---
+
 ## TestEvent streaming
 
 `StreamingReporter` is a lower-level interface that receives a live `ZStream` of `TestEvent`
 values rather than a batch of results at the end of the run. This enables real-time output,
 incremental file writing, and CI service integrations.
+
+> **Not wired up today.** This is a standalone API you exercise by hand — build a
+> `ZStream[Any, Nothing, TestEvent]` yourself and call `consume` on it. No `@Suite` reporter
+> name or `--reporter` CLI flag selects a `StreamingReporter`; the production pipeline
+> (`ZIOBDDFramework.scala`) only ever builds a `List[Reporter]` (batch). The "fan-out via
+> `ZHub`" idea mentioned on `StreamingReporter` is aspirational — there is no `Hub`/`ZHub`
+> usage anywhere in `core/src/main` today.
 
 ### TestEvent sealed trait
 
@@ -262,8 +365,9 @@ Key points:
 ### BatchReporterAdapter
 
 `BatchReporterAdapter` wraps a batch `Reporter` (one that receives all results at once) as a
-`StreamingReporter`. It accumulates events and calls `reporter.report` when `SuiteFinished`
-arrives:
+`StreamingReporter`. It does **not** accumulate events — it drains the stream with
+`events.runForeach`, ignores every event except `SuiteFinished`, and forwards that event's own
+`results` payload straight to `reporter.report`:
 
 ```scala
 val adapter: StreamingReporter = BatchReporterAdapter(myBatchReporter)
@@ -282,11 +386,16 @@ Running 3 feature(s)...
   ✓ User registration / Valid registration [88ms]
   ○ Shopping cart / Guest checkout [12ms]
   ✗ Payment / Insufficient funds [34ms]
+  ⊗ Legacy API / Deprecated endpoint (expected failure) [9ms]
+  ✗ Legacy API / Fixed endpoint (unexpectedly passed — remove @expectedFailure) (3 attempts) [11ms]
 
 Done. 1/3 passed, 1 failed, 1 ignored
 ```
 
-Icons: `✓` passed, `○` ignored, `✗` failed.
+Icons: `✓` passed, `○` ignored, `✗` failed, `⊗` XFAIL (expected failure). An unexpectedly-passing
+scenario (XPASS) also renders `✗`, with the note
+`(unexpectedly passed — remove @expectedFailure)`. When a scenario ran more than once (retry),
+an `(N attempts)` suffix is appended after the note.
 
 `LiveProgressReporter` is an `object` — reference it directly:
 

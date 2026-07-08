@@ -138,6 +138,16 @@ val runOn  = results.find(_.scenario.name.contains("rateLimiting=true")).get
 val runOff = results.find(_.scenario.name.contains("rateLimiting=false")).get
 ```
 
+**Stable contract:** the suffix format — `[k=v, k2=v2]`, keys sorted alphabetically
+(`flags.toList.sortBy(_._1)` in `FeatureExecutor.expandFlagScenarios`) — is guaranteed
+stable across runs for a given flag map. Pattern-matching on names (as above) is safe to
+rely on.
+
+**No collision detection:** the framework does not check whether two distinct `@flags(...)`
+tags on the same scenario render to the same suffix (e.g. a duplicated tag, or two tags
+whose maps happen to be equal). If that happens, both runs produce an identically-named
+scenario in the report, and there is no way to distinguish them by name alone.
+
 ---
 
 ## flagLayer — injecting flags into the environment
@@ -219,6 +229,24 @@ Examples:
 The outline expansion happens at parse time (in `GherkinParser`). The flags expansion
 happens at execution time (in `FeatureExecutor.expandFlagScenarios`). Each parsed outline
 scenario is independently flags-expanded.
+
+---
+
+## Interactions with other tags
+
+`expandFlagScenarios` runs *before* scenario execution: it turns one `Scenario` into N
+independent `(Scenario, flags)` pairs, each carrying the original tag list unchanged
+(only `name` is rewritten with the `[k=v]` suffix). Execution-affecting tags
+(`@retry`/`@flaky`/`@nonFlaky`/`@expectedFailure`/`@ignore`) are resolved per expanded
+copy, not once for the whole scenario — so each flag combination is retried,
+inverted, or skipped independently of the others.
+
+| Tag | Applies to | Execution-count implication |
+|-----|------------|------------------------------|
+| `@retry(n)` / `@flaky(n)` | each expanded copy independently | Each of the N flag runs gets its own retry loop (up to n attempts, stops at first pass). Worst case: N × n total attempts. |
+| `@nonFlaky(n)` | each expanded copy independently | Each of the N flag runs gets its own fail-fast loop (up to n attempts, stops at first failure). Worst case: N × n total attempts. |
+| `@expectedFailure` | each expanded copy independently | Each of the N flag runs executes exactly once — retry aspects are ignored (`@expectedFailure` wins over `@retry`/`@flaky`/`@nonFlaky`) — and its outcome is inverted. |
+| `@ignore` | the scenario as a whole, but expansion still happens | `expandFlagScenarios` does not special-case `@ignore`; a scenario with N `@flags(...)` tags is still expanded into N named copies, each of which is then reported as ignored (no steps executed). The report shows N ignored entries, not one. |
 
 ---
 
@@ -437,6 +465,22 @@ object FlagsTag:
 | `"smoke"` | `None` — not a flags tag |
 | `"ignore"` | `None` — not a flags tag |
 | `""` | `None` |
+
+**`FlagsTag.parse` edge cases:**
+
+| Input | Result | Why |
+|-------|--------|-----|
+| `"flags(a=)"` | `Some(Map("a" -> ""))` | empty value is kept as `""`, not treated as missing/boolean |
+| `"flags( =v)"` | `Some(Map())` | blank key is dropped (falls through to `case _ => None` for that pair) |
+| `"flags(key=a=b)"` | `Some(Map("key" -> "a=b"))` | split on `=` with `limit = 2` — only the first `=` splits |
+| `"flags( a = b )"` | `Some(Map("a" -> "b"))` | key and value are trimmed of surrounding whitespace |
+| `"flags(a=\"x\")"` | `Some(Map("a" -> "\"x\""))` | quotes are **not** stripped — `.trim` only removes whitespace |
+| `"flags()"` | `None` | `tagPattern` requires 1+ chars inside the parens (`[^)]+`); empty parens don't match at all |
+
+> **Duplicate keys within one tag last-wins.** `"flags(a=1, a=2)"` parses to
+> `Some(Map("a" -> "2"))` — the trailing pair overwrites the earlier one because the
+> parsed pairs are folded into a `Map` via `.toMap`, which keeps the last occurrence of
+> a repeated key.
 
 **`FlagsTag.extractAll` examples:**
 

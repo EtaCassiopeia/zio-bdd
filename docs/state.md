@@ -91,6 +91,16 @@ Then("the user should be greeted") {
 pure function and replaces the state.  There is no mutable cell exposed — all
 updates are via the ZIO `FiberRef` mechanism.
 
+### Under the hood
+
+`State[S]` is a minimal service (`get: UIO[S]`, `update: (S => S) => UIO[Unit]`).
+`ZIOSteps[R, S]` mixes in the `StateOps[S]` trait, which is what defines the
+`ScenarioContext` object shown above — it is not special-cased per suite, it is
+generated once from `S` by `StateOps`. The `State[S]` layer itself is built
+per-scenario-attempt from a fresh `FiberRef[S]` via `State.layer(fiberRef)`
+(see `ScenarioExecutor`), so `ScenarioContext.get`/`update` always resolve to
+that scenario's own `FiberRef`.
+
 ---
 
 ## 3. `StepIO[+A]` for value-producing helpers
@@ -258,6 +268,12 @@ given HasLens[AppState, ProvisionState] =
   )
 ```
 
+> **Dependency-free by design.** zio-bdd does not depend on Monocle at all —
+> `fromMonocleLike` only *adapts* an existing `monocle.Lens[S, A]` via plain
+> getter/setter functions, for callers whose own project already pulls in
+> `monocle-core`. `HasLens.apply` (above) is a complete, standalone
+> implementation; Monocle is never required to use `HasLens`.
+
 ### `ScenarioLens` ZIO effects
 
 With a `HasLens[S, A]` in implicit scope, the `ScenarioLens` object provides
@@ -419,8 +435,23 @@ When("the order is submitted") {
 | `Stage.getOption[A: ClassTag]` | `UIO[Option[A]]` | Return `Some(a)` if staged, `None` otherwise. |
 | `Stage.modify[A: ClassTag](f)` | `UIO[Unit]` | Apply `f` to the staged value if present; no-op otherwise. |
 | `Stage.remove[A: ClassTag]` | `UIO[Unit]` | Remove the staged value. |
+| `Stage.stepLabel` | `UIO[String]` | The Gherkin pattern of the currently executing step (e.g. `"When a provision request is sent"`); `""` outside a step body. |
 
-`StagingError` variants: `NotFound(typeName)`, `TypeMismatch(typeName, actualType)`.
+`StagingError` variants and their `.message` text:
+
+| Variant | `.message` |
+|---------|------------|
+| `NotFound(typeName)` | `No staged value of type $typeName. Call Stage.put before Stage.get.` |
+| `TypeMismatch(typeName, actualType)` | `Staged value for $typeName was actually $actualType.` |
+
+```scala
+Stage.get[Coupon].catchAll {
+  case StagingError.NotFound(typeName) =>
+    ZIO.fail(new RuntimeException(s"expected a staged $typeName"))
+  case StagingError.TypeMismatch(typeName, actualType) =>
+    ZIO.fail(new RuntimeException(s"staged $typeName was actually $actualType"))
+}
+```
 
 No environment type is required — all `Stage` methods run in `UIO` or `IO[StagingError, _]`
 and are available inside any step body without additional layer wiring.
@@ -462,7 +493,21 @@ When("a transaction is posted") {
 | `FeatureContext.modify[A: ClassTag](f)` | `UIO[Unit]` | Update in place if present. |
 | `FeatureContext.remove[A: ClassTag]` | `UIO[Unit]` | Remove the stored value. |
 
-`FeatureContextError` variants: `NotFound(typeName)`, `TypeMismatch(typeName, actualType)`.
+`FeatureContextError` variants and their `.message` text:
+
+| Variant | `.message` |
+|---------|------------|
+| `NotFound(typeName)` | `No feature-scoped value of type $typeName. Call FeatureContext.put before FeatureContext.get.` |
+| `TypeMismatch(typeName, actualType)` | `Feature-scoped value for $typeName was actually $actualType.` |
+
+```scala
+FeatureContext.get[AccountId].catchAll {
+  case FeatureContextError.NotFound(typeName) =>
+    ZIO.fail(new RuntimeException(s"expected a feature-scoped $typeName"))
+  case FeatureContextError.TypeMismatch(typeName, actualType) =>
+    ZIO.fail(new RuntimeException(s"feature-scoped $typeName was actually $actualType"))
+}
+```
 
 ### Lifetime summary
 
@@ -472,6 +517,50 @@ When("a transaction is posted") {
 | `FeatureContext` | Start of each feature | All scenarios in the same feature |
 | `ScenarioContext[S]` | Start of each scenario | Steps in the same scenario |
 | ZLayer (`R`) | Once per suite run | All steps in all features |
+
+### Implementation note: how clearing actually happens
+
+Both stores are cleared via `Ref.locallyScoped(Map.empty)`, not by an explicit
+"clear at the end" call:
+
+- `ScenarioExecutor` scopes `Stage.ref` (and `Stage.currentStepLabel`) with
+  `Stage.ref.locallyScoped(Map.empty)` at the start of each scenario *attempt*,
+  **before** `beforeScenarioHook` runs.
+- `FeatureExecutor` scopes `FeatureContext.ref` with
+  `FeatureContext.ref.locallyScoped(Map.empty)` at the start of each feature,
+  **before** `beforeFeatureHook` runs.
+
+`locallyScoped` sets the `FiberRef` to the empty map for the lifetime of the
+enclosing `ZIO.scoped` block and restores the previous value when that scope
+closes — this is what guarantees a retried scenario attempt, or the next
+scenario/feature, starts from a clean store even if the previous attempt was
+interrupted mid-step.
+
+The `private[bdd] def reset` method on both `Stage` and `FeatureContext` is
+**test-only** — it exists for unit-testing the stores in isolation and is
+never called by `ScenarioExecutor` or `FeatureExecutor`. Do not rely on it to
+understand production clearing behavior; the `locallyScoped` calls above are
+the actual production clearing path.
+
+### Concurrency warning: `FeatureContext` under `scenarioParallelism > 1`
+
+`FeatureContext.ref` is a plain `FiberRef[Map[String, Any]]`. When a suite runs
+with `scenarioParallelism > 1`, `FeatureExecutor` executes sibling scenarios of
+the same feature as **true parallel fibers** (`ZIO.foreachExec` with
+`ExecutionStrategy.ParallelN`), all forked from the same parent fiber that
+holds the feature's `FiberRef` value.
+
+`FiberRef` fork/join semantics are last-writer-wins on join, not merged: each
+forked scenario fiber gets its own copy of the `FiberRef` value at fork time,
+and whichever sibling's value is observed last silently overwrites the others'
+changes. Concretely, this means `FeatureContext.put`/`modify` calls from
+different scenario fibers in the same feature are **not synchronized** —
+accumulation patterns (e.g. a shared counter incremented by every scenario)
+will silently lose updates under parallel execution.
+
+If a feature needs cross-scenario accumulation under `scenarioParallelism > 1`,
+use a synchronized primitive obtained from a `ZLayer` (a `Ref`, `Ref.Synchronized`,
+or `Queue`/`Hub` provided via `R`) instead of `FeatureContext`.
 
 ---
 
@@ -594,3 +683,18 @@ When("the order is confirmed") {
 
 `withSnapshot(lens)(body)` is defined in `ZIOSteps` — it reads `lens(currentState)`
 once before `body` executes and passes the snapshot to `body`.
+
+```scala
+def withSnapshot[A](lens: S => A)(
+  body: A => ZIO[R & State[S] & Scope, Throwable, Unit]
+): ZIO[R & State[S] & Scope, Throwable, Unit]
+```
+
+Note the `Scope` requirement in both the `body` parameter and the return type.
+Inside an ordinary step body this is satisfied automatically — `ScenarioExecutor`
+already runs each scenario attempt inside a `ZIO.scoped` block — so no extra
+wiring is needed when `withSnapshot` is called from `Given`/`When`/`Then`.
+Calling `withSnapshot` from outside that scoped context (e.g. invoking a step
+helper directly from a unit test) requires providing `Scope` explicitly, such
+as by wrapping the call in `ZIO.scoped { ... }`; otherwise compilation will
+fail with an unsatisfied `Scope` requirement in the environment.

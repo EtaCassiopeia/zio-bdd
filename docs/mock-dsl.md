@@ -7,6 +7,10 @@ the same rule written by hand. Use it when you want type-checked, refactorable
 stubs in Scala; use raw JSON sources when you're porting an existing
 Mountebank/WireMock fixture (see §6).
 
+Covers request matching, response, rule-id, and scenario builders. The
+`intercept(host)` builder (`Capability.Intercept` rules) is documented
+alongside that capability — see [Advanced](mock-advanced.md) §9.
+
 ---
 
 ## 1. Import + shape
@@ -71,6 +75,12 @@ post(path).where(jsonPath(jp).equalTo(v)).respondWith(ok.text(body))
 
 (Verbatim from `Value03Suite` / `Body04Suite` in the samples.)
 
+`header`/`query` return a `ValueClause` and `jsonPath` returns a
+`JsonPathClause` — both `private[dsl]`, so you always go through these
+builders rather than constructing a clause directly. Every clause builder
+(including the body matchers) ultimately produces a `MatchClause`, an
+`opaque type` over `RequestMatch => RequestMatch`.
+
 To match on something other than an exact path, replace the path matcher with
 `.withPath(...)`:
 
@@ -101,6 +111,26 @@ overwrites whatever path matcher the entry point set.
 `header`/`query` clauses stack per-name in `.where(...)` — only body clauses
 are mutually exclusive (each rule has at most one `BodyMatch`; the last one in
 `.where(...)` wins).
+
+> **Headers reference.** `Headers` (`zio.bdd.mock.Headers`) is an opaque
+> `Map[String, List[String]]` — keys are lower-cased **on construction**, so
+> `header("X-Trace").equalTo(v)` and a recorded `X-Trace`/`x-trace` header
+> match regardless of case.
+>
+> Construct one with `Headers.empty`, `Headers(pairs*)` (one value per key),
+> `Headers.multi(entries*)` (several values per key), or
+> `Headers.fromSingle(map)` (lift a single-valued map). There is no
+> `Headers.of`.
+>
+> Query it with `values(key)`, `first(key)` (the head in insertion order),
+> `contains(key)`, `keys`, `isEmpty`, `nonEmpty`, `toMultiMap`, and `entries`.
+> There is no `get`/`getFirst`/`getAll`.
+>
+> ```scala
+> val h = Headers.multi("Set-Cookie" -> List("a=1", "b=2"))
+> h.values("set-cookie") // List("a=1", "b=2")
+> h.first("Set-Cookie")  // Some("a=1")
+> ```
 
 ---
 
