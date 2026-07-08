@@ -37,6 +37,25 @@ object EmbeddedRift:
   def available: Boolean = NativeLibrary.available
 
   /**
+   * Fail loudly — rather than SKIP — when no `librift_ffi` resolves for the
+   * host, for a suite that REQUIRES the embedded engine (e.g. a hermetic
+   * intercept CI run where a missing/misconfigured natives jar must not read as
+   * a green skip). Surfaces the same host-resolution error [[layer]] fails with
+   * at construction — a [[MockError.ProvisionFailed]] naming the host `os-arch`
+   * and how to fix it (add the `zio-bdd-rift-embedded-natives` dependency or
+   * set `-Drift.ffi.lib`). A no-op when a native resolves. [[available]] is the
+   * soft boolean form for a suite that legitimately wants to SKIP on an
+   * unsupported platform (zio-bdd's own cross-platform matrix); use this when a
+   * skip would hide a real gap.
+   */
+  def requireAvailable: IO[MockError, Unit] = requireResolved(NativeLibrary.resolveSource)
+
+  // Testable core of `requireAvailable`: a Left host-resolution error becomes a loud failure; a Right is
+  // a no-op. Split out so both branches are covered without depending on the host actually lacking a lib.
+  private[embedded] def requireResolved(source: Either[MockError, LibSource]): IO[MockError, Unit] =
+    ZIO.fromEither(source).unit
+
+  /**
    * Bind configuration for the built-in [[Intercept]] TLS-MITM proxy. Defaults
    * preserve today's behavior: loopback bind, OS-assigned port. Set `bindHost =
    * "0.0.0.0"` (or a specific NIC address) so a SUT running elsewhere — e.g. a

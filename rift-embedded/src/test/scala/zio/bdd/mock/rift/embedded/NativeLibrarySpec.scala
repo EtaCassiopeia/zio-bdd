@@ -1,5 +1,6 @@
 package zio.bdd.mock.rift.embedded
 
+import zio.*
 import zio.bdd.mock.MockError
 import zio.test.*
 
@@ -60,5 +61,43 @@ object NativeLibrarySpec extends ZIOSpecDefault:
     },
     test("the live host resolves out-of-the-box — no -Drift.ffi.lib override set, yet available") {
       assertTrue(!sys.props.contains(NativeLibrary.LibPathProperty), EmbeddedRift.available)
+    },
+    // The loud-fail guard (#258): a resolution Left becomes a hard failure (surfacing its os-arch-naming
+    // message), a Right is a no-op — both branches, without needing the host to actually lack a native.
+    test("requireResolved: a Left host-resolution error fails loudly; a Right is a no-op (#258)") {
+      val err = MockError.ProvisionFailed(
+        "no bundled librift_ffi for host darwin-aarch64 on the classpath; add the zio-bdd-rift-embedded-natives dependency"
+      )
+      for
+        failed <- EmbeddedRift.requireResolved(Left(err)).either
+        ok     <- EmbeddedRift.requireResolved(Right(LibSource.Bundled("native/linux-x86_64/librift_ffi.so"))).either
+      yield assertTrue(failed == Left(err), ok.isRight)
+    },
+    test("requireAvailable succeeds iff a native resolves for the host (#258)") {
+      for result <- EmbeddedRift.requireAvailable.either
+      yield assertTrue(result.isRight == EmbeddedRift.available)
+    },
+    // End-to-end proof that `requireAvailable` is really wired to `NativeLibrary.resolveSource` and takes
+    // the loud-failure path: force an unresolvable host on ANY platform via a bogus -Drift.ffi.lib override
+    // (CI always runs on a supported host, so this is the only way to exercise the failure branch here).
+    test("requireAvailable fails loudly when no native resolves — forced via a bogus -Drift.ffi.lib (#258)") {
+      val prop  = NativeLibrary.LibPathProperty
+      val bogus = "/no/such/librift_ffi.so"
+      // java.lang.System — `import zio.*` brings `zio.System` (the ZIO service) into scope, which shadows it.
+      ZIO.acquireReleaseWith(
+        ZIO.succeed {
+          val prev = Option(java.lang.System.getProperty(prop))
+          java.lang.System.setProperty(prop, bogus)
+          prev
+        }
+      )(prev => ZIO.succeed(prev.fold(java.lang.System.clearProperty(prop))(java.lang.System.setProperty(prop, _))))(
+        _ =>
+          EmbeddedRift.requireAvailable.either.map(r =>
+            assertTrue(r match
+              case Left(MockError.ProvisionFailed(m)) => m.contains(bogus)
+              case _                                  => false
+            )
+          )
+      )
     }
-  )
+  ) @@ TestAspect.sequential
