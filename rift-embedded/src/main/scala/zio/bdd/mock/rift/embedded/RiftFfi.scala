@@ -324,7 +324,19 @@ private[embedded] object RiftFfi:
       .acquireRelease(
         ZIO
           .attemptBlocking(RiftFfiBridge.start(libPath))
-          .mapError(t => MockError.ProvisionFailed(s"loading librift_ffi from '$libPath': ${message(t)}"))
+          .mapError { t =>
+            // If the bundled cdylib is present on disk but still failed to load, it is almost
+            // always a missing transitive native dependency on the host (e.g. natives ≤ 1.4.1 /
+            // Rift v0.11.3 dynamically linked system LuaJIT). Name that explicitly so the consumer
+            // gets an actionable error instead of a bare dlopen line — the same treatment
+            // NativeLibrary.resolveSourceFor gives missing-jar / unsupported-platform (#307).
+            val hint =
+              if (java.nio.file.Files.exists(java.nio.file.Path.of(libPath)))
+                " — the bundled native library is present but failed to load, which usually means a" +
+                  " missing transitive native dependency on the host (see the embedded adapter's platform notes)"
+              else ""
+            MockError.ProvisionFailed(s"loading librift_ffi from '$libPath': ${message(t)}$hint")
+          }
       )(bridge => ZIO.attemptBlocking(bridge.close()).orDie)
       .map(EmbeddedEngine.Live(_))
 
