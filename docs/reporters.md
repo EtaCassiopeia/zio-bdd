@@ -283,18 +283,27 @@ path the fallback is silent. See `ZIOBDDFramework.scala:322-343`.
 values rather than a batch of results at the end of the run. This enables real-time output,
 incremental file writing, and CI service integrations.
 
-> **Not wired up today.** This is a standalone API you exercise by hand — build a
-> `ZStream[Any, Nothing, TestEvent]` yourself and call `consume` on it. No `@Suite` reporter
-> name or `--reporter` CLI flag selects a `StreamingReporter`; the production pipeline
-> (`ZIOBDDFramework.scala`) only ever builds a `List[Reporter]` (batch). The "fan-out via
-> `ZHub`" idea mentioned on `StreamingReporter` is aspirational — there is no `Hub`/`ZHub`
-> usage anywhere in `core/src/main` today.
+> **`@experimental` — not wired up today.** `TestEvent`, `StreamingReporter`, and its impls
+> (`BatchReporterAdapter`, `LiveProgressReporter`) are annotated
+> [`@experimental`](https://scala-lang.org/api/current/scala/annotation/experimental.html), so
+> referencing them from your own code requires opting into experimental mode (mark the using
+> definition `@experimental`, or compile with `-experimental`). This is deliberate: it's a
+> standalone API you exercise by hand — build a `ZStream[Any, Nothing, TestEvent]` yourself and
+> call `consume` on it. No `@Suite` reporter name or `--reporter` CLI flag selects a
+> `StreamingReporter`; the production pipeline (`ZIOBDDFramework.scala`) only ever builds a
+> `List[Reporter]` (batch). The "fan-out via `ZHub`" idea mentioned on `StreamingReporter` is
+> aspirational — there is no `Hub`/`ZHub` usage anywhere in `core/src/main` today. The API may
+> change or be removed without a deprecation cycle until it is wired into the run pipeline.
 
 ### TestEvent sealed trait
 
 ```scala
+import scala.annotation.experimental
+
+@experimental
 sealed trait TestEvent
 
+@experimental
 object TestEvent:
   /** Emitted once before any feature starts. */
   case class SuiteStarted(featureCount: Int, dryRun: Boolean) extends TestEvent
@@ -326,6 +335,7 @@ object TestEvent:
 ### StreamingReporter trait
 
 ```scala
+@experimental
 trait StreamingReporter:
   def consume(events: ZStream[Any, Nothing, TestEvent]): ZIO[LogCollector, Throwable, Unit]
 ```
@@ -336,6 +346,8 @@ and may produce any side effects.
 ### Implementing a custom StreamingReporter
 
 ```scala
+// A custom StreamingReporter must itself opt into experimental mode.
+@experimental
 object TeamCityReporter extends StreamingReporter:
   def consume(events: ZStream[Any, Nothing, TestEvent]): ZIO[LogCollector, Throwable, Unit] =
     events.runForeach {

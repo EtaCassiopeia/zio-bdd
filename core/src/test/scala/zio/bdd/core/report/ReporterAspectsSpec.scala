@@ -7,6 +7,7 @@ import zio.bdd.gherkin.StepType
 import zio.stream.ZStream
 
 import java.time.Instant
+import scala.annotation.experimental
 
 /**
  * Gate for issue #238 — JUnit XML and the live streaming reporter must surface
@@ -16,7 +17,11 @@ import java.time.Instant
  * Note (as in JUnitXMLFormatterSpec): a scala.xml.Elem is a self-referential
  * Seq, so every navigation is reduced to a plain String/Boolean BEFORE it
  * reaches assertTrue.
+ *
+ * Marked `@experimental` because the streaming-reporter suite below exercises
+ * the `@experimental` `TestEvent`/`LiveProgressReporter` API (issue #288).
  */
+@experimental
 object ReporterAspectsSpec extends ZIOSpecDefault {
 
   import ResultFixtures.*
