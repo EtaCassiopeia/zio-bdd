@@ -5,7 +5,9 @@ import zio.test.*
 import zio.test.Assertion.*
 import zio.bdd.gherkin.*
 import zio.bdd.core.step.{ZIOSteps, StepRegistry}
+import zio.bdd.ZIOBDDTask
 import zio.schema.{DeriveSchema, Schema}
+import _root_.sbt.testing.Status
 
 /**
  * Tests for FeatureExecutor and ScenarioExecutor:
@@ -358,6 +360,47 @@ object FeatureExecutorSpec extends ZIOSpecDefault {
     }
   )
 
+  private val buildGate = suite("#304: sbt build status gates on isComplete (pending-tolerant)")(
+    test("a pending-only feature maps to Status.Success — pending does not redden the build") {
+      given steps: ZIOSteps[Any, SystemState] = new UserSteps {
+        Given("a pending step")(pending("not built yet"))
+      }
+      run("Feature: P\n  Scenario: s\n    Given a pending step\n").map { r =>
+        val fr = r.head
+        assertTrue(
+          fr.hasPending,
+          !fr.isPassed,                             // the bug's trigger: isPassed is false when a scenario is pending
+          fr.isComplete,                            // isComplete tolerates pending
+          ZIOBDDTask.statusOf(fr) == Status.Success // the build gate must stay green
+        )
+      }
+    },
+    test("a passing feature maps to Status.Success") {
+      given steps: ZIOSteps[Any, SystemState] = new UserSteps {}
+      run("Feature: Ok\n  Scenario: s\n    Given a system is running\n")
+        .map(r => assertTrue(ZIOBDDTask.statusOf(r.head) == Status.Success))
+    },
+    test("a hard-failing feature maps to Status.Failure") {
+      given steps: ZIOSteps[Any, SystemState] = new UserSteps {}
+      run("Feature: Bad\n  Scenario: s\n    Given a system is running\n    Then an error occurs\n")
+        .map(r => assertTrue(ZIOBDDTask.statusOf(r.head) == Status.Failure))
+    },
+    test("a feature mixing a pending scenario and a failing scenario maps to Status.Failure") {
+      given steps: ZIOSteps[Any, SystemState] = new UserSteps {
+        Given("a pending step")(pending("not built yet"))
+      }
+      run(
+        """Feature: Mix
+          |  Scenario: pend
+          |    Given a pending step
+          |  Scenario: bad
+          |    Given a system is running
+          |    Then an error occurs
+          |""".stripMargin
+      ).map(r => assertTrue(r.head.hasPending, ZIOBDDTask.statusOf(r.head) == Status.Failure))
+    }
+  )
+
   private val duration = suite("Duration tracking")(
     test("ScenarioResult.duration is non-negative after execution") {
       given steps: ZIOSteps[Any, SystemState] = new UserSteps {}
@@ -489,6 +532,7 @@ object FeatureExecutorSpec extends ZIOSpecDefault {
     outlineExec,
     failureAndSkipped,
     pendingStatus,
+    buildGate,
     hooks,
     duration,
     resultStatus,
