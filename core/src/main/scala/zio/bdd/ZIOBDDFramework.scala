@@ -5,7 +5,7 @@ import zio.bdd.core.report.*
 import zio.bdd.core.step.ZIOSteps
 import zio.bdd.core.{FeatureResult, InternalLogLevel, LogCollector, LogLevelConfig}
 import zio.bdd.gherkin.{Feature, GherkinParser}
-import zio.{Runtime, Unsafe, ZIO, ZLayer}
+import zio.{FiberFailure, Runtime, Unsafe, ZIO, ZLayer}
 
 import scala.jdk.CollectionConverters.*
 import java.io.File
@@ -153,93 +153,96 @@ class ZIOBDDTask(
   override def execute(eventHandler: EventHandler, loggers: Array[Logger]): Array[Task] = {
     val className = taskDef.fullyQualifiedName()
     loggers.foreach(_.info(s"Executing test for $className"))
-    val suiteInstance = instantiateSuiteClass(className)
-    val config        = parseConfig(args, className, loggers)
+    try {
+      // instantiateSuiteClass is inside the try so a suite object's <clinit>
+      // linkage error (ExceptionInInitializerError / NoClassDefFoundError — Errors,
+      // not Exceptions) is caught and reported enriched below, not escaped raw (#308).
+      val suiteInstance = instantiateSuiteClass(className)
+      val config        = parseConfig(args, className, loggers)
 
-    // Apply annotation-configured step timeout when present and the suite has not overridden stepTimeout itself
-    config.stepTimeoutSeconds.foreach { secs =>
-      suiteInstance.overrideStepTimeout(zio.Duration.fromSeconds(secs))
-    }
+      // Apply annotation-configured step timeout when present and the suite has not overridden stepTimeout itself
+      config.stepTimeoutSeconds.foreach { secs =>
+        suiteInstance.overrideStepTimeout(zio.Duration.fromSeconds(secs))
+      }
 
-    val featureFiles = resolveFeatureFiles(config, className, loggers)
-    loggers.foreach(_.info(s"Feature files: ${featureFiles.mkString(", ")}"))
+      val featureFiles = resolveFeatureFiles(config, className, loggers)
+      loggers.foreach(_.info(s"Feature files: ${featureFiles.mkString(", ")}"))
 
-    val reporter = if (config.reporters.length > 1) CompositeReporter(config.reporters) else config.reporters.head
-    val env = ZLayer.succeed(suiteInstance) ++
-      LogCollector.live(LogLevelConfig(config.logLevel)) ++
-      ZLayer.succeed(reporter) ++
-      suiteInstance.globalLayer
+      val reporter = if (config.reporters.length > 1) CompositeReporter(config.reporters) else config.reporters.head
+      val env = ZLayer.succeed(suiteInstance) ++
+        LogCollector.live(LogLevelConfig(config.logLevel)) ++
+        ZLayer.succeed(reporter) ++
+        suiteInstance.globalLayer
 
-    val features =
-      try {
-        discoverFeatures(suiteInstance, featureFiles)
-      } catch {
-        case e: Throwable =>
-          loggers.foreach(_.error(s"Failed to parse features: ${e.getMessage}"))
-          List(
-            Feature(
-              name = "Failed Feature",
-              scenarios = Nil,
-              file = Some("unknown.feature"),
-              line = Some(1)
+      val features =
+        try {
+          discoverFeatures(suiteInstance, featureFiles)
+        } catch {
+          case e: Throwable =>
+            loggers.foreach(_.error(s"Failed to parse features:\n${ZIOBDDTask.describeFailure(e)}"))
+            List(
+              Feature(
+                name = "Failed Feature",
+                scenarios = Nil,
+                file = Some("unknown.feature"),
+                line = Some(1)
+              )
             )
-          )
-      }
-    loggers.foreach(_.info(s"Parsed features: ${features.map(_.name).mkString(", ")}"))
-
-    val updateFeatures = filterFeatures(features, config)
-
-    val program = suiteInstance
-      .run(
-        updateFeatures,
-        featureParallelism =
-          ZIOBDDTask.effectiveParallelism(suiteInstance.featureParallelism, config.featureParallelism),
-        scenarioParallelism =
-          ZIOBDDTask.effectiveParallelism(suiteInstance.scenarioParallelism, config.scenarioParallelism),
-        dryRun = config.dryRun
-      )
-      .tap { results =>
-        // In focused mode, strip @ignore scenario results before reporting so the
-        // output only shows what actually ran. Execution is unaffected — the
-        // scenarios still run (or are skipped) according to the normal filter logic;
-        // we just suppress the IGNORED noise in the reporter output.
-        val toReport =
-          if (config.focused)
-            results
-              .map(fr => fr.copy(scenarioResults = fr.scenarioResults.filterNot(_.isIgnored)))
-              .filter(_.scenarioResults.nonEmpty)
-          else results
-        reporter.report(toReport)
-      }
-
-    val results =
-      try {
-        Unsafe.unsafe { implicit unsafe =>
-          val result = runtime.unsafe.run(program.provideLayer(env))
-          result.getOrThrowFiberFailure()
         }
-      } catch {
-        case e: Throwable =>
-          loggers.foreach(_.error(s"Execution failed: ${e.getMessage}"))
-          loggers.foreach(_.debug(s"Exception stack trace: ${e.getStackTrace.mkString("\n")}"))
-          Nil
-      }
+      loggers.foreach(_.info(s"Parsed features: ${features.map(_.name).mkString(", ")}"))
 
-    reportResults(results, eventHandler, loggers)
+      val updateFeatures = filterFeatures(features, config)
+
+      val program = suiteInstance
+        .run(
+          updateFeatures,
+          featureParallelism =
+            ZIOBDDTask.effectiveParallelism(suiteInstance.featureParallelism, config.featureParallelism),
+          scenarioParallelism =
+            ZIOBDDTask.effectiveParallelism(suiteInstance.scenarioParallelism, config.scenarioParallelism),
+          dryRun = config.dryRun
+        )
+        .tap { results =>
+          // In focused mode, strip @ignore scenario results before reporting so the
+          // output only shows what actually ran. Execution is unaffected — the
+          // scenarios still run (or are skipped) according to the normal filter logic;
+          // we just suppress the IGNORED noise in the reporter output.
+          val toReport =
+            if (config.focused)
+              results
+                .map(fr => fr.copy(scenarioResults = fr.scenarioResults.filterNot(_.isIgnored)))
+                .filter(_.scenarioResults.nonEmpty)
+            else results
+          reporter.report(toReport)
+        }
+
+      val results =
+        Unsafe.unsafe { implicit unsafe =>
+          runtime.unsafe.run(program.provideLayer(env)).getOrThrowFiberFailure()
+        }
+
+      reportResults(results, eventHandler, loggers)
+    } catch {
+      // A suite-level failure — a layer build that dies, a run interrupt, or a
+      // <clinit> linkage error above — is unwrapped to its full cause (#308), not
+      // collapsed to getMessage, and threaded into the empty-results event so
+      // JUnit/CI reports carry it even after the log scrolls away.
+      case e: Throwable =>
+        loggers.foreach(_.error(s"Execution failed:\n${ZIOBDDTask.describeFailure(e)}"))
+        reportResults(Nil, eventHandler, loggers, Some(e))
+    }
     Array()
   }
 
   override def tags(): Array[String] = Array("zio-bdd")
 
+  // Any failure here — including a suite object's <clinit> linkage Error — propagates
+  // to execute's outer try, which reports it enriched via describeFailure (#308).
   private def instantiateSuiteClass(className: String): ZIOSteps[Any, Any] =
-    try {
-      val moduleClassName = if (className.endsWith("$")) className else className + "$"
-      val clazz           = testClassLoader.loadClass(moduleClassName)
-      val instanceField   = clazz.getField("MODULE$")
-      instanceField.get(null).asInstanceOf[ZIOSteps[Any, Any]]
-    } catch {
-      case e: Exception => throw e
-    }
+    val moduleClassName = if (className.endsWith("$")) className else className + "$"
+    val clazz           = testClassLoader.loadClass(moduleClassName)
+    val instanceField   = clazz.getField("MODULE$")
+    instanceField.get(null).asInstanceOf[ZIOSteps[Any, Any]]
 
   private def parseConfig(args: Array[String], className: String, loggers: Array[Logger]): BDDTestConfig = {
     val clazz      = testClassLoader.loadClass(className + "$")
@@ -454,16 +457,24 @@ class ZIOBDDTask(
       )
     }
 
-  private def reportResults(results: List[FeatureResult], eventHandler: EventHandler, loggers: Array[Logger]): Unit = {
+  private def reportResults(
+    results: List[FeatureResult],
+    eventHandler: EventHandler,
+    loggers: Array[Logger],
+    cause: Option[Throwable] = None
+  ): Unit = {
     loggers.foreach(_.info(s"Reporting ${results.length} results"))
     if (results.isEmpty) {
       loggers.foreach(_.warn("No results to report - test may have failed or produced no steps"))
+      // Carry the real suite-level failure (if any) into the event so JUnit XML / CI
+      // annotations show why nothing ran, instead of a synthetic placeholder (#308).
+      val reported = cause.getOrElse(new Exception("No test steps executed"))
       val event = new Event {
         override def fullyQualifiedName(): String   = taskDef.fullyQualifiedName()
         override def fingerprint(): Fingerprint     = taskDef.fingerprint()
         override def selector(): Selector           = new SuiteSelector()
         override def status(): Status               = Status.Failure
-        override def throwable(): OptionalThrowable = new OptionalThrowable(new Exception("No test steps executed"))
+        override def throwable(): OptionalThrowable = new OptionalThrowable(reported)
         override def duration(): Long               = 0L
       }
       eventHandler.handle(event)
@@ -487,6 +498,25 @@ class ZIOBDDTask(
 }
 
 object ZIOBDDTask {
+
+  /**
+   * A full, CI-legible diagnostic for a suite-level failure (#308). The sbt
+   * runner otherwise reports only `Throwable.getMessage`, which collapses the
+   * two most common wrappers to an undebuggable one-liner: a
+   * `zio.FiberFailure`'s message is a single typed-failure line (losing the
+   * interrupter, defects and trace), and an
+   * `ExceptionInInitializerError`/`NoClassDefFoundError` has no message of its
+   * own (losing the original cause entirely). Unwrap both: `FiberFailure` → the
+   * full `Cause.prettyPrint`; anything else → its whole `printStackTrace` chain
+   * (which includes every `Caused by:`).
+   */
+  def describeFailure(t: Throwable): String =
+    t match
+      case ff: FiberFailure => ff.cause.prettyPrint
+      case _ =>
+        val sw = new java.io.StringWriter
+        t.printStackTrace(new java.io.PrintWriter(sw))
+        sw.toString.trim
 
   /**
    * The sbt build status for one feature. A `PENDING` scenario is a first-class
