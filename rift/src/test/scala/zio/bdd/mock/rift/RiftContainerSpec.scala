@@ -19,8 +19,11 @@ object RiftContainerSpec extends ZIOSpecDefault:
   private val pingSource = MockSource.Dsl(MockSpec(List(pingRule)))
 
   // A backend-native Rift imposter document for the escape hatch (#119).
+  // No top-level port: since #214 honours a raw doc's own port, a fixed out-of-pool port
+  // (e.g. 9999) would bind inside the container on a port testcontainers never mapped and
+  // be host-unreachable. Omit it so the imposter draws a mapped pool port.
   private val nativeImposter =
-    """{"port":9999,"protocol":"http","stubs":[{"predicates":[{"equals":{"path":"/native"}}],"responses":[{"is":{"statusCode":200,"body":"native!"}}]}]}"""
+    """{"protocol":"http","stubs":[{"predicates":[{"equals":{"path":"/native"}}],"responses":[{"is":{"statusCode":200,"body":"native!"}}]}]}"""
 
   // Imposter binds slightly after provision returns; retry the first hit briefly.
   private val upWithin: Schedule[Any, Any, Any] = Schedule.recurs(20) && Schedule.spaced(100.millis)
