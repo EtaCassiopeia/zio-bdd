@@ -180,7 +180,9 @@ private[rift] object RiftProtocol:
 
   /**
    * A stub whose response is computed by `script` via the `_rift.script`
-   * extension — the script's `should_inject` decides the response.
+   * extension — the script's `respond(ctx)` entrypoint decides the response
+   * (Rift v2 script API). The container backend gates this surface behind
+   * `--allowInjection` (see `Rift.managed`).
    */
   def scriptStub(m: RequestMatch, script: Script, id: RuleId): Json =
     capStub(

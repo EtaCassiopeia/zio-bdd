@@ -104,7 +104,11 @@ object Rift:
       // command override, and expose it alongside the admin + imposter ports so it maps to a host
       // port. Unlike the embedded adapter's lazy start, the container's listener binds at boot —
       // there is no separate "start" downcall to make on first use.
-      val command = interceptPort.fold(Seq.empty[String])(p => Seq("--intercept-port", p.toString))
+      // `--allowInjection` enables the script surface (`_rift.script`) the `Scripting` capability
+      // drives — Rift ≥ 0.12.0 gates it behind this flag (rift #438). The embedded adapter's FFI
+      // engine has no such admin gate.
+      val command =
+        "--allowInjection" +: interceptPort.fold(Seq.empty[String])(p => Seq("--intercept-port", p.toString))
       for
         container <- ZIO.acquireRelease(
                        ZIO.attemptBlocking {

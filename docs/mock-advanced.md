@@ -183,8 +183,7 @@ engine actually ran the script):
 
 ```scala
 private val rhaiEchoMethod =
-  "fn should_inject(request, flow_store) { #{inject: true, fault: \"error\", status: 200, " +
-    "body: `scripted-${request.method}`, headers: #{\"Content-Type\": \"text/plain\"}} }"
+  "fn respond(ctx) { http(200, `scripted-${ctx.request.method}`).header(\"Content-Type\", \"text/plain\") }"
 
 Given("the backend supports scripting") {
   requiring(Capability.Scripting)
