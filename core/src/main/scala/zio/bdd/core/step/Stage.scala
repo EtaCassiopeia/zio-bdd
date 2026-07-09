@@ -82,8 +82,12 @@ object Stage {
   def remove[A: ClassTag]: UIO[Unit] =
     ref.update(m => m - key[A])
 
-  /** Reset all staged values. Called by ScenarioExecutor between scenarios. */
-  private[bdd] def reset: UIO[Unit] = ref.set(Map.empty)
+  /**
+   * Test-only: clear the staged values. Production per-scenario clearing is
+   * done by `ScenarioExecutor` via `ref.locallyScoped(Map.empty)`, NOT this
+   * method — it exists only so unit tests can reset the store in isolation.
+   */
+  private[bdd] def resetForTest: UIO[Unit] = ref.set(Map.empty)
 
   private def key[A: ClassTag]: String = implicitly[ClassTag[A]].runtimeClass.getName
 }

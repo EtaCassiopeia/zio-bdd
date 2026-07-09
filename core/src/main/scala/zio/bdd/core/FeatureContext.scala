@@ -89,8 +89,12 @@ object FeatureContext {
   def remove[A: ClassTag]: UIO[Unit] =
     ref.get.flatMap(_.update(m => m - key[A]))
 
-  /** Reset all stored values. Called by FeatureExecutor between features. */
-  private[bdd] def reset: UIO[Unit] = ref.get.flatMap(_.set(Map.empty))
+  /**
+   * Test-only: clear the store. Production per-feature clearing is done by
+   * `FeatureExecutor` via `freshScope` (a fresh scoped cell), NOT this method —
+   * it exists only so unit tests can reset the shared out-of-feature store.
+   */
+  private[bdd] def resetForTest: UIO[Unit] = ref.get.flatMap(_.set(Map.empty))
 
   private def key[A: ClassTag]: String = implicitly[ClassTag[A]].runtimeClass.getName
 }

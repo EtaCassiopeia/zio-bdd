@@ -20,20 +20,20 @@ object StageSpec extends ZIOSpecDefault {
   private val putGet = suite("Stage.put / Stage.get")(
     test("put then get returns the stored value") {
       for {
-        _      <- Stage.reset
+        _      <- Stage.resetForTest
         _      <- Stage.put(Payload("hello"))
         result <- Stage.get[Payload]
       } yield assertTrue(result == Payload("hello"))
     },
     test("get on missing type returns StagingError.NotFound") {
       for {
-        _      <- Stage.reset
+        _      <- Stage.resetForTest
         result <- Stage.get[Payload].either
       } yield assert(result)(isLeft(isSubtype[StagingError.NotFound](anything)))
     },
     test("second put overwrites the first") {
       for {
-        _      <- Stage.reset
+        _      <- Stage.resetForTest
         _      <- Stage.put(Payload("first"))
         _      <- Stage.put(Payload("second"))
         result <- Stage.get[Payload]
@@ -46,13 +46,13 @@ object StageSpec extends ZIOSpecDefault {
   private val getOrElseOps = suite("Stage.getOrElse")(
     test("returns default when not staged") {
       for {
-        _      <- Stage.reset
+        _      <- Stage.resetForTest
         result <- Stage.getOrElse(Payload("default"))
       } yield assertTrue(result == Payload("default"))
     },
     test("returns staged value when present") {
       for {
-        _      <- Stage.reset
+        _      <- Stage.resetForTest
         _      <- Stage.put(Payload("staged"))
         result <- Stage.getOrElse(Payload("default"))
       } yield assertTrue(result == Payload("staged"))
@@ -64,13 +64,13 @@ object StageSpec extends ZIOSpecDefault {
   private val getOptionOps = suite("Stage.getOption")(
     test("returns None when not staged") {
       for {
-        _      <- Stage.reset
+        _      <- Stage.resetForTest
         result <- Stage.getOption[Payload]
       } yield assertTrue(result.isEmpty)
     },
     test("returns Some when staged") {
       for {
-        _      <- Stage.reset
+        _      <- Stage.resetForTest
         _      <- Stage.put(Payload("present"))
         result <- Stage.getOption[Payload]
       } yield assertTrue(result.contains(Payload("present")))
@@ -82,7 +82,7 @@ object StageSpec extends ZIOSpecDefault {
   private val modifyOps = suite("Stage.modify")(
     test("modify updates the staged value") {
       for {
-        _      <- Stage.reset
+        _      <- Stage.resetForTest
         _      <- Stage.put(Payload("original"))
         _      <- Stage.modify[Payload](p => p.copy(value = p.value.toUpperCase))
         result <- Stage.get[Payload]
@@ -90,7 +90,7 @@ object StageSpec extends ZIOSpecDefault {
     },
     test("modify is a no-op when value is not staged") {
       for {
-        _      <- Stage.reset
+        _      <- Stage.resetForTest
         _      <- Stage.modify[Payload](p => p.copy(value = "should not appear"))
         result <- Stage.getOption[Payload]
       } yield assertTrue(result.isEmpty)
@@ -102,7 +102,7 @@ object StageSpec extends ZIOSpecDefault {
   private val removeOps = suite("Stage.remove")(
     test("remove removes the staged value") {
       for {
-        _      <- Stage.reset
+        _      <- Stage.resetForTest
         _      <- Stage.put(Payload("to-remove"))
         _      <- Stage.remove[Payload]
         result <- Stage.getOption[Payload]
@@ -110,7 +110,7 @@ object StageSpec extends ZIOSpecDefault {
     },
     test("remove on absent key is a no-op") {
       for {
-        _ <- Stage.reset
+        _ <- Stage.resetForTest
         _ <- Stage.remove[Payload]
       } yield assertCompletes
     }
@@ -118,7 +118,7 @@ object StageSpec extends ZIOSpecDefault {
 
   // ── Reset between scenarios ───────────────────────────────────────────────
   //
-  // ScenarioExecutor calls Stage.reset at the start of each scenario.
+  // ScenarioExecutor clears the store per scenario via locallyScoped (not resetForTest).
   // We verify this by running two sequential scenarios: the first stages a
   // value, and the second checks that it is no longer present.
 
