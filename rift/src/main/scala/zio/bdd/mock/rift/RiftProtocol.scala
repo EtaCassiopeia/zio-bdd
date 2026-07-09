@@ -175,7 +175,6 @@ private[rift] object RiftProtocol:
   /** The Rift script-engine token. */
   def scriptEngineName(engine: ScriptEngine): String = engine match
     case ScriptEngine.Rhai       => "rhai"
-    case ScriptEngine.Lua        => "lua"
     case ScriptEngine.JavaScript => "javascript"
 
   /**

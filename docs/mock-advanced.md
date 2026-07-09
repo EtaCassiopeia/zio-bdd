@@ -174,7 +174,7 @@ the matched request. Rift only:
 final case class Script(engine: ScriptEngine, code: String)
 
 enum ScriptEngine:
-  case Rhai, Lua, JavaScript
+  case Rhai, JavaScript
 ```
 
 From `Scripting14Suite` — a Rhai script that echoes the request method into
@@ -192,7 +192,6 @@ Given("the backend supports scripting") {
 Given("a " / string / " script echoing the method for GET " / string) { (engine: String, path: String) =>
   val eng = engine match
     case "Rhai"       => ScriptEngine.Rhai
-    case "Lua"        => ScriptEngine.Lua
     case "JavaScript" => ScriptEngine.JavaScript
     case other        => throw new IllegalArgumentException(s"unknown engine '$other'")
   for

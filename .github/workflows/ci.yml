@@ -74,8 +74,8 @@ jobs:
   # (validating the minimum supported JDK). No Docker: the in-process engine binds localhost ports.
   # The librift_ffi cdylibs are bundled by the zio-bdd-rift-embedded-natives jar (a test dep of the
   # embedded suites), downloaded + checksum-verified by its resourceGenerator; the loader extracts +
-  # loads the host's lib from the classpath out-of-the-box — no -Drift.ffi.lib. librift_ffi dynamically
-  # links LuaJIT, so it must be installed to dlopen the library (matches Rift's own FFI CI).
+  # loads the host's lib from the classpath out-of-the-box — no -Drift.ffi.lib. (Rift ≥ 0.12.0
+  # dropped the Lua engine, so librift_ffi is self-contained — no system LuaJIT needed, rift #451.)
   embedded-stable:
     name: Embedded FFM provider — stable (JDK 22)
     runs-on: ubuntu-latest
@@ -89,8 +89,6 @@ jobs:
           java-version: 22
           cache: sbt
       - uses: sbt/setup-sbt@v1
-      - name: Install LuaJIT
-        run: sudo apt-get update && sudo apt-get install -y libluajit-5.1-dev
       # Stable FFM needs no --enable-preview; the forked test JVM runs with --enable-native-access only.
       - name: Stable embedded tests + portable conformance
         run: >-
@@ -114,8 +112,6 @@ jobs:
           java-version: 21
           cache: sbt
       - uses: sbt/setup-sbt@v1
-      - name: Install LuaJIT
-        run: sudo apt-get update && sudo apt-get install -y libluajit-5.1-dev
       - name: Preview embedded tests
         run: sbt "riftEmbedded21/test"
       # The point of the -jdk21 cut is to load on JDK 21, where FFM is preview (class <= 65). Guard

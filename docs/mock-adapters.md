@@ -173,19 +173,6 @@ loads it automatically. If you'd rather point at a library you built or
 installed yourself, skip the natives jar and set `-Drift.ffi.lib=<path>`
 instead.
 
-### Host prerequisite: LuaJIT
-
-The embedded engine's Scripting capability needs LuaJIT installed on the host
-running the tests:
-
-```bash
-# Debian/Ubuntu
-apt install libluajit-5.1-dev
-
-# macOS
-brew install luajit
-```
-
 ### Test-JVM flags
 
 Both variants need `--enable-native-access` to silence the restricted-method

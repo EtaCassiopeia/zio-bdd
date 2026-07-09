@@ -48,7 +48,7 @@ embedded FFM) and WireMock, negotiating capabilities per backend.
 |----------|----------------|
 | [Mocking Overview](mocking.md) | The portable `MockControl` SPI, `MockSpace` + isolation (PerInstance/Correlated), the request/response model, `MockSource` variants |
 | [Mock DSL](mock-dsl.md) | The `zio.bdd.mock.dsl.*` builder — matching requests, building responses, rule precedence, the stateful-scenario builder, raw JSON sources |
-| [Mock Adapters](mock-adapters.md) | Rift (`managed`/`connect`), WireMock, and the **embedded FFM** provider (JDK 21/22 matrix + artifacts, LuaJIT); the capability × adapter matrix; choosing one |
+| [Mock Adapters](mock-adapters.md) | Rift (`managed`/`connect`), WireMock, and the **embedded FFM** provider (JDK 21/22 matrix + artifacts); the capability × adapter matrix; choosing one |
 | [Mock Gherkin Integration](mock-gherkin.md) | `MockSteps` mixin, the `@mock(name)` tag + `MockFixtures`, the catalog pattern, `Stage` |
 | [Mock Advanced](mock-advanced.md) | Capability accessors (faults, scenarios, state inspection, scripting, proxy/record, templating), the `provisionNative` escape hatch, capability negotiation |
 

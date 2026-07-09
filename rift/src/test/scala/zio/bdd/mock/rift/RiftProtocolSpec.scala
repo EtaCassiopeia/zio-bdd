@@ -159,10 +159,9 @@ object RiftProtocolSpec extends ZIOSpecDefault:
         resp / "_rift" / "script" / "code" == Json.Str("fn respond(ctx){pass()}")
       )
     },
-    test("script engine tokens map to rhai/lua/javascript (#132)") {
+    test("script engine tokens map to rhai/javascript (#132)") {
       assertTrue(
         RiftProtocol.scriptEngineName(ScriptEngine.Rhai) == "rhai",
-        RiftProtocol.scriptEngineName(ScriptEngine.Lua) == "lua",
         RiftProtocol.scriptEngineName(ScriptEngine.JavaScript) == "javascript"
       )
     },
