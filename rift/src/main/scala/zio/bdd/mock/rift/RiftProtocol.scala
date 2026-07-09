@@ -277,7 +277,10 @@ private[rift] object RiftProtocol:
       r.delay.map(d => "_behaviors" -> Json.Obj("wait" -> Json.Num(d.toMillis.toInt))).toList
     Json.Obj((("is" -> isObj) :: behaviors)*)
 
-  /** Rebuild a raw imposter doc, forcing our pool port and recording on. */
+  /**
+   * Rebuild a raw imposter doc, forcing our pool port; recording defaults on
+   * unless the doc opts out.
+   */
   def imposterFromRaw(port: Int, name: String, raw: String): Either[String, (Json, Int)] =
     raw.fromJson[Json].flatMap {
       case obj: Json.Obj =>
@@ -288,7 +291,7 @@ private[rift] object RiftProtocol:
           "port"           -> Json.Num(port),
           "protocol"       -> fields.getOrElse("protocol", Json.Str("http")),
           "name"           -> fields.getOrElse("name", Json.Str(name)),
-          "recordRequests" -> Json.Bool(true)
+          "recordRequests" -> fields.getOrElse("recordRequests", Json.Bool(true))
         )
         Right((forced, stubCount))
       case _ => Left("raw Rift source must be a JSON object (an imposter document)")
