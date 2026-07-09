@@ -5,6 +5,8 @@ import zio.bdd.core.{FeatureResult, LogCollector, ScenarioResult, StepResult}
 import zio.bdd.gherkin.{Feature, Scenario, Step}
 import zio.stream.ZStream
 
+import scala.annotation.experimental
+
 /**
  * Events emitted during test execution for streaming reporters.
  *
@@ -16,9 +18,18 @@ import zio.stream.ZStream
  *     events
  *   - Memory-efficient reporting (no need to accumulate all results before
  *     printing)
+ *
+ * '''Experimental / not wired in production.''' No `@Suite` reporter name or
+ * `--reporter` CLI flag builds a `StreamingReporter`; the production pipeline
+ * only assembles the batch `List[Reporter]`, and the "fan-out via `ZHub`"
+ * design is aspirational. This API is exercisable only by hand-driving
+ * `consume` on a `ZStream` you build yourself, so it is marked `@experimental`
+ * — using it requires opting into experimental mode. See issue #278 (item 3).
  */
+@experimental
 sealed trait TestEvent
 
+@experimental
 object TestEvent:
   /** Emitted once before any feature starts. */
   case class SuiteStarted(featureCount: Int, dryRun: Boolean) extends TestEvent
@@ -49,7 +60,10 @@ object TestEvent:
  *   - Print progress in real-time
  *   - Write results incrementally (no memory accumulation)
  *   - Be fan-outed to multiple subscribers via `ZHub`
+ *
+ * '''Experimental''' — see `TestEvent`; not wired into the production pipeline.
  */
+@experimental
 trait StreamingReporter:
   def consume(events: ZStream[Any, Nothing, TestEvent]): ZIO[LogCollector, Throwable, Unit]
 
@@ -57,6 +71,7 @@ trait StreamingReporter:
  * Adapter: wrap a batch `Reporter` as a `StreamingReporter`. Accumulates all
  * events, then calls `reporter.report` on `SuiteFinished`.
  */
+@experimental
 final class BatchReporterAdapter(reporter: Reporter) extends StreamingReporter:
   def consume(events: ZStream[Any, Nothing, TestEvent]): ZIO[LogCollector, Throwable, Unit] =
     events.runForeach {
@@ -68,6 +83,7 @@ final class BatchReporterAdapter(reporter: Reporter) extends StreamingReporter:
  * A streaming reporter that prints live progress to the console. One line per
  * scenario as it completes.
  */
+@experimental
 object LiveProgressReporter extends StreamingReporter:
   def consume(events: ZStream[Any, Nothing, TestEvent]): ZIO[LogCollector, Throwable, Unit] =
     events.runForeach {
