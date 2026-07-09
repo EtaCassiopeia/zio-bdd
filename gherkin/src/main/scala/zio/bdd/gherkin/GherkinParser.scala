@@ -71,8 +71,17 @@ object PropertyTag:
     maxShrinks: Int = 1000,
     maxDiscarded: Option[Int] = None,
     verbose: Boolean = false,
-    replay: Boolean = true
-  )
+    replay: Boolean = true,
+    // The deferred-feature keys (shrink / maxShrinks / verbose) the user actually
+    // set. They are parsed but not yet honored (shrinking is deferred), so setting
+    // them is a no-op — `deferredWarning` surfaces that instead of silently ignoring.
+    inertKeys: Set[String] = Set.empty
+  ):
+    def deferredWarning: Option[String] =
+      Option.when(inertKeys.nonEmpty)(
+        s"@property setting(s) ${inertKeys.toList.sorted.mkString(", ")} are parsed but not yet " +
+          "functional (shrinking is deferred to a future release) and have no effect."
+      )
 
   def parse(tag: String): Option[PropertyConfig] =
     tagPattern.findFirstMatchIn(tag.trim.stripPrefix("@")).map { m =>
@@ -96,9 +105,15 @@ object PropertyTag:
         maxShrinks = kv.get("maxshrinks").flatMap(_.toIntOption).getOrElse(1000),
         maxDiscarded = kv.get("maxdiscarded").flatMap(_.toIntOption),
         verbose = kv.get("verbose").map(_ == "true").getOrElse(false),
-        replay = kv.get("replay").map(_ != "false").getOrElse(true)
+        replay = kv.get("replay").map(_ != "false").getOrElse(true),
+        inertKeys = deferredKeys.collect { case (key, readable) if kv.contains(key) => readable }.toSet
       )
     }
+
+  // Property-tag settings that are parsed but not yet honored (shrinking is
+  // deferred). Maps the lowercased tag key → its readable name for warnings.
+  private val deferredKeys: Map[String, String] =
+    Map("shrink" -> "shrink", "maxshrinks" -> "maxShrinks", "verbose" -> "verbose")
 
   /** Extract the first @property config from a list of tags, if any. */
   def extract(tags: List[String]): Option[PropertyConfig] =

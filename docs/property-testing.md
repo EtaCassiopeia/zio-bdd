@@ -125,7 +125,13 @@ A bare `@property` with no arguments is valid and equivalent to `@property(sampl
 `shrink`, `maxShrinks`, and `verbose` are all accepted by the tag parser and stored on
 `PropertyConfig`, but v1's executor never reads them — full shrink-tree walking is deferred
 to v2 (v1 always records the failing seed instead; see [Failure replay](#failure-replay)).
-Setting them today has no effect on behavior.
+Setting them today has no effect on behavior. Rather than silently ignoring them, the executor
+**logs a warning** at run time naming the deferred setting(s) you supplied, e.g.:
+
+```
+@property setting(s) verbose are parsed but not yet functional (shrinking is deferred to a
+future release) and have no effect.
+```
 
 ---
 
