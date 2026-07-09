@@ -286,7 +286,7 @@ class ZIOBDDTask(
       scenarioParallelism = parseScenarioParallelism(args),
       includeTags = parseIncludeTags(args),
       excludeTags = parseExcludeTags(args),
-      logLevel = parseLogLevel(args, loggers),
+      logLevel = parseLogLevel(args),
       scenarioNameFilter = parseScenarioName(args),
       dryRun = args.contains("--dry-run"),
       focused = args.contains("--focused")
@@ -319,28 +319,14 @@ class ZIOBDDTask(
     )
   }
 
-  private def parseLogLevel(args: Array[String], loggers: Array[Logger]): InternalLogLevel =
+  private def parseLogLevel(args: Array[String]): InternalLogLevel =
     args
       .sliding(2)
-      .collectFirst { case Array("--log-level", level) =>
-        level.toLowerCase match {
-          case "debug" => InternalLogLevel.Debug
-          case "info"  => InternalLogLevel.Info
-          case "error" => InternalLogLevel.Error
-          case _ =>
-            loggers.foreach(_.warn(s"Unknown log level '$level', defaulting to Info"))
-            InternalLogLevel.Info
-        }
-      }
+      .collectFirst { case Array("--log-level", level) => ZIOBDDTask.parseLogLevelOrThrow(level) }
       .getOrElse(InternalLogLevel.Info)
 
   private def parseLogLevelFromAnnotation(level: String): InternalLogLevel =
-    level.toLowerCase match {
-      case "debug" => InternalLogLevel.Debug
-      case "info"  => InternalLogLevel.Info
-      case "error" => InternalLogLevel.Error
-      case _       => InternalLogLevel.Info // Default if annotation value is invalid
-    }
+    ZIOBDDTask.parseLogLevelOrThrow(level)
 
   private def parseIncludeTags(args: Array[String]): Set[String] =
     args
@@ -501,6 +487,30 @@ class ZIOBDDTask(
 }
 
 object ZIOBDDTask {
+
+  /**
+   * Parse a log-level name (case-insensitive) into an `InternalLogLevel`,
+   * accepting all five levels. `Left` names the offending value and the valid
+   * set. Shared by the `--log-level` CLI flag and the `@Suite(logLevel)`
+   * annotation so both accept the same strings — issue #278 item 4.
+   */
+  def parseLogLevelString(level: String): Either[String, InternalLogLevel] =
+    level.toLowerCase match {
+      case "debug"   => Right(InternalLogLevel.Debug)
+      case "info"    => Right(InternalLogLevel.Info)
+      case "warning" => Right(InternalLogLevel.Warning)
+      case "error"   => Right(InternalLogLevel.Error)
+      case "fatal"   => Right(InternalLogLevel.Fatal)
+      case other =>
+        Left(s"Unknown log level '$other'. Valid values: debug, info, warning, error, fatal.")
+    }
+
+  /**
+   * Parse a log-level name, failing loud (throwing) on an unknown value rather
+   * than silently falling back to Info. Used by both config paths.
+   */
+  def parseLogLevelOrThrow(level: String): InternalLogLevel =
+    parseLogLevelString(level).fold(msg => throw new IllegalArgumentException(msg), identity)
 
   /**
    * Parse a `ZIO_BDD_*_PARALLELISM` env value: `"auto"` → `Some(0)`, a valid
