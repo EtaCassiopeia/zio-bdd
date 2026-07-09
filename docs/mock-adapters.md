@@ -64,7 +64,7 @@ the environment:
   ): ZLayer[Client & Provisioning, MockError, MockControl]
   ```
 
-  `DefaultImage` is the pinned Rift image, currently `zainalpour/rift-proxy:v0.11.3`
+  `DefaultImage` is the pinned Rift image, currently `zainalpour/rift-proxy:v0.12.0`
   — derived from the single `riftVersion` in `build.sbt`, so treat it as "the
   pinned Rift image" rather than a hardcoded tag. Pass `interceptPort` to also
   start the container's HTTPS-intercept listener and advertise
