@@ -198,6 +198,47 @@ object FeatureContextSpec extends ZIOSpecDefault {
     }
   )
 
+  // ── Concurrent writes from parallel scenarios accumulate ──────────────────
+  //
+  // Under scenarioParallelism > 1 the scenarios run on true parallel fibers that
+  // share one feature store. Each scenario increments the same counter; with the
+  // old FiberRef (last-writer-wins fork/join) the siblings clobber each other and
+  // the counter ends at 1. A synchronized cell must accumulate all N updates.
+
+  final case class Counter(n: Int)
+
+  private val concurrentAccumulation =
+    suite("FeatureContext accumulates concurrent writes across parallel scenarios")(
+      test("N parallel scenarios each incrementing the shared counter reach N (no lost updates)") {
+        val n        = 8
+        val observed = new java.util.concurrent.atomic.AtomicInteger(-1)
+
+        val stepsImpl = new ZIOSteps[Any, S] {
+          beforeFeature(FeatureContext.put(Counter(0)))
+          afterFeature(
+            FeatureContext.getOption[Counter].flatMap(o => ZIO.succeed(observed.set(o.map(_.n).getOrElse(-1))))
+          )
+          Given("increment the feature counter") {
+            FeatureContext.modify[Counter](c => Counter(c.n + 1))
+          }
+        }
+
+        val scenarios =
+          (1 to n).map(i => s"  Scenario: increment $i\n    Given increment the feature counter\n").mkString
+        val featureText = s"Feature: concurrent counter\n$scenarios"
+
+        for {
+          feature <- GherkinParser.parseFeature(featureText, "fc-concurrent.feature")
+          _ <- FeatureExecutor.executeFeatures[Any, S](
+                 List(feature),
+                 stepsImpl.getSteps,
+                 stepsImpl,
+                 scenarioParallelism = n
+               )
+        } yield assertTrue(observed.get() == n)
+      } @@ TestAspect.withLiveClock
+    )
+
   def spec: Spec[TestEnvironment & Scope, Any] = suite("FeatureContext")(
     putGet,
     getOrElseOps,
@@ -205,6 +246,10 @@ object FeatureContextSpec extends ZIOSpecDefault {
     modifyOps,
     setRemoveOps,
     persistsAcrossScenarios,
-    resetBetweenFeatures
-  )
+    resetBetweenFeatures,
+    concurrentAccumulation
+    // Run sequentially: the direct-API tests operate on the shared out-of-feature
+    // default store (production always runs inside a per-feature scope via
+    // freshScope, so it never shares this cell — only these tests do).
+  ) @@ TestAspect.sequential
 }

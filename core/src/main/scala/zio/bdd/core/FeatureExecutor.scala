@@ -45,7 +45,8 @@ object FeatureExecutor {
           for {
             startNanos <- nowNanos
             // Per-feature staging scoped to the feature and auto-restored on scope close.
-            _ <- FeatureContext.ref.locallyScoped(Map.empty)
+            // Installs a fresh synchronized cell so parallel scenario fibers share it.
+            _ <- FeatureContext.freshScope
             featureResult <- (for {
                                _       <- suite.beforeFeatureHook
                                expanded = expandFlagScenarios(feature.scenarios)
