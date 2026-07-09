@@ -538,8 +538,8 @@ mid-step. `FeatureContext.freshScope` allocates a new synchronized cell and
 `locallyScoped`s *that*, so each feature — including parallel features — is
 isolated while the scenarios within one feature share a single cell.
 
-The `private[bdd] def reset` method on both `Stage` and `FeatureContext` is
-**test-only** — it exists for unit-testing the stores in isolation and is
+The `private[bdd] def resetForTest` method on both `Stage` and `FeatureContext`
+is **test-only** — it exists for unit-testing the stores in isolation and is
 never called by `ScenarioExecutor` or `FeatureExecutor`. Do not rely on it to
 understand production clearing behavior; the `locallyScoped` calls above are
 the actual production clearing path.
