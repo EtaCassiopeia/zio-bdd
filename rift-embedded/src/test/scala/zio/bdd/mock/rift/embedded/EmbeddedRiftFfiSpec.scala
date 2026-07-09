@@ -158,6 +158,17 @@ object EmbeddedRiftFfiSpec extends ZIOSpecDefault:
           case _                                    => false
         )).provide(Provisioning.live, EmbeddedRift.layer.mapError(asT))
     },
+    test("#309: EmbeddedRift.shared serves a provisioned space (the memoized engine works)") {
+      if !EmbeddedRift.available then ZIO.succeed(assertCompletes)
+      else
+        (for
+          control <- ZIO.service[MockControl]
+          space   <- control.provision(pingSource).mapError(asT).map(_.head)
+          resp    <- SutClient.make(space).send(Method.Get, "/ping")
+          _       <- control.destroy(space).mapError(asT)
+        yield assertTrue(resp.status == 200, resp.body == "pong"))
+          .provide(Provisioning.live, EmbeddedRift.shared.mapError(asT))
+    },
     test("provision is atomic: a failed source in a multi-source Dir rolls back the served spaces") {
       if !EmbeddedRift.available then ZIO.succeed(assertCompletes)
       else
