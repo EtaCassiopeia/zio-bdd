@@ -135,6 +135,28 @@ Given("the cache is cleared") { ZIO.attempt(cache.clear()).orDie }
 
 ## Suite startup failures
 
+### "Execution failed: …" / "Interrupted by thread …" / "Could not initialize class …"
+
+```
+[error] Execution failed:
+Exception in thread "zio-fiber-…" java.lang.RuntimeException: <the real error>
+  ... full cause chain and trace ...
+```
+
+**Cause:** A *suite-level* failure — the suite's `globalLayer` fails to build, a referenced
+object's static initializer (`<clinit>`) throws, or the run fiber is interrupted — before any
+scenario produces a result. The runner prints the **full cause** here: a `zio.FiberFailure` is
+rendered via `Cause.prettyPrint` (typed failures, defects, interrupters, and traces), and any
+other wrapper (e.g. `ExceptionInInitializerError`) via its whole `printStackTrace` chain, so
+the underlying error (a failing layer, a missing native dependency, etc.) is visible in CI. The
+same throwable is attached to the emitted test event, so JUnit XML / CI annotations carry it too.
+
+**Fix:** Read the surfaced cause — it names the real problem. (Prior to this, the output
+collapsed to a one-liner such as `Execution failed: Interrupted by thread …` with `Reporting 0
+results`, hiding the actual error.)
+
+---
+
 ### "Ambiguous step definitions detected at suite startup"
 
 ```
