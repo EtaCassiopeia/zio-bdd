@@ -34,6 +34,17 @@ private[rift] trait RiftEndpoint:
   /** Return a port to the pool after an imposter is destroyed. */
   def releasePort(port: Int): UIO[Unit]
 
+  /**
+   * Fail fast if `imposterPort` can't be reached through this endpoint's host
+   * mapping — e.g. a container authored port outside the pre-exposed pool,
+   * which testcontainers never maps (#303). Auto-assigned pool ports are always
+   * reachable; an identity mapping (host networking / in-process) accepts any
+   * port. Called before standing up an authored-port imposter so an unreachable
+   * port surfaces as a typed `MockError`, not a cryptic `getMappedPort` defect
+   * raised after the imposter has already been created.
+   */
+  def ensureReachable(imposterPort: Int): IO[MockError, Unit]
+
   /** The SUT-reachable base URI for an imposter bound to `imposterPort`. */
   def baseUriFor(imposterPort: Int): String
 
@@ -58,5 +69,16 @@ private[rift] object RiftEndpoint:
       free.modify(list => if list.contains(port) then (true, list.filterNot(_ == port)) else (false, list))
 
     def releasePort(port: Int): UIO[Unit] = free.update(port :: _)
+
+    def ensureReachable(imposterPort: Int): IO[MockError, Unit] =
+      ZIO
+        .attempt(hostFor(imposterPort))
+        .unit
+        .mapError(_ =>
+          MockError.InvalidDefinition(
+            s"authored imposter port $imposterPort is not reachable — it is outside the backend's exposed port pool; " +
+              "use a port in the pool range or omit the port to auto-assign"
+          )
+        )
 
     def baseUriFor(imposterPort: Int): String = hostFor(imposterPort)

@@ -356,16 +356,19 @@ private[rift] final case class RiftMockControl(
   private def serveImposter(src: NormalizedSource): IO[MockError, MockSpace] =
     src.authoredPort match
       case Some(port) =>
-        // Claim an authored port from the pool free-list if it falls in range, so a
-        // concurrent auto-`provision` can't `acquirePort` the same number and stand up a
-        // second imposter on it (#213). An in-range port is then pool-managed (returns on
+        // Fail fast (before touching the pool or POSTing) if an authored port isn't reachable
+        // through the endpoint's host mapping — e.g. a container port outside the exposed pool,
+        // which testcontainers can't map (#303). Then claim it from the free-list if it falls in
+        // range, so a concurrent auto-`provision` can't `acquirePort` the same number and stand up
+        // a second imposter on it (#213). An in-range port is then pool-managed (returns on
         // destroy); an out-of-range fixed port leaves the pool untouched (#211).
-        endpoint
-          .claimPort(port)
-          .flatMap(claimed =>
-            standImposter(port, src, pooled = claimed)
-              .onError(_ => ZIO.when(claimed)(endpoint.releasePort(port)))
-          )
+        endpoint.ensureReachable(port) *>
+          endpoint
+            .claimPort(port)
+            .flatMap(claimed =>
+              standImposter(port, src, pooled = claimed)
+                .onError(_ => ZIO.when(claimed)(endpoint.releasePort(port)))
+            )
       case None =>
         endpoint.acquirePort.flatMap(port =>
           standImposter(port, src, pooled = true).onError(_ => endpoint.releasePort(port))
