@@ -264,13 +264,25 @@ object RiftProtocolSpec extends ZIOSpecDefault:
         RiftProtocol.imposterFromRaw(1, "x", "[1,2,3]").isLeft
       )
     },
-    test("imposterFromRaw forces our port and recordRequests while keeping stubs") {
+    test("imposterFromRaw forces our port and defaults recordRequests on when the doc omits it") {
       val raw           = """{"port":9999,"protocol":"http","stubs":[{"predicates":[],"responses":[]}]}"""
       val Right((j, n)) = RiftProtocol.imposterFromRaw(4600, "json", raw): @unchecked
       assertTrue(
         j / "port" == Json.Num(4600),
         j / "recordRequests" == Json.Bool(true),
         n == 1
+      )
+    },
+    test("imposterFromRaw honors an authored recordRequests, still forcing our port (#294)") {
+      val off              = """{"port":9999,"recordRequests":false,"stubs":[]}"""
+      val on               = """{"port":9999,"recordRequests":true,"stubs":[]}"""
+      val Right((jOff, _)) = RiftProtocol.imposterFromRaw(4600, "json", off): @unchecked
+      val Right((jOn, _))  = RiftProtocol.imposterFromRaw(4600, "json", on): @unchecked
+      assertTrue(
+        jOff / "recordRequests" == Json.Bool(false), // authored false preserved, not overridden
+        jOff / "port" == Json.Num(4600),             // port still forced
+        jOn / "recordRequests" == Json.Bool(true),
+        jOn / "port" == Json.Num(4600)
       )
     }
   )
