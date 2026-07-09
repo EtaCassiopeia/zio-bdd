@@ -284,5 +284,15 @@ object RiftProtocolSpec extends ZIOSpecDefault:
         jOn / "recordRequests" == Json.Bool(true),
         jOn / "port" == Json.Num(4600)
       )
+    },
+    test("topLevelPort reads a document's own numeric port (#214), else None") {
+      assertTrue(
+        RiftProtocol.topLevelPort("""{"port":9999,"protocol":"http","stubs":[]}""").contains(9999),
+        RiftProtocol.topLevelPort("""{"protocol":"http","stubs":[]}""").isEmpty, // no port
+        RiftProtocol.topLevelPort("""{"port":0,"stubs":[]}""").isEmpty,          // 0 = auto-assign convention
+        RiftProtocol.topLevelPort("""{"port":"nope","stubs":[]}""").isEmpty,     // non-numeric
+        RiftProtocol.topLevelPort("[1,2,3]").isEmpty,                            // not an object
+        RiftProtocol.topLevelPort("not json").isEmpty                            // malformed
+      )
     }
   )

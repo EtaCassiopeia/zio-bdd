@@ -105,7 +105,11 @@ private[embedded] final case class EmbeddedRiftMockControl(
     spec match
       // A native imposter always gets its own port (PerInstance), full-fidelity, regardless of mode.
       case NativeSpec.Rift(imposterJson) =>
-        serveImposter(NormalizedSource("native", SourcePayload.Raw(imposterJson), None)).map(List(_))
+        // Honour the document's own top-level "port" as the authored fixed port (#214);
+        // absent/non-numeric → None → an auto-assigned OS port.
+        serveImposter(
+          NormalizedSource("native", SourcePayload.Raw(imposterJson), RiftProtocol.topLevelPort(imposterJson))
+        ).map(List(_))
       case NativeSpec.WireMock(_) =>
         ZIO.fail(MockError.InvalidDefinition("the embedded Rift adapter cannot provision a WireMock native spec"))
 

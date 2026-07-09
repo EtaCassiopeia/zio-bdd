@@ -302,13 +302,15 @@ need full-fidelity access to a backend's raw feature set (e.g. a Mountebank
 imposter field or a WireMock stub-mapping option the canonical model doesn't
 expose), not for anything you expect to run against a second adapter.
 
-The Rift adapter does rewrite two fields of a raw imposter document so the space
-is manageable: it forces the imposter's `port` to its own managed pool port (so
-the `"port"` you author is ignored — hence the `"port":0` in the example below),
-and it injects `recordRequests: true` **only when the field is absent**, so
-`received()` works out of the box. Author an explicit `"recordRequests": false`
-to opt a raw Rift imposter out of request recording — it is honoured, not
-overridden.
+The Rift adapter honours a raw imposter document's own top-level `"port"` if it
+declares a positive one — the imposter binds on exactly that port (#214), and
+(for the container adapter) an in-pool-range port is claimed from the pool so an
+auto-assigned imposter can't collide with it (#213). A `"port": 0` or an absent
+`port` means "auto-assign" — the adapter picks a free port (hence the `"port":0`
+in the example below). It also injects `recordRequests: true` **only when the
+field is absent**, so `received()` works out of the box; author an explicit
+`"recordRequests": false` to opt a raw Rift imposter out of request recording —
+it is honoured, not overridden.
 
 A malformed `NativeSpec` fails fast at provision-time — invalid JSON syntax is
 rejected locally with `MockError.InvalidDefinition`, and a syntactically valid

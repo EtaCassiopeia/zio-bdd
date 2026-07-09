@@ -24,8 +24,12 @@ object NativeEscapeHatchSpec extends ZIOSpecDefault:
   private val upWithin: Schedule[Any, Any, Any] = Schedule.recurs(20) && Schedule.spaced(100.millis)
 
   // Each adapter's own native dialect, both serving GET /native with "native!".
+  // No pinned port: since #214 honours a raw doc's own top-level port, pinning one
+  // here would bind every provision on the same port (and an out-of-pool port is
+  // host-unreachable on the container adapter). Omit it so each provision draws a
+  // fresh mapped/auto port — this suite provisions twice and needs distinct ports.
   private val riftNative =
-    """{"port":9999,"protocol":"http","stubs":[{"predicates":[{"equals":{"path":"/native"}}],"responses":[{"is":{"statusCode":200,"body":"native!"}}]}]}"""
+    """{"protocol":"http","stubs":[{"predicates":[{"equals":{"path":"/native"}}],"responses":[{"is":{"statusCode":200,"body":"native!"}}]}]}"""
   private val wmNative =
     """{"request":{"method":"GET","url":"/native"},"response":{"status":201,"body":"native!"}}"""
 
