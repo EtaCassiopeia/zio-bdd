@@ -22,6 +22,15 @@ object RiftMockControlSpec extends ZIOSpecDefault:
       |           "responses":[{"is":{"statusCode":200,"body":"native!"}}]}],
       | "_rift":{"script":{"engine":"rhai","code":"200"}}}""".stripMargin
 
+  // Same full-fidelity doc but WITHOUT a top-level port, so each provision gets a
+  // distinct auto-assigned pool port (a fixed-port doc would bind every provision
+  // on the same authored port — #214).
+  private val nativeImposterNoPort =
+    """{"protocol":"http",
+      | "stubs":[{"predicates":[{"equals":{"path":"/native"}}],
+      |           "responses":[{"is":{"statusCode":200,"body":"native!"}}]}],
+      | "_rift":{"script":{"engine":"rhai","code":"200"}}}""".stripMargin
+
   private def portOf(baseUri: String): Int = baseUri.substring(baseUri.lastIndexOf(':') + 1).toInt
 
   /**
@@ -455,10 +464,10 @@ object RiftMockControlSpec extends ZIOSpecDefault:
         )
       }
     },
-    test("provisionNative(Rift) stands up a full-fidelity space (stubs + _rift) on our pooled port") {
+    test("provisionNative(Rift) honours the document's own top-level port (#214)") {
       withAdapter { (control, fake) =>
         for
-          sE     <- control.provisionNative(NativeSpec.Rift(nativeImposter)).either
+          sE     <- control.provisionNative(NativeSpec.Rift(nativeImposter)).either // doc declares "port":9999
           posted <- fake.posted.get
         yield
           val space = sE.toOption.get.head
@@ -466,13 +475,21 @@ object RiftMockControlSpec extends ZIOSpecDefault:
           val req   = HttpRequest(Method.Get, "http://sut/")
           assertTrue(
             sE.isRight,
-            body.contains("\"_rift\""),                            // full-fidelity: _rift extensions preserved
-            body.contains("/native"),                              // the native stub preserved
-            body.contains("\"recordRequests\":true"),              // forced on so received() works
-            FakeRift.portOf(body).contains(portOf(space.baseUri)), // our pool port, not the spec's 9999
-            !body.contains("9999"),
-            space.inject(req) == req // isolation: identity inject like a portable space
+            body.contains("\"_rift\""),               // full-fidelity: _rift extensions preserved
+            body.contains("/native"),                 // the native stub preserved
+            body.contains("\"recordRequests\":true"), // forced on so received() works
+            space.baseUri == "http://localhost:9999", // the document's authored port is honoured (#214)
+            FakeRift.portOf(body).contains(9999),     // imposter created on 9999, not an auto pool port
+            space.inject(req) == req                  // isolation: identity inject like a portable space
           )
+      }
+    },
+    test("provisionNative(Rift) without a top-level port auto-assigns a pool port (#214)") {
+      val noPort = """{"protocol":"http","stubs":[{"predicates":[{"equals":{"path":"/np"}}],
+                     | "responses":[{"is":{"statusCode":200}}]}]}""".stripMargin
+      withAdapterPool(List(4600)) { (control, _) =>
+        for sE <- control.provisionNative(NativeSpec.Rift(noPort)).either
+        yield assertTrue(sE.toOption.get.head.baseUri == "http://localhost:4600")
       }
     },
     test("a natively-provisioned space participates in received and is space-local on destroy") {
@@ -500,8 +517,8 @@ object RiftMockControlSpec extends ZIOSpecDefault:
     test("native spaces isolate: two get distinct ports; destroy(A) leaves B") {
       withAdapter { (control, _) =>
         for
-          aE    <- control.provisionNative(NativeSpec.Rift(nativeImposter)).either
-          bE    <- control.provisionNative(NativeSpec.Rift(nativeImposter)).either
+          aE    <- control.provisionNative(NativeSpec.Rift(nativeImposterNoPort)).either
+          bE    <- control.provisionNative(NativeSpec.Rift(nativeImposterNoPort)).either
           a      = aE.toOption.get.head
           b      = bE.toOption.get.head
           _     <- control.destroy(a).either

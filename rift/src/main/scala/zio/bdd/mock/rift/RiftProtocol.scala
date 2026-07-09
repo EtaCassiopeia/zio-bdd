@@ -278,6 +278,24 @@ private[rift] object RiftProtocol:
     Json.Obj((("is" -> isObj) :: behaviors)*)
 
   /**
+   * A raw imposter document's own top-level `"port"`, if it declares a positive
+   * numeric one — honoured as the authored fixed port (#214). Returns `None`
+   * when the JSON isn't an object, has no `port`, `port` isn't an exact
+   * integer, or is non-positive (`"port": 0` is the auto-assign convention →
+   * `None`), so the caller falls back to an auto-assigned port. Total and pure:
+   * a malformed document simply yields `None` here (it fails loudly later in
+   * `imposterFromRaw`).
+   */
+  def topLevelPort(raw: String): Option[Int] =
+    raw
+      .fromJson[Json]
+      .toOption
+      .collect { case obj: Json.Obj => obj }
+      .flatMap(_.fields.collectFirst { case ("port", Json.Num(n)) => n })
+      .flatMap(n => scala.util.Try(n.intValueExact).toOption)
+      .filter(_ > 0) // "port": 0 is the auto-assign convention → None
+
+  /**
    * Rebuild a raw imposter doc, forcing our pool port; recording defaults on
    * unless the doc opts out.
    */
