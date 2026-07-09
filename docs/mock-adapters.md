@@ -244,6 +244,32 @@ val perInstance = Provisioning.live >>> EmbeddedRift.layer                      
 val correlated  = Provisioning.live >>> EmbeddedRift.layer(RiftMode.correlated)
 ```
 
+#### Sharing one engine across `@Suite` classes — `EmbeddedRift.shared`
+
+Standing up the native engine per suite is expensive, so it's tempting to share
+one across suite classes. Do **not** hand-roll that with a `static val` that runs
+`Runtime.default.unsafe.run(EmbeddedRift.layer.build)` at class-load: under sbt's
+**default** `Test / parallelExecution := true`, each `@Suite` runs on the shared
+runtime concurrently, and a suite's `<clinit>` executing on a runtime worker
+thread while a sibling suite blocks on the JVM class-init lock **deadlocks** —
+surfacing as a cause-less `Interrupted by thread "zio-fiber-N"` with `0 results`.
+
+Use the supported, memoized layer instead:
+
+```scala
+import zio.bdd.mock.rift.embedded.EmbeddedRift
+
+// One engine, built at most once, shared by every suite that uses it, released
+// on JVM shutdown. Concurrent suites are safe — no `parallelExecution := false`.
+val shared = Provisioning.live >>> EmbeddedRift.shared
+```
+
+`EmbeddedRift.shared` memoizes the build behind a semaphore (see
+`SharedLayer.memoize`), so concurrent construction from independent suites builds
+the engine exactly once and hands every caller the same `MockControl`. (You can
+still keep `Test / parallelExecution := false` if you prefer serial suites; it is
+no longer *required* just to share an embedded engine.)
+
 In `Correlated` mode `isolation` reports `Isolation.Correlated`, each space's
 stubs and `received` are scoped by its `flowId`, and `destroy` tears down just
 that space — behaviour identical to the container adapter's Correlated mode. As

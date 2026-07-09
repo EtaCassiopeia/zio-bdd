@@ -1,7 +1,7 @@
 package zio.bdd.mock.rift.embedded
 
 import zio.*
-import zio.bdd.mock.{MockControl, MockError, Provisioning}
+import zio.bdd.mock.{MockControl, MockError, Provisioning, SharedLayer}
 import zio.bdd.mock.rift.RiftMode
 
 import java.nio.file.{Files, Path, StandardCopyOption}
@@ -121,6 +121,22 @@ object EmbeddedRift:
         control <- EmbeddedRiftMockControl.make(engine, prov, mode, intercept)
       yield control
     }
+
+  /**
+   * A **process-wide shared** embedded [[MockControl]] (PerInstance): the engine
+   * is started at most once and every `@Suite` that uses `shared` gets the same
+   * instance, released on JVM shutdown. This is the supported way to share one
+   * expensive embedded engine across suite classes (#309).
+   *
+   * Prefer this over a hand-rolled static `val` that runs
+   * `Runtime.default.unsafe.run(layer.build)` at class-load: under sbt's default
+   * `Test / parallelExecution := true`, that pattern runs a suite's `<clinit>` on
+   * a shared-runtime worker thread while a sibling suite blocks on the class-init
+   * lock, which deadlocks and surfaces as a cause-less `Interrupted`. `shared`
+   * memoizes the build with a semaphore instead (see [[SharedLayer.memoize]]), so
+   * concurrent suites are safe without setting `parallelExecution := false`.
+   */
+  val shared: ZLayer[Provisioning, MockError, MockControl] = SharedLayer.memoize(layer)
 
   // Resolve the native library and start the engine, scoped (rift_start on acquire, rift_stop on
   // close). Shared by `layer` and the live FFI spec (which drives the engine's admin plane directly).
