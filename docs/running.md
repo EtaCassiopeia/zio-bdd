@@ -35,7 +35,7 @@ public @interface Suite {
 | `scenarioParallelism` | `int` | `0` | Maximum number of scenarios executed concurrently within a single feature. `0` means auto (use available processors); `1` forces sequential. See [Parallelism](#parallelism) below. |
 | `includeTags` | `String[]` | `{}` | When non-empty, only scenarios that carry at least one of these tags are executed. |
 | `excludeTags` | `String[]` | `{}` | Scenarios carrying any of these tags are skipped. |
-| `logLevel` | `String` | `"info"` | Minimum log level captured during step execution: `"debug"`, `"info"`, `"error"`. |
+| `logLevel` | `String` | `"info"` | Minimum log level captured during step execution: `"debug"`, `"info"`, `"warning"`, `"error"`, `"fatal"` (case-insensitive). An unrecognised value fails the run loudly rather than silently defaulting. |
 | `stepTimeout` | `int` | `0` | Maximum wall-clock time in **seconds** for a single step. `0` means no timeout. Applies to every step in the suite unless overridden in the suite class — see [Step timeout](#step-timeout) below. |
 
 **Deprecated field:** `featureDir` (singular, `String`) is still accepted for backward
@@ -142,7 +142,7 @@ sbt "testOnly com.example.MySuite -- \
 | `--scenario-parallelism` | `<n>` | Maximum number of scenarios executed concurrently within a single feature. Independent from feature-level parallelism. Default: `1`. | `--scenario-parallelism 2` |
 | `--dry-run` | _(none)_ | Enable dry-run mode (see below). | `--dry-run` |
 | `--focused` | _(none)_ | Strips scenarios excluded by a name or tag filter from the report entirely, instead of listing them as `IGNORED`. Execution is unaffected — only report output changes. Intended for IDE test runners driving a single scenario/feature. | `--focused` |
-| `--log-level` | `debug\|info\|error` | Minimum log level captured during step execution. Overrides `logLevel` from the annotation. | `--log-level debug` |
+| `--log-level` | `debug\|info\|warning\|error\|fatal` | Minimum log level captured during step execution (case-insensitive). An unrecognised value fails the run loudly. Overrides `logLevel` from the annotation. | `--log-level debug` |
 | `--reporter` | `pretty\|junitxml` | Reporter to use. May be repeated. Overrides `reporters` from the annotation when specified. | `--reporter junitxml` |
 
 **Precedence:** CLI flags take precedence over `@Suite` annotation fields. When a CLI

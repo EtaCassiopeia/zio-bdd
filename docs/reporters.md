@@ -269,11 +269,11 @@ stdout.
 
 **Configuring the minimum level (`@Suite(logLevel)` / `--log-level`):**
 
-Only three strings are recognized (case-insensitive): `"debug"`, `"info"`, `"error"`.
-`"warning"` and `"fatal"` are **not** parseable as a minimum level — passing either falls back
-to `Info`. On the CLI (`--log-level warning`) the fallback is logged as a warning
-(`Unknown log level '...', defaulting to Info`); on the `@Suite(logLevel = "...")` annotation
-path the fallback is silent. See `ZIOBDDFramework.scala:322-343`.
+All five levels are recognized (case-insensitive): `"debug"`, `"info"`, `"warning"`, `"error"`,
+`"fatal"`. An unrecognised value **fails loud** — both `--log-level` and `@Suite(logLevel = "...")`
+throw `IllegalArgumentException("Unknown log level '...'. Valid values: debug, info, warning,
+error, fatal.")` rather than silently falling back to `Info`. See
+`ZIOBDDTask.parseLogLevelString` / `parseLogLevelOrThrow`.
 
 ---
 
