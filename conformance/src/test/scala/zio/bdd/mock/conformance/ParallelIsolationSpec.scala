@@ -16,8 +16,8 @@ import java.net.http.{HttpClient, HttpRequest as JHttpRequest, HttpResponse as J
  * WireMock correlated + perInstance (always, in-process) and Rift perInstance +
  * correlated (gated behind `RIFT_IT`, like
  * [[zio.bdd.mock.rift.RiftContainerSpec]] — the `rift-it` CI job runs this spec
- * under `RIFT_IT`, so the Rift backends + the native fixed-port test execute
- * there, not in the default Docker-free lane).
+ * under `RIFT_IT`, so the Rift backends + the native-source isolation test
+ * execute there, not in the default Docker-free lane).
  *
  * Tests within a backend run sequentially so only one N-space wave is live at a
  * time — Rift PerInstance gives each space its own imposter+port, so a generous
@@ -46,9 +46,13 @@ object ParallelIsolationSpec extends ZIOSpecDefault:
       )
     )
 
-  // A native Rift imposter pinning port 9999 (the "fixed-port" trap) serving `body` at /fp.
-  private def riftFixedPort(body: String): String =
-    s"""{"port":9999,"protocol":"http","stubs":[{"predicates":[{"equals":{"path":"/fp"}}],"responses":[{"is":{"statusCode":200,"body":"$body"}}]}]}"""
+  // A native Rift imposter serving `body` at /fp, with no pinned port. Since #214 honours a
+  // raw doc's own top-level port, two provisions must not share one (they'd collide, and an
+  // out-of-pool port is host-unreachable on the container adapter) — omit it so each draws a
+  // distinct auto port. Fixed-port *honouring* is covered by RiftMockControlSpec (container,
+  // hermetic) and EmbeddedRiftCapabilitiesSpec (embedded).
+  private def riftNativeSource(body: String): String =
+    s"""{"protocol":"http","stubs":[{"predicates":[{"equals":{"path":"/fp"}}],"responses":[{"is":{"statusCode":200,"body":"$body"}}]}]}"""
 
   // provision -> destroy on scope close (even on failure), so the pool is freed.
   // ignoreLogged (not bare ignore): teardown must not override the verdict, but a
@@ -116,12 +120,12 @@ object ParallelIsolationSpec extends ZIOSpecDefault:
           )
         }
       } @@ TestAspect.nonFlaky(Reps),
-      // RIFT_IT-only: a pinned-port source is a native (Rift) concept; WireMock rejects it.
-      test("a fixed-port source provisioned twice still isolates (the adapter overrides the pinned port)") {
+      // RIFT_IT-only: a raw native source is a Rift concept; WireMock rejects it.
+      test("two native (unpinned) sources provisioned in parallel isolate on distinct ports") {
         ZIO.scoped {
           for
-            a  <- ZIO.service[MockControl].flatMap(servingNative(_, riftFixedPort("A")))
-            b2 <- ZIO.service[MockControl].flatMap(servingNative(_, riftFixedPort("B")))
+            a  <- ZIO.service[MockControl].flatMap(servingNative(_, riftNativeSource("A")))
+            b2 <- ZIO.service[MockControl].flatMap(servingNative(_, riftNativeSource("B")))
             ra <- SutClient.make(a).send(Method.Get, "/fp")
             rb <- SutClient.make(b2).send(Method.Get, "/fp")
           yield assertTrue(a.baseUri != b2.baseUri, ra.body == "A", rb.body == "B")
