@@ -351,7 +351,17 @@ private[rift] final case class RiftMockControl(
   // port the share-nothing default holds: take a pool port and return it to the pool on failure.
   private def serveImposter(src: NormalizedSource): IO[MockError, MockSpace] =
     src.authoredPort match
-      case Some(port) => standImposter(port, src, pooled = false)
+      case Some(port) =>
+        // Claim an authored port from the pool free-list if it falls in range, so a
+        // concurrent auto-`provision` can't `acquirePort` the same number and stand up a
+        // second imposter on it (#213). An in-range port is then pool-managed (returns on
+        // destroy); an out-of-range fixed port leaves the pool untouched (#211).
+        endpoint
+          .claimPort(port)
+          .flatMap(claimed =>
+            standImposter(port, src, pooled = claimed)
+              .onError(_ => ZIO.when(claimed)(endpoint.releasePort(port)))
+          )
       case None =>
         endpoint.acquirePort.flatMap(port =>
           standImposter(port, src, pooled = true).onError(_ => endpoint.releasePort(port))
@@ -412,8 +422,10 @@ private[rift] final case class RiftMockControl(
       u   <- url(s"/imposters/${imp.port}")
       res <- send(Request(method = HttpMethod.DELETE, url = u))
       _   <- ZIO.unless(res._1 == 404)(expectSuccess(s"destroy imposter ${imp.port}", res))
-      _   <- ZIO.when(imp.pooled)(endpoint.releasePort(imp.port)) // never return an authored fixed port (#211)
-      _   <- spaces.update(_ - space.id)
+      _ <- ZIO.when(imp.pooled)(
+             endpoint.releasePort(imp.port)
+           ) // return only pool-managed ports; never an out-of-pool fixed port (#211, #213)
+      _ <- spaces.update(_ - space.id)
     yield ()
 
   private def piReceived(imp: Imposter): IO[MockError, List[RecordedRequest]] =
@@ -619,7 +631,7 @@ private[rift] object RiftMockControl:
     port: Int,
     stubs: Ref[Vector[RuleId]],
     scenarios: Ref[Map[String, ScenarioState]], // defined scenario name -> initial state (for reset)
-    pooled: Boolean                             // port drawn from the endpoint pool (vs. a caller-authored fixed port, #211)
+    pooled: Boolean                             // port is pool-managed → return on destroy: auto-acquired, or an in-range authored port claimed from the pool (#211, #213). An out-of-pool fixed port is false.
   )
   final case class CorrSpace(
     port: Int,

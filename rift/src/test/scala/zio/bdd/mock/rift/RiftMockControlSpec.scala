@@ -128,6 +128,36 @@ object RiftMockControlSpec extends ZIOSpecDefault:
         )
       }
     },
+    test("#213: an in-pool-range authored port is claimed so a later auto-provision cannot collide") {
+      withAdapterPool(List(4550, 4551)) { (control, _) =>
+        for
+          authoredE <- control.provision(MockSource.Dsl(MockSpec(List(pingRule), port = Some(4550)))).either
+          autoE     <- control.provision(pingSource).either
+        yield
+          val authored = authoredE.toOption.toList.flatten.head
+          val auto     = autoE.toOption.toList.flatten.head
+          assertTrue(
+            authored.baseUri == "http://localhost:4550",
+            // The authored port was removed from the free-list, so the auto-assigned
+            // imposter draws 4551 — never a second imposter on 4550.
+            auto.baseUri == "http://localhost:4551",
+            auto.baseUri != authored.baseUri
+          )
+      }
+    },
+    test("#213: an in-pool-range authored port returns to the pool on destroy (no depletion)") {
+      withAdapterPool(List(4550)) { (control, _) => // pool holds exactly the port we author
+        for
+          authoredE <- control.provision(MockSource.Dsl(MockSpec(List(pingRule), port = Some(4550)))).either
+          authored   = authoredE.toOption.toList.flatten.head
+          _         <- control.destroy(authored).either
+          autoE     <- control.provision(pingSource).either // 4550 must have come back to the pool
+        yield assertTrue(
+          authoredE.isRight,
+          autoE.toOption.toList.flatten.head.baseUri == "http://localhost:4550"
+        )
+      }
+    },
     test("destroy(A) deletes only A's imposter — never the global reset — and leaves B intact") {
       withAdapter { (control, fake) =>
         for

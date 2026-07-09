@@ -34,8 +34,11 @@ mock(rule1, rule2).source    // MockSource.Dsl(spec)
 dslSource(rule1, rule2)      // shorthand for mock(rules*).source
 ```
 
-`MockSpec` also carries an *advisory* `port` (`.onPort(8080)`) — it's always
-stripped on provisioning; the backend assigns a fresh free port regardless.
+`MockSpec` also carries an opt-in fixed `port` (`.onPort(8080)`, #211): when set,
+the backend binds the imposter on exactly that port instead of an auto-assigned
+one; when omitted, a fresh free port is chosen. If a fixed port happens to fall
+inside a backend's managed port pool (e.g. the container Rift adapter's pool), it
+is claimed from that pool so an auto-assigned imposter can't collide with it (#213).
 
 ---
 
