@@ -167,6 +167,46 @@ object RiftMockControlSpec extends ZIOSpecDefault:
         )
       }
     },
+    test(
+      "#303: an authored port outside the container's exposed pool fails fast with a typed MockError (no defect, no leak)"
+    ) {
+      val pool = List(4545, 4546)
+      // Simulate testcontainers: only exposed pool ports are mapped; any other port throws
+      // (getMappedPort) — the crash #303 replaces with a clear, fail-fast error.
+      def containerHostFor(p: Int): String =
+        if pool.contains(p) then s"http://localhost:$p"
+        else throw new IllegalArgumentException(s"Requested port ($p) is not mapped")
+      ZIO.scoped {
+        for
+          adminAndFake <- FakeRift.started
+          (admin, fake) = adminAndFake
+          endpoint     <- RiftEndpoint.pooled(admin, pool)(containerHostFor)
+          control      <- RiftMockControl.make(endpoint, RiftMode.PerInstance)
+          exit         <- control.provision(MockSource.Dsl(MockSpec(List(pingRule), port = Some(9999)))).exit
+          posted       <- fake.posted.get
+        yield assertTrue(
+          exit.causeOption.exists(_.failures.exists { case _: MockError.InvalidDefinition => true; case _ => false }),
+          exit.causeOption.exists(_.defects.isEmpty), // a typed failure, not a cryptic defect
+          exit.causeOption.exists(_.failures.exists(_.toString.contains("9999"))),
+          posted.isEmpty // failed before POSTing — no leaked imposter
+        )
+      }
+    },
+    test("#303: an in-pool authored port is reachable under container mapping and provisions") {
+      val pool = List(4545, 4546)
+      def containerHostFor(p: Int): String =
+        if pool.contains(p) then s"http://localhost:$p"
+        else throw new IllegalArgumentException(s"Requested port ($p) is not mapped")
+      ZIO.scoped {
+        for
+          adminAndFake <- FakeRift.started
+          (admin, _)    = adminAndFake
+          endpoint     <- RiftEndpoint.pooled(admin, pool)(containerHostFor)
+          control      <- RiftMockControl.make(endpoint, RiftMode.PerInstance)
+          sE           <- control.provision(MockSource.Dsl(MockSpec(List(pingRule), port = Some(4545)))).either
+        yield assertTrue(sE.toOption.toList.flatten.head.baseUri == "http://localhost:4545")
+      }
+    },
     test("destroy(A) deletes only A's imposter — never the global reset — and leaves B intact") {
       withAdapter { (control, fake) =>
         for
