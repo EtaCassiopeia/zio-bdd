@@ -22,20 +22,20 @@ object FeatureContextSpec extends ZIOSpecDefault {
   private val putGet = suite("FeatureContext.put / FeatureContext.get")(
     test("put then get returns the stored value") {
       for {
-        _      <- FeatureContext.reset
+        _      <- FeatureContext.resetForTest
         _      <- FeatureContext.put(FeatureToken("hello"))
         result <- FeatureContext.get[FeatureToken]
       } yield assertTrue(result == FeatureToken("hello"))
     },
     test("get on missing type returns FeatureContextError.NotFound") {
       for {
-        _      <- FeatureContext.reset
+        _      <- FeatureContext.resetForTest
         result <- FeatureContext.get[FeatureToken].either
       } yield assert(result)(isLeft(isSubtype[FeatureContextError.NotFound](anything)))
     },
     test("second put overwrites the first") {
       for {
-        _      <- FeatureContext.reset
+        _      <- FeatureContext.resetForTest
         _      <- FeatureContext.put(FeatureToken("first"))
         _      <- FeatureContext.put(FeatureToken("second"))
         result <- FeatureContext.get[FeatureToken]
@@ -48,13 +48,13 @@ object FeatureContextSpec extends ZIOSpecDefault {
   private val getOrElseOps = suite("FeatureContext.getOrElse")(
     test("returns default when not stored") {
       for {
-        _      <- FeatureContext.reset
+        _      <- FeatureContext.resetForTest
         result <- FeatureContext.getOrElse(FeatureToken("default"))
       } yield assertTrue(result == FeatureToken("default"))
     },
     test("returns stored value when present") {
       for {
-        _      <- FeatureContext.reset
+        _      <- FeatureContext.resetForTest
         _      <- FeatureContext.put(FeatureToken("stored"))
         result <- FeatureContext.getOrElse(FeatureToken("default"))
       } yield assertTrue(result == FeatureToken("stored"))
@@ -66,13 +66,13 @@ object FeatureContextSpec extends ZIOSpecDefault {
   private val getOptionOps = suite("FeatureContext.getOption")(
     test("returns None when not stored") {
       for {
-        _      <- FeatureContext.reset
+        _      <- FeatureContext.resetForTest
         result <- FeatureContext.getOption[FeatureToken]
       } yield assertTrue(result.isEmpty)
     },
     test("returns Some when stored") {
       for {
-        _      <- FeatureContext.reset
+        _      <- FeatureContext.resetForTest
         _      <- FeatureContext.put(FeatureToken("present"))
         result <- FeatureContext.getOption[FeatureToken]
       } yield assertTrue(result.contains(FeatureToken("present")))
@@ -84,7 +84,7 @@ object FeatureContextSpec extends ZIOSpecDefault {
   private val modifyOps = suite("FeatureContext.modify")(
     test("modify updates the stored value") {
       for {
-        _      <- FeatureContext.reset
+        _      <- FeatureContext.resetForTest
         _      <- FeatureContext.put(FeatureToken("lower"))
         _      <- FeatureContext.modify[FeatureToken](t => t.copy(value = t.value.toUpperCase))
         result <- FeatureContext.get[FeatureToken]
@@ -92,7 +92,7 @@ object FeatureContextSpec extends ZIOSpecDefault {
     },
     test("modify is a no-op when value is not stored") {
       for {
-        _      <- FeatureContext.reset
+        _      <- FeatureContext.resetForTest
         _      <- FeatureContext.modify[FeatureToken](t => t.copy(value = "should not appear"))
         result <- FeatureContext.getOption[FeatureToken]
       } yield assertTrue(result.isEmpty)
@@ -104,14 +104,14 @@ object FeatureContextSpec extends ZIOSpecDefault {
   private val setRemoveOps = suite("FeatureContext.set / remove")(
     test("set stores a value") {
       for {
-        _      <- FeatureContext.reset
+        _      <- FeatureContext.resetForTest
         _      <- FeatureContext.set(FeatureToken("via-set"))
         result <- FeatureContext.get[FeatureToken]
       } yield assertTrue(result == FeatureToken("via-set"))
     },
     test("remove removes the stored value") {
       for {
-        _      <- FeatureContext.reset
+        _      <- FeatureContext.resetForTest
         _      <- FeatureContext.put(FeatureToken("to-remove"))
         _      <- FeatureContext.remove[FeatureToken]
         result <- FeatureContext.getOption[FeatureToken]
@@ -156,7 +156,7 @@ object FeatureContextSpec extends ZIOSpecDefault {
 
   // ── Values are reset between features ────────────────────────────────────
   //
-  // FeatureExecutor calls FeatureContext.reset at the start of each feature.
+  // FeatureExecutor clears the store per feature via freshScope (not resetForTest).
   // We run two sequential features: the first stores a value, the second checks
   // that the value is no longer present.
 

@@ -114,6 +114,20 @@ object EmbeddedRiftCapabilitiesSpec extends ZIOSpecDefault:
         yield assertTrue(portFromUri(space.baseUri) > 0, portFromUri(space.baseUri) != 9998)
       }
     },
+    test("#214: a raw imposter document's top-level port is honoured") {
+      withControl() { (control, _) =>
+        val raw = """{"port":9999,"protocol":"http","stubs":[]}"""
+        for space <- control.provisionNative(NativeSpec.Rift(raw)).map(_.head)
+        yield assertTrue(portFromUri(space.baseUri) == 9999, space.baseUri == "http://localhost:9999")
+      }
+    },
+    test("#214: a raw imposter document without a top-level port auto-assigns") {
+      withControl() { (control, _) =>
+        val raw = """{"protocol":"http","stubs":[]}"""
+        for space <- control.provisionNative(NativeSpec.Rift(raw)).map(_.head)
+        yield assertTrue(portFromUri(space.baseUri) > 0, portFromUri(space.baseUri) != 9999)
+      }
+    },
     test("advertises all seven capabilities and every accessor succeeds") {
       withControl() { (control, _) =>
         for

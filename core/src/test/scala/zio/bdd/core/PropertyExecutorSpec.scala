@@ -65,6 +65,7 @@ object PropertyExecutorSpec extends ZIOSpecDefault {
 
   def spec: Spec[TestEnvironment & Scope, Any] = suite("PropertyExecutorSpec")(
     passSuite,
+    inertTagWarningSuite,
     failSuite,
     generatorSuite,
     autoResolutionSuite,
@@ -131,6 +132,57 @@ object PropertyExecutorSpec extends ZIOSpecDefault {
           sc.stepResults.head.step.pattern.contains("HasGen[Int]")
         )
       }
+    }
+  )
+
+  // ── Inert deferred property tags warn (issue #290) ─────────────────────────
+
+  private val inertTagWarningSuite = suite("Inert deferred property tags")(
+    test("setting a deferred key (verbose) logs a warning at run time") {
+      val steps = new ZIOSteps[Any, S]:
+        Given("value " / int)((n: Int) => ZIO.unit)
+        Then("ok")(ZIO.unit)
+
+      (for {
+        _ <- runFeature(
+               """Feature: F
+                 |  Scenario Outline: inert
+                 |    Given value <n>
+                 |    Then ok
+                 |    @property(samples=3, verbose=true)
+                 |    Examples:
+                 |      | n |
+                 |""".stripMargin,
+               steps
+             )
+        logs <- ZTestLogger.logOutput
+      } yield assertTrue(
+        logs.exists(e =>
+          e.logLevel == LogLevel.Warning && e.message().contains("verbose") && e.message().contains("no effect")
+        )
+      )).provideLayer(ZTestLogger.default)
+    },
+    test("a property scenario with no deferred keys logs no such warning") {
+      val steps = new ZIOSteps[Any, S]:
+        Given("value " / int)((n: Int) => ZIO.unit)
+        Then("ok")(ZIO.unit)
+
+      (for {
+        _ <- runFeature(
+               """Feature: F
+                 |  Scenario Outline: clean
+                 |    Given value <n>
+                 |    Then ok
+                 |    @property(samples=3)
+                 |    Examples:
+                 |      | n |
+                 |""".stripMargin,
+               steps
+             )
+        logs <- ZTestLogger.logOutput
+      } yield assertTrue(
+        !logs.exists(_.message().contains("not yet functional"))
+      )).provideLayer(ZTestLogger.default)
     }
   )
 

@@ -306,8 +306,20 @@ lazy val mimaSettings = Seq(
     ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.gherkin.Scenario.apply"),
     ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.gherkin.Scenario.this"),
     ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.gherkin.Scenario.copy"),
+    // #290: PropertyConfig gained a trailing `inertKeys: Set[String] = Set.empty` field
+    // (warn on parsed-but-inert shrink/maxShrinks/verbose tags). Additive with a default —
+    // source-compatible; only the synthetic apply/this/copy signatures changed.
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.gherkin.PropertyTag#PropertyConfig.apply"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.gherkin.PropertyTag#PropertyConfig.this"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.gherkin.PropertyTag#PropertyConfig.copy"),
     ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.FeatureExecutor.executeFeature"),
     ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.FeatureExecutor.executeFeatures"),
+    // #291: the test-only `reset` on FeatureContext/Stage was renamed `resetForTest` to
+    // stop it reading as a production reset path (it never was — clearing is via
+    // freshScope/locallyScoped). `private[bdd]` compiles to public bytecode, so the rename
+    // drops the old name from the binary API.
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.FeatureContext.reset"),
+    ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.step.Stage.reset"),
     // #225: ScenarioResult gained a trailing `attempts: Int = 1` field (retry-tag support).
     ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.ScenarioResult.apply"),
     ProblemFilters.exclude[DirectMissingMethodProblem]("zio.bdd.core.ScenarioResult.this"),

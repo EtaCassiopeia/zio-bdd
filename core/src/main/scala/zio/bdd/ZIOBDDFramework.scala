@@ -473,7 +473,7 @@ class ZIOBDDTask(
           override def fullyQualifiedName(): String = taskDef.fullyQualifiedName()
           override def fingerprint(): Fingerprint   = taskDef.fingerprint()
           override def selector(): Selector         = new TestSelector(result.feature.name)
-          override def status(): Status             = if (result.isPassed) Status.Success else Status.Failure
+          override def status(): Status             = ZIOBDDTask.statusOf(result)
           override def throwable(): OptionalThrowable = result.error match {
             case Some(t) => new OptionalThrowable(new Exception(t.getMessage, t.getCause))
             case None    => new OptionalThrowable()
@@ -487,6 +487,15 @@ class ZIOBDDTask(
 }
 
 object ZIOBDDTask {
+
+  /**
+   * The sbt build status for one feature. A `PENDING` scenario is a first-class
+   * "not built yet" status that must NOT fail the build, so this gates on
+   * `isComplete` (pending-tolerant), not `isPassed` — see `FeatureResult` in
+   * Result.scala. Issue #304.
+   */
+  def statusOf(result: FeatureResult): Status =
+    if (result.isComplete) Status.Success else Status.Failure
 
   /**
    * Parse a log-level name (case-insensitive) into an `InternalLogLevel`,

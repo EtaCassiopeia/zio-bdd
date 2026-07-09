@@ -22,6 +22,15 @@ object RiftMockControlSpec extends ZIOSpecDefault:
       |           "responses":[{"is":{"statusCode":200,"body":"native!"}}]}],
       | "_rift":{"script":{"engine":"rhai","code":"200"}}}""".stripMargin
 
+  // Same full-fidelity doc but WITHOUT a top-level port, so each provision gets a
+  // distinct auto-assigned pool port (a fixed-port doc would bind every provision
+  // on the same authored port — #214).
+  private val nativeImposterNoPort =
+    """{"protocol":"http",
+      | "stubs":[{"predicates":[{"equals":{"path":"/native"}}],
+      |           "responses":[{"is":{"statusCode":200,"body":"native!"}}]}],
+      | "_rift":{"script":{"engine":"rhai","code":"200"}}}""".stripMargin
+
   private def portOf(baseUri: String): Int = baseUri.substring(baseUri.lastIndexOf(':') + 1).toInt
 
   /**
@@ -126,6 +135,76 @@ object RiftMockControlSpec extends ZIOSpecDefault:
           fixedE.isRight,
           autoE.toOption.toList.flatten.head.baseUri == "http://localhost:4600"
         )
+      }
+    },
+    test("#213: an in-pool-range authored port is claimed so a later auto-provision cannot collide") {
+      withAdapterPool(List(4550, 4551)) { (control, _) =>
+        for
+          authoredE <- control.provision(MockSource.Dsl(MockSpec(List(pingRule), port = Some(4550)))).either
+          autoE     <- control.provision(pingSource).either
+        yield
+          val authored = authoredE.toOption.toList.flatten.head
+          val auto     = autoE.toOption.toList.flatten.head
+          assertTrue(
+            authored.baseUri == "http://localhost:4550",
+            // The authored port was removed from the free-list, so the auto-assigned
+            // imposter draws 4551 — never a second imposter on 4550.
+            auto.baseUri == "http://localhost:4551",
+            auto.baseUri != authored.baseUri
+          )
+      }
+    },
+    test("#213: an in-pool-range authored port returns to the pool on destroy (no depletion)") {
+      withAdapterPool(List(4550)) { (control, _) => // pool holds exactly the port we author
+        for
+          authoredE <- control.provision(MockSource.Dsl(MockSpec(List(pingRule), port = Some(4550)))).either
+          authored   = authoredE.toOption.toList.flatten.head
+          _         <- control.destroy(authored).either
+          autoE     <- control.provision(pingSource).either // 4550 must have come back to the pool
+        yield assertTrue(
+          authoredE.isRight,
+          autoE.toOption.toList.flatten.head.baseUri == "http://localhost:4550"
+        )
+      }
+    },
+    test(
+      "#303: an authored port outside the container's exposed pool fails fast with a typed MockError (no defect, no leak)"
+    ) {
+      val pool = List(4545, 4546)
+      // Simulate testcontainers: only exposed pool ports are mapped; any other port throws
+      // (getMappedPort) — the crash #303 replaces with a clear, fail-fast error.
+      def containerHostFor(p: Int): String =
+        if pool.contains(p) then s"http://localhost:$p"
+        else throw new IllegalArgumentException(s"Requested port ($p) is not mapped")
+      ZIO.scoped {
+        for
+          adminAndFake <- FakeRift.started
+          (admin, fake) = adminAndFake
+          endpoint     <- RiftEndpoint.pooled(admin, pool)(containerHostFor)
+          control      <- RiftMockControl.make(endpoint, RiftMode.PerInstance)
+          exit         <- control.provision(MockSource.Dsl(MockSpec(List(pingRule), port = Some(9999)))).exit
+          posted       <- fake.posted.get
+        yield assertTrue(
+          exit.causeOption.exists(_.failures.exists { case _: MockError.InvalidDefinition => true; case _ => false }),
+          exit.causeOption.exists(_.defects.isEmpty), // a typed failure, not a cryptic defect
+          exit.causeOption.exists(_.failures.exists(_.toString.contains("9999"))),
+          posted.isEmpty // failed before POSTing — no leaked imposter
+        )
+      }
+    },
+    test("#303: an in-pool authored port is reachable under container mapping and provisions") {
+      val pool = List(4545, 4546)
+      def containerHostFor(p: Int): String =
+        if pool.contains(p) then s"http://localhost:$p"
+        else throw new IllegalArgumentException(s"Requested port ($p) is not mapped")
+      ZIO.scoped {
+        for
+          adminAndFake <- FakeRift.started
+          (admin, _)    = adminAndFake
+          endpoint     <- RiftEndpoint.pooled(admin, pool)(containerHostFor)
+          control      <- RiftMockControl.make(endpoint, RiftMode.PerInstance)
+          sE           <- control.provision(MockSource.Dsl(MockSpec(List(pingRule), port = Some(4545)))).either
+        yield assertTrue(sE.toOption.toList.flatten.head.baseUri == "http://localhost:4545")
       }
     },
     test("destroy(A) deletes only A's imposter — never the global reset — and leaves B intact") {
@@ -425,10 +504,10 @@ object RiftMockControlSpec extends ZIOSpecDefault:
         )
       }
     },
-    test("provisionNative(Rift) stands up a full-fidelity space (stubs + _rift) on our pooled port") {
+    test("provisionNative(Rift) honours the document's own top-level port (#214)") {
       withAdapter { (control, fake) =>
         for
-          sE     <- control.provisionNative(NativeSpec.Rift(nativeImposter)).either
+          sE     <- control.provisionNative(NativeSpec.Rift(nativeImposter)).either // doc declares "port":9999
           posted <- fake.posted.get
         yield
           val space = sE.toOption.get.head
@@ -436,13 +515,21 @@ object RiftMockControlSpec extends ZIOSpecDefault:
           val req   = HttpRequest(Method.Get, "http://sut/")
           assertTrue(
             sE.isRight,
-            body.contains("\"_rift\""),                            // full-fidelity: _rift extensions preserved
-            body.contains("/native"),                              // the native stub preserved
-            body.contains("\"recordRequests\":true"),              // forced on so received() works
-            FakeRift.portOf(body).contains(portOf(space.baseUri)), // our pool port, not the spec's 9999
-            !body.contains("9999"),
-            space.inject(req) == req // isolation: identity inject like a portable space
+            body.contains("\"_rift\""),               // full-fidelity: _rift extensions preserved
+            body.contains("/native"),                 // the native stub preserved
+            body.contains("\"recordRequests\":true"), // forced on so received() works
+            space.baseUri == "http://localhost:9999", // the document's authored port is honoured (#214)
+            FakeRift.portOf(body).contains(9999),     // imposter created on 9999, not an auto pool port
+            space.inject(req) == req                  // isolation: identity inject like a portable space
           )
+      }
+    },
+    test("provisionNative(Rift) without a top-level port auto-assigns a pool port (#214)") {
+      val noPort = """{"protocol":"http","stubs":[{"predicates":[{"equals":{"path":"/np"}}],
+                     | "responses":[{"is":{"statusCode":200}}]}]}""".stripMargin
+      withAdapterPool(List(4600)) { (control, _) =>
+        for sE <- control.provisionNative(NativeSpec.Rift(noPort)).either
+        yield assertTrue(sE.toOption.get.head.baseUri == "http://localhost:4600")
       }
     },
     test("a natively-provisioned space participates in received and is space-local on destroy") {
@@ -470,8 +557,8 @@ object RiftMockControlSpec extends ZIOSpecDefault:
     test("native spaces isolate: two get distinct ports; destroy(A) leaves B") {
       withAdapter { (control, _) =>
         for
-          aE    <- control.provisionNative(NativeSpec.Rift(nativeImposter)).either
-          bE    <- control.provisionNative(NativeSpec.Rift(nativeImposter)).either
+          aE    <- control.provisionNative(NativeSpec.Rift(nativeImposterNoPort)).either
+          bE    <- control.provisionNative(NativeSpec.Rift(nativeImposterNoPort)).either
           a      = aE.toOption.get.head
           b      = bE.toOption.get.head
           _     <- control.destroy(a).either

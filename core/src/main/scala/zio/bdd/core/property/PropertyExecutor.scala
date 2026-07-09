@@ -95,25 +95,26 @@ object PropertyExecutor:
     flags: Map[String, String],
     dryRun: Boolean
   ): ZIO[R & StepRegistry[R, S], Nothing, ScenarioResult] =
-    resolveColumnGens[R, S](scenario, lookup).flatMap {
-      case Left(err) =>
-        ZIO.succeed(ScenarioResult(scenario, Nil, setupError = Some(Cause.fail(new RuntimeException(err)))))
-      case Right(colGens) =>
-        if (dryRun)
-          // --dry-run validates step matching without executing step bodies. Sampling the
-          // configured `samples` count for real would defeat that — instead, validate column
-          // resolution (already done above) and run exactly one dry-run sample to confirm
-          // every step pattern matches, without looping or touching the failure store.
-          runDryRunSample(scenario, suite, colGens, flags)
-        else
-          for {
-            seed      <- config.seed.map(ZIO.succeed).getOrElse(Random.nextLong)
-            replayRec <- if (config.replay) PropertyFailureStore.read(scenario) else ZIO.none
-            result <- replayRec match
-                        case Some(rec) => handleReplay(scenario, config, suite, colGens, rec, seed, flags)
-                        case None      => runFreshSamples(scenario, config, suite, colGens, seed, flags)
-          } yield result
-    }
+    ZIO.foreachDiscard(config.deferredWarning)(ZIO.logWarning(_)) *>
+      resolveColumnGens[R, S](scenario, lookup).flatMap {
+        case Left(err) =>
+          ZIO.succeed(ScenarioResult(scenario, Nil, setupError = Some(Cause.fail(new RuntimeException(err)))))
+        case Right(colGens) =>
+          if (dryRun)
+            // --dry-run validates step matching without executing step bodies. Sampling the
+            // configured `samples` count for real would defeat that — instead, validate column
+            // resolution (already done above) and run exactly one dry-run sample to confirm
+            // every step pattern matches, without looping or touching the failure store.
+            runDryRunSample(scenario, suite, colGens, flags)
+          else
+            for {
+              seed      <- config.seed.map(ZIO.succeed).getOrElse(Random.nextLong)
+              replayRec <- if (config.replay) PropertyFailureStore.read(scenario) else ZIO.none
+              result <- replayRec match
+                          case Some(rec) => handleReplay(scenario, config, suite, colGens, rec, seed, flags)
+                          case None      => runFreshSamples(scenario, config, suite, colGens, seed, flags)
+            } yield result
+      }
 
   private def runDryRunSample[R: Tag, S: Tag: Default](
     scenario: Scenario,
