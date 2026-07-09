@@ -183,10 +183,10 @@ Within each tier, hooks registered earlier run before hooks registered later.
   The state still contains whatever the last step left behind.
 - `beforeStep` / `afterStep` fire around **each individual step**, including Background steps
   that are prepended to a scenario.
-- `afterAll` runs after all features have completed, provided nothing upstream died. Unlike
-  `afterScenario`/`afterFeature`, the `beforeAll → features → afterAll` sequence is a plain
-  for-comprehension with no `.ensuring` guard — a defect in `beforeAll` or an unrecovered
-  feature-level defect skips `afterAll`.
+- `afterAll` **always** runs after all features have completed. Like
+  `afterScenario`/`afterFeature`, the `beforeAll → features → afterAll` sequence is
+  `.ensuring`-guarded (with `beforeAll` inside the guard), so `afterAll` runs even when
+  `beforeAll` dies or a feature body dies — suite-level cleanup never leaks on an upstream defect.
 
 ---
 
@@ -213,8 +213,8 @@ How that defect is handled differs by hook:
 | `afterScenario` | Fails the scenario (even if all steps passed) | Yes — always runs |
 | `beforeFeature` | Propagates as a defect, skipping the feature's scenarios | No |
 | `afterFeature` | Propagates as a defect after teardown | Yes — always runs |
-| `beforeAll` | Propagates as a defect, skipping all features and `afterAll` | No |
-| `afterAll` | Propagates as a defect | No |
+| `beforeAll` | Propagates as a defect, skipping all features (but `afterAll` still runs) | Inside the guard |
+| `afterAll` | Propagates as a defect after teardown | Yes — always runs |
 
 A genuine interruption (fiber cancellation / shutdown), as opposed to a hook failure, is never
 treated as a retryable error — an interrupt-only `Cause` always propagates rather than being

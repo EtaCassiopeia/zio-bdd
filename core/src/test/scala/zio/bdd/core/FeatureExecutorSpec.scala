@@ -283,6 +283,47 @@ object FeatureExecutorSpec extends ZIOSpecDefault {
         _  <- FeatureExecutor.executeFeatures[Any, SystemState](List(f1, f2), suiteSteps.getSteps, suiteSteps)
       } yield assertTrue(counter.get() == 1)
     },
+    test("afterAll runs even when beforeAll dies (ensuring-guarded)") {
+      val afterAllRan = new java.util.concurrent.atomic.AtomicInteger(0)
+      val suiteSteps = new UserSteps {
+        beforeAll(ZIO.dieMessage("beforeAll boom"))
+        afterAll(ZIO.succeed(afterAllRan.incrementAndGet()).unit)
+      }
+      for {
+        f    <- GherkinParser.parseFeature("Feature: F\n  Scenario: s\n    Given a system is running\n", F)
+        exit <- FeatureExecutor.executeFeatures[Any, SystemState](List(f), suiteSteps.getSteps, suiteSteps).exit
+      } yield assertTrue(
+        afterAllRan.get() == 1,
+        exit.causeOption.exists(_.defects.exists(_.getMessage.contains("beforeAll boom")))
+      )
+    },
+    test("afterAll runs even when a feature dies (ensuring-guarded)") {
+      val afterAllRan = new java.util.concurrent.atomic.AtomicInteger(0)
+      val suiteSteps = new UserSteps {
+        beforeFeature(ZIO.dieMessage("feature boom"))
+        afterAll(ZIO.succeed(afterAllRan.incrementAndGet()).unit)
+      }
+      for {
+        f    <- GherkinParser.parseFeature("Feature: F\n  Scenario: s\n    Given a system is running\n", F)
+        exit <- FeatureExecutor.executeFeatures[Any, SystemState](List(f), suiteSteps.getSteps, suiteSteps).exit
+      } yield assertTrue(
+        afterAllRan.get() == 1,
+        exit.causeOption.exists(_.defects.exists(_.getMessage.contains("feature boom")))
+      )
+    },
+    test("hook order is beforeAll → feature → afterAll on the happy path") {
+      val log                          = scala.collection.mutable.ListBuffer.empty[String]
+      def record(s: String): UIO[Unit] = ZIO.succeed(log.synchronized { log += s; () })
+      val suiteSteps = new UserSteps {
+        beforeAll(record("beforeAll"))
+        beforeFeature(record("feature"))
+        afterAll(record("afterAll"))
+      }
+      for {
+        f <- GherkinParser.parseFeature("Feature: F\n  Scenario: s\n    Given a system is running\n", F)
+        _ <- FeatureExecutor.executeFeatures[Any, SystemState](List(f), suiteSteps.getSteps, suiteSteps)
+      } yield assertTrue(log.toList == List("beforeAll", "feature", "afterAll"))
+    },
     test("beforeScenario receives ScenarioMetadata with the scenario name") {
       var capturedName = ""
       val suiteSteps = new UserSteps {

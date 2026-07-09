@@ -133,7 +133,11 @@ object FeatureExecutor {
     dryRun: Boolean = false,
     genLookup: ColumnGenLookup = ColumnGenLookup.empty
   ): ZIO[R, Nothing, List[FeatureResult]] =
-    for {
+    // beforeAll is inside the .ensuring so afterAll suite-level teardown always
+    // runs — even if beforeAll dies or a feature body dies — matching the
+    // afterFeature/afterScenario contract. Otherwise cleanup (containers, temp
+    // dirs, external resources) leaks on an upstream defect.
+    (for {
       _ <- suite.beforeAllHook
       results <- if (featureParallelism <= 1)
                    ZIO.foreach(features)(executeFeature(_, steps, suite, scenarioParallelism, dryRun, genLookup))
@@ -141,6 +145,5 @@ object FeatureExecutor {
                    ZIO.foreachExec(features)(ExecutionStrategy.ParallelN(featureParallelism.max(1)))(
                      executeFeature(_, steps, suite, scenarioParallelism, dryRun, genLookup)
                    )
-      _ <- suite.afterAllHook
-    } yield results
+    } yield results).ensuring(suite.afterAllHook)
 }
