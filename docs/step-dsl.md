@@ -465,7 +465,10 @@ mixing them is supported.
 
 Mark a step as intentionally unimplemented.  A pending step is reported
 distinctly from a failed step — it does not cause subsequent steps to be
-skipped, and it will not fail the suite.
+skipped, and it does **not** redden the build: a scenario whose only issue is a
+pending step keeps the sbt task green (`Status.Success`), surfacing the
+`Pending: N` count without failing. The build gate is `FeatureResult.isComplete`
+(pending-tolerant), not `isPassed`.
 
 ```scala
 Given("a complex precondition exists") { pending("not yet implemented") }
