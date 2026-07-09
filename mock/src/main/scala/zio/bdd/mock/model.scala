@@ -195,9 +195,12 @@ enum FaultKind:
   case RandomThenClose
   case LatencySpike(delay: Duration)
 
-/** The engine a [[Scripting]] script runs on (#132). */
+/**
+ * The engine a [[Scripting]] script runs on (#132). Rift consolidated on Rhai +
+ * JavaScript in v0.12.0 (the Lua engine was removed, rift #451).
+ */
 enum ScriptEngine:
-  case Rhai, Lua, JavaScript
+  case Rhai, JavaScript
 
 /** A backend script that computes the response for matching requests (#132). */
 final case class Script(engine: ScriptEngine, code: String)

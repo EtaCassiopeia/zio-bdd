@@ -26,14 +26,13 @@ object ScriptingScenarios:
 
   // A Rhai script that computes the body from the request method — so a passing
   // round-trip proves the backend ran the script (a static stub couldn't echo it).
-  // Rift's script API returns a decision map; `fault: "error"` is its token for "return this
-  // computed { status, body, headers } response" (not an actual error). Here the body is derived
-  // from request.method, so a passing round-trip proves the engine ran the script.
+  // Rift's v2 script API (#357): the `respond(ctx)` entrypoint returns a result constructor —
+  // `http(status, body)` serves that response (`.header(k, v)` chains). The body is derived from
+  // `ctx.request.method`, so a green round-trip proves the engine actually executed the script.
   private val rhaiEchoMethod =
     Script(
       ScriptEngine.Rhai,
-      "fn should_inject(request, flow_store) { #{inject: true, fault: \"error\", status: 200, " +
-        "body: `scripted-${request.method}`, headers: #{\"Content-Type\": \"text/plain\"}} }"
+      "fn respond(ctx) { http(200, `scripted-${ctx.request.method}`).header(\"Content-Type\", \"text/plain\") }"
     )
 
   private val scriptedResponse =

@@ -64,7 +64,7 @@ the environment:
   ): ZLayer[Client & Provisioning, MockError, MockControl]
   ```
 
-  `DefaultImage` is the pinned Rift image, currently `zainalpour/rift-proxy:v0.11.3`
+  `DefaultImage` is the pinned Rift image, currently `zainalpour/rift-proxy:v0.12.0`
   — derived from the single `riftVersion` in `build.sbt`, so treat it as "the
   pinned Rift image" rather than a hardcoded tag. Pass `interceptPort` to also
   start the container's HTTPS-intercept listener and advertise
@@ -172,19 +172,6 @@ cdylibs; the loader extracts the one matching your host to a temp file and
 loads it automatically. If you'd rather point at a library you built or
 installed yourself, skip the natives jar and set `-Drift.ffi.lib=<path>`
 instead.
-
-### Host prerequisite: LuaJIT
-
-The embedded engine's Scripting capability needs LuaJIT installed on the host
-running the tests:
-
-```bash
-# Debian/Ubuntu
-apt install libluajit-5.1-dev
-
-# macOS
-brew install luajit
-```
 
 ### Test-JVM flags
 

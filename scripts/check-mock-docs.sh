@@ -41,13 +41,12 @@ if grep -RnE 'rift-proxy:v0\.8\.0' docs/mock-adapters.md; then err "stale Rift i
 if grep -RniE 'embedded[^.]{0,40}(no capabilit|four capabilit|only four)' $MOCK_MD; then err "stale 'embedded has no/four capabilities' claim"; fi
 grep -Rq 'StateInspection' docs/mock-adapters.md || err "capability matrix missing StateInspection in mock-adapters.md"
 
-# 7. Embedded JDK story: both artifacts + both JDKs + LuaJIT + native-access, in mock-adapters.md
+# 7. Embedded JDK story: both artifacts + both JDKs + native-access, in mock-adapters.md
 A=docs/mock-adapters.md
 grep -q 'zio-bdd-rift-embedded-jdk21' "$A" || err "mock-adapters.md missing the JDK-21 embedded artifact"
 grep -q 'zio-bdd-rift-embedded-natives' "$A" || err "mock-adapters.md missing the embedded-natives artifact"
 grep -qE 'JDK ?21' "$A" && grep -qE 'JDK ?22' "$A" || err "mock-adapters.md missing the JDK 21/22 split"
 grep -q 'enable-native-access' "$A" || err "mock-adapters.md missing --enable-native-access"
-grep -qiE 'luajit' "$A" || err "mock-adapters.md missing the LuaJIT prerequisite"
 
 # 8. Used By section seeded with Rift (README or docs landing)
 grep -RqiE 'used by' README.md docs/index.md && grep -RqiE '\[?rift\]?\(https://github.com/EtaCassiopeia/rift' README.md docs/index.md \

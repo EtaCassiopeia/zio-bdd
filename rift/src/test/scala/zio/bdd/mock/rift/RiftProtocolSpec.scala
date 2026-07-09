@@ -150,19 +150,18 @@ object RiftProtocolSpec extends ZIOSpecDefault:
     test("scriptStub carries predicates and a _rift.script response (engine + code) (#132)") {
       val m = RequestMatch(path = PathMatch.Exact("/s"))
       val stub =
-        RiftProtocol.scriptStub(m, Script(ScriptEngine.Rhai, "fn should_inject(r,f){#{inject:false}}"), RuleId("s1"))
+        RiftProtocol.scriptStub(m, Script(ScriptEngine.Rhai, "fn respond(ctx){pass()}"), RuleId("s1"))
       val resp = arr(stub / "responses").head
       assertTrue(
         stub / "id" == Json.Str("s1"),
         arr(stub / "predicates").exists(p => p / "equals" / "path" == Json.Str("/s")),
         resp / "_rift" / "script" / "engine" == Json.Str("rhai"),
-        resp / "_rift" / "script" / "code" == Json.Str("fn should_inject(r,f){#{inject:false}}")
+        resp / "_rift" / "script" / "code" == Json.Str("fn respond(ctx){pass()}")
       )
     },
-    test("script engine tokens map to rhai/lua/javascript (#132)") {
+    test("script engine tokens map to rhai/javascript (#132)") {
       assertTrue(
         RiftProtocol.scriptEngineName(ScriptEngine.Rhai) == "rhai",
-        RiftProtocol.scriptEngineName(ScriptEngine.Lua) == "lua",
         RiftProtocol.scriptEngineName(ScriptEngine.JavaScript) == "javascript"
       )
     },
