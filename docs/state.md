@@ -526,15 +526,17 @@ Both stores are cleared via `Ref.locallyScoped(Map.empty)`, not by an explicit
 - `ScenarioExecutor` scopes `Stage.ref` (and `Stage.currentStepLabel`) with
   `Stage.ref.locallyScoped(Map.empty)` at the start of each scenario *attempt*,
   **before** `beforeScenarioHook` runs.
-- `FeatureExecutor` scopes `FeatureContext.ref` with
-  `FeatureContext.ref.locallyScoped(Map.empty)` at the start of each feature,
-  **before** `beforeFeatureHook` runs.
+- `FeatureExecutor` installs a fresh per-feature store with
+  `FeatureContext.freshScope` at the start of each feature, **before**
+  `beforeFeatureHook` runs.
 
-`locallyScoped` sets the `FiberRef` to the empty map for the lifetime of the
-enclosing `ZIO.scoped` block and restores the previous value when that scope
-closes — this is what guarantees a retried scenario attempt, or the next
-scenario/feature, starts from a clean store even if the previous attempt was
-interrupted mid-step.
+`locallyScoped` sets the `FiberRef` for the lifetime of the enclosing
+`ZIO.scoped` block and restores the previous value when that scope closes — this
+is what guarantees a retried scenario attempt, or the next scenario/feature,
+starts from a clean store even if the previous attempt was interrupted
+mid-step. `FeatureContext.freshScope` allocates a new synchronized cell and
+`locallyScoped`s *that*, so each feature — including parallel features — is
+isolated while the scenarios within one feature share a single cell.
 
 The `private[bdd] def reset` method on both `Stage` and `FeatureContext` is
 **test-only** — it exists for unit-testing the stores in isolation and is
@@ -542,25 +544,23 @@ never called by `ScenarioExecutor` or `FeatureExecutor`. Do not rely on it to
 understand production clearing behavior; the `locallyScoped` calls above are
 the actual production clearing path.
 
-### Concurrency warning: `FeatureContext` under `scenarioParallelism > 1`
+### Concurrency: `FeatureContext` under `scenarioParallelism > 1`
 
-`FeatureContext.ref` is a plain `FiberRef[Map[String, Any]]`. When a suite runs
-with `scenarioParallelism > 1`, `FeatureExecutor` executes sibling scenarios of
-the same feature as **true parallel fibers** (`ZIO.foreachExec` with
-`ExecutionStrategy.ParallelN`), all forked from the same parent fiber that
-holds the feature's `FiberRef` value.
+`FeatureContext.ref` is a `FiberRef[Ref.Synchronized[Map[String, Any]]]` — the
+`FiberRef` holds a *reference* to a per-feature synchronized cell, not the map
+itself. When a suite runs with `scenarioParallelism > 1`, `FeatureExecutor`
+executes sibling scenarios of the same feature as **true parallel fibers**
+(`ZIO.foreachExec` with `ExecutionStrategy.ParallelN`), all forked from the same
+parent fiber.
 
-`FiberRef` fork/join semantics are last-writer-wins on join, not merged: each
-forked scenario fiber gets its own copy of the `FiberRef` value at fork time,
-and whichever sibling's value is observed last silently overwrites the others'
-changes. Concretely, this means `FeatureContext.put`/`modify` calls from
-different scenario fibers in the same feature are **not synchronized** —
-accumulation patterns (e.g. a shared counter incremented by every scenario)
-will silently lose updates under parallel execution.
+Because the fibers share the same underlying `Ref.Synchronized` instance (fork
+copies the reference, not the cell), `FeatureContext.put`/`modify` from different
+scenario fibers are **synchronized and compose** rather than clobbering each
+other. Accumulation patterns — e.g. a shared counter incremented by every
+scenario in the feature — work correctly under parallel execution.
 
-If a feature needs cross-scenario accumulation under `scenarioParallelism > 1`,
-use a synchronized primitive obtained from a `ZLayer` (a `Ref`, `Ref.Synchronized`,
-or `Queue`/`Hub` provided via `R`) instead of `FeatureContext`.
+Cross-feature isolation is preserved: `FeatureContext.freshScope` installs a
+*new* cell per feature, so parallel features never share state.
 
 ---
 
