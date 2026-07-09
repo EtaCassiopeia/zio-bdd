@@ -173,6 +173,17 @@ loads it automatically. If you'd rather point at a library you built or
 installed yourself, skip the natives jar and set `-Drift.ffi.lib=<path>`
 instead.
 
+> **Platform note — system LuaJIT (natives ≤ 1.4.1 only).** The `1.4.1` and
+> earlier natives repackage Rift **v0.11.3**, whose `linux-x86_64` and
+> `darwin-aarch64` cdylibs dynamically link **system LuaJIT** — so those hosts
+> needed `libluajit-5.1-2` (apt) / Homebrew `luajit` installed, or the library
+> failed to `dlopen` at engine start (#307). **Natives from `1.4.2` onward
+> (Rift v0.12.0) are self-contained** — Rift dropped the Lua engine, so no host
+> LuaJIT is required on any platform. If you're pinned to an old natives version
+> on a Lua-free host, either upgrade or install system LuaJIT. A bundled library
+> that is present but fails to load surfaces a `MockError.ProvisionFailed` naming
+> the underlying `dlopen` error and this missing-dependency hint.
+
 ### Test-JVM flags
 
 Both variants need `--enable-native-access` to silence the restricted-method
