@@ -28,11 +28,23 @@ done < <(grep -rhoE "\]\(([a-zA-Z0-9._-]+\.md)(#[a-zA-Z0-9_-]+)?\)" docs/ 2>/dev
           | sed -E 's/\]\(//; s/\)//' | awk -F: '{print FILENAME":"$0}' FILENAME="docs" | sort -u \
           || true)
 
-# 4. Version accuracy in the new mock pages
+# 4. Version accuracy in the mock pages. Derive the expected version from the install-snippet
+#    coordinates themselves (io.github.etacassiopeia %% "zio-bdd-*" % "x.y.z") rather than pinning a
+#    literal that silently rots on every release: the old `1.2.0` pin stuck through the entire 1.4.x
+#    line and failed on master (#313). scripts/bump-doc-versions.sh rewrites those coordinates on
+#    release, so this gate stays green as long as the snippets are present, mutually consistent, and
+#    a real published (non-SNAPSHOT, non-pre-1.2) version.
 MOCK_MD=$(printf 'docs/%s.md ' "${NEW_PAGES[@]}")
-grep -Rq '1.2.0' $MOCK_MD || err "no 1.2.0 version reference in the mock pages"
-if grep -RnE '"zio-bdd[a-z-]*" +% +"1\.(0|1)\.0"' $MOCK_MD; then err "stale 1.0.0/1.1.0 dependency version in a mock page"; fi
-if grep -Rn '1.2.0-SNAPSHOT' $MOCK_MD; then err "SNAPSHOT version leaked into a mock page"; fi
+mock_versions=$(grep -rhE 'io\.github\.etacassiopeia' $MOCK_MD \
+  | grep -oE '%[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?"' \
+  | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?' | sort -u)
+if [[ -z "$mock_versions" ]]; then
+  err "no zio-bdd install-snippet version found in the mock pages"
+elif [[ $(printf '%s\n' "$mock_versions" | grep -c .) -ne 1 ]]; then
+  err "inconsistent install-snippet versions in the mock pages: $(echo $mock_versions)"
+elif printf '%s' "$mock_versions" | grep -qE 'SNAPSHOT|^1\.(0|1)\.0$'; then
+  err "stale or SNAPSHOT install-snippet version in a mock page: $mock_versions"
+fi
 
 # 5. Rift container image: current default is v0.9.0; no stale v0.8.0 presented as the default
 if grep -RnE 'rift-proxy:v0\.8\.0' docs/mock-adapters.md; then err "stale Rift image v0.8.0 in mock-adapters.md"; fi

@@ -34,6 +34,8 @@ jobs:
           java-version: 11
           cache: sbt
       - uses: sbt/setup-sbt@v1
+      - name: Mock docs contract (pages, links, version coherence)
+        run: bash scripts/check-mock-docs.sh
       - run: sbt docs/mdoc
       - name: Fail if docs/verified-examples.md is out of date (run `sbt docs/mdoc`)
         run: git diff --exit-code docs/verified-examples.md
