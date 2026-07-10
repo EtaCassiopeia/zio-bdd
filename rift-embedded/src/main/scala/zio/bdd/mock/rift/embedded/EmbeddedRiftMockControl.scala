@@ -349,7 +349,7 @@ private[embedded] final case class EmbeddedRiftMockControl(
 
   // flowId = the imposter port (PerInstance) / the correlation value (Correlated): the slice a
   // request resolves its scenario state to. Scenario state is flow-state keyed by the scenario name,
-  // stored as a JSON string — the same slice `set_scenario_state` writes (rift-core), so pinning via
+  // stored as a JSON string — the same slice `set_scenario_state` writes (rift-mock-core), so pinning via
   // `rift_flow_state_put(name, "\"state\"")` is byte-identical to the admin `/scenarios/:name/state`.
   private def putScenarioState(port: Int, flowId: String, name: String, state: ScenarioState): IO[MockError, Unit] =
     engine.flowStatePut(port, flowId, name, Json.Str(state.value).toJson)
