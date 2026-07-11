@@ -53,8 +53,15 @@ jobs:
             exit 1
           fi
           bash scripts/assert-class-max-version.sh "$bridges" 65
+      # sbt-ci-release decides "is this a real release" from GITHUB_REF (it must start with refs/tags).
+      # On a workflow_dispatch that's refs/heads/master, so ci-release would abort with "No tag published"
+      # even though we checked out the tag's content (dynver already derives the version, e.g. 1.4.2, from
+      # it). Point GITHUB_REF at the tag being recovered so ci-release proceeds to publishSigned +
+      # sonatypeBundleRelease. The verify-tag-signature step above already proved the tag is a real,
+      # trusted, signed tag, so this override can't turn a branch build into a spurious release.
       - run: sbt ci-release
         env:
+          GITHUB_REF: refs/tags/${{ inputs.tag }}
           PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
           PGP_SECRET: ${{ secrets.PGP_SECRET }}
           SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
