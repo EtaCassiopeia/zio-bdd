@@ -53,15 +53,17 @@ jobs:
             exit 1
           fi
           bash scripts/assert-class-max-version.sh "$bridges" 65
-      # sbt-ci-release decides "is this a real release" from GITHUB_REF (it must start with refs/tags).
-      # On a workflow_dispatch that's refs/heads/master, so ci-release would abort with "No tag published"
-      # even though we checked out the tag's content (dynver already derives the version, e.g. 1.4.2, from
-      # it). Point GITHUB_REF at the tag being recovered so ci-release proceeds to publishSigned +
-      # sonatypeBundleRelease. The verify-tag-signature step above already proved the tag is a real,
-      # trusted, signed tag, so this override can't turn a branch build into a spurious release.
+      # sbt-ci-release's isTag gate reads the tag from (in order) TRAVIS_TAG / CIRCLE_TAG /
+      # CI_COMMIT_TAG / BUILD_SOURCEBRANCH / GITHUB_REF, requiring a value starting with "refs/tags".
+      # On a workflow_dispatch GITHUB_REF is refs/heads/master, so ci-release aborts with "No tag
+      # published" — and a step-level `env: GITHUB_REF:` can't fix it (GitHub re-injects the built-in
+      # GITHUB_REF, so the override never reaches sbt). BUILD_SOURCEBRANCH is an Azure var GitHub does
+      # NOT set, so overriding it here DOES reach sbt, and it's checked ahead of GITHUB_REF — making
+      # isTag true. The published version still comes from dynver (the checked-out tag → e.g. 1.4.2),
+      # and the verify-tag-signature step above already proved this is a real, trusted, signed tag.
       - run: sbt ci-release
         env:
-          GITHUB_REF: refs/tags/${{ inputs.tag }}
+          BUILD_SOURCEBRANCH: refs/tags/${{ inputs.tag }}
           PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
           PGP_SECRET: ${{ secrets.PGP_SECRET }}
           SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
