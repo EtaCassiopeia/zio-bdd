@@ -155,7 +155,8 @@ object StatusColor:
 
   given StatusColor[FeatureResult] = from { f =>
     if (f.isIgnored) Style(Color.Gray, "◉")
-    else if (f.isPassed) Style(Color.Green, "◉") // bright green — feature-level pass
+    else if (f.hasPending && f.isComplete) Style(Color.Orange, "◉") // pending, no hard failure — not red
+    else if (f.isPassed) Style(Color.Green, "◉")                    // bright green — feature-level pass
     else Style(Color.Red, "◉")
   }
 
@@ -488,6 +489,7 @@ object DocBuilder:
 
   private def statusText(f: FeatureResult): String =
     if (f.isIgnored) "IGNORED"
+    else if (f.hasPending && f.isComplete) "PENDING"
     else if (f.isPassed) "PASSED"
     else "FAILED"
 

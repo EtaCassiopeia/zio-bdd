@@ -106,6 +106,25 @@ object PrettyReporterSpec extends ZIOSpecDefault {
       val fr = mkFeatureResult("F", List(sc))
       val s  = summon[StatusColor[FeatureResult]].style(fr)
       assertTrue(s.color == Color.Red)
+    },
+    test("pending-only FeatureResult (pending, no hard failure) → Orange, not Red") {
+      // Regression for #319: a feature whose only non-passing scenario is pending must not
+      // render as red FAILED — pending does not redden the build (see #306), so the feature
+      // header mirrors the scenario level (Orange), consistent with the summary and JUnit XML.
+      val sc = mkScenarioResult("s", List((StepType.GivenStep, "a step", StepStatus.Pending("todo"))))
+      val fr = mkFeatureResult("F", List(sc))
+      val s  = summon[StatusColor[FeatureResult]].style(fr)
+      assertTrue(s.color == Color.Orange, s.icon == "◉")
+    },
+    test("pending + failed FeatureResult stays Red (a hard failure is not masked by pending) (#319)") {
+      // A feature carrying both a pending scenario and a failed one has a hard failure, so it must
+      // remain red FAILED — the pending branch fires only when isComplete (no hard failure).
+      val pending = mkScenarioResult("p", List((StepType.GivenStep, "a", StepStatus.Pending("todo"))))
+      val failed =
+        mkScenarioResult("f", List((StepType.GivenStep, "b", StepStatus.Failed(Cause.fail(new Exception())))))
+      val fr = mkFeatureResult("F", List(pending, failed))
+      val s  = summon[StatusColor[FeatureResult]].style(fr)
+      assertTrue(s.color == Color.Red)
     }
   )
 
@@ -285,6 +304,14 @@ object PrettyReporterSpec extends ZIOSpecDefault {
       DocBuilder.featureBranch(fr, isLast = false, (_, _) => emptyLogs) match
         case Doc.Branch(header, _, _) =>
           assertTrue(header.text.contains("MyFeature"), header.text.contains("PASSED"))
+        case _ => assertTrue(false)
+    },
+    test("featureBranch header for a pending-only feature reads PENDING, not FAILED (#319)") {
+      val sc = mkScenarioResult("s", List((StepType.GivenStep, "a", StepStatus.Pending("todo"))))
+      val fr = mkFeatureResult("MyFeature", List(sc))
+      DocBuilder.featureBranch(fr, isLast = false, (_, _) => emptyLogs) match
+        case Doc.Branch(header, _, _) =>
+          assertTrue(header.text.contains("PENDING"), !header.text.contains("FAILED"))
         case _ => assertTrue(false)
     },
     test("featureBranch children include one branch per scenario plus summary") {

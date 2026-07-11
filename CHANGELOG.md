@@ -4,6 +4,14 @@ All notable changes to zio-bdd are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **report**: the `pretty` reporter's feature-level header no longer renders a pending-only
+  feature as red `FAILED`. Following #306 (a pending step doesn't redden the build), the
+  feature header now reads `PENDING` (orange) when a feature has a pending scenario and no
+  hard failure — consistent with the scenario line, the summary, the JUnit XML, and the
+  green build. (#319)
+
 ## [1.4.2] — 2026-07-10
 
 ### Added
