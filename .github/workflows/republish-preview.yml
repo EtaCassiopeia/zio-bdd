@@ -1,0 +1,61 @@
+name: Republish preview variant
+
+# Manual recovery for the JDK-21 preview variant (zio-bdd-rift-embedded-jdk21_3) when the normal
+# release (release.yml) published the stable bundle but its `publish-preview` job was skipped —
+# e.g. the stable `publish` job flaked on a Sonatype status-check timeout AFTER a successful upload,
+# so everything downstream (preview + GitHub release) skipped even though stable went out. Re-running
+# release.yml can't fix it: the stable coordinates already exist on Central, so its `publish` would
+# duplicate-conflict and skip the preview again. On JDK 21 the root aggregates ONLY riftEmbedded21, so
+# `ci-release` here publishes exactly the one missing artifact (its coordinates don't exist yet).
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Signed release tag to publish the JDK-21 preview variant for (e.g. v1.4.2)"
+        required: true
+
+jobs:
+  publish-preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      # Enforce the same no-unsigned-releases invariant as release.yml's verify-tag-signature. The
+      # trusted public keys live on the default branch (the tag being recovered may predate them), so
+      # import them from origin/master rather than the checked-out tag tree.
+      - name: Require the tag to be signed by a trusted key
+        run: |
+          git fetch --no-tags --depth 1 origin master
+          git show origin/master:.github/release-signing-keys.asc | gpg --batch --import
+          if ! git verify-tag --raw "${{ inputs.tag }}" 2>gpgstatus.txt; then
+            echo "::error::tag ${{ inputs.tag }} is not signed by a trusted release key — refusing to publish"
+            cat gpgstatus.txt
+            exit 1
+          fi
+          grep -q '^\[GNUPG:\] VALIDSIG' gpgstatus.txt || {
+            echo "::error::no valid signature found on ${{ inputs.tag }}"; cat gpgstatus.txt; exit 1; }
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: sbt
+      - uses: sbt/setup-sbt@v1
+      # Same pre-publish guard as release.yml: the -jdk21 cut must be class <= 65 so it loads on JDK 21.
+      - name: Assert the JDK-21 bridge is class <= 65 before publishing
+        run: |
+          sbt "riftEmbedded21/Compile/compile"
+          bridges=$(find rift-embedded-jdk21/target -name RiftFfiBridge.class)
+          count=$(printf '%s' "$bridges" | grep -c . || true)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::expected exactly one RiftFfiBridge.class under rift-embedded-jdk21/target, found $count"
+            exit 1
+          fi
+          bash scripts/assert-class-max-version.sh "$bridges" 65
+      - run: sbt ci-release
+        env:
+          PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
+          PGP_SECRET: ${{ secrets.PGP_SECRET }}
+          SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
+          SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
