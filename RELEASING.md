@@ -32,10 +32,17 @@ zio-bdd follows [Semantic Versioning](https://semver.org/):
 
 ## Release steps
 
-1. **Update version** (sbt-ci-release derives the version from git tags):
+1. **Update version** (sbt-ci-release derives the version from git tags). The tag **must be
+   signed** — the release workflow's `verify-tag-signature` job rejects an unsigned, lightweight,
+   or unknown-key tag before anything publishes (it validates the tag against the committed public
+   keys in `.github/release-signing-keys.asc`), so an unsigned tag no longer cuts a release:
    ```bash
    git tag -s v1.0.0 -m "v1.0.0"
    ```
+   Set `git config --global tag.gpgSign true` so tags sign by default and `git tag` **fails loudly**
+   if signing can't run (e.g. no `GPG_TTY`), rather than silently creating an unsigned tag. To add or
+   rotate a signer, append their ASCII-armored **public** key to `.github/release-signing-keys.asc`
+   (`gpg --armor --export <fingerprint> >> .github/release-signing-keys.asc`).
 
 2. **Push the tag** to trigger the release workflow:
    ```bash
