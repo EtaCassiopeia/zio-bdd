@@ -19,4 +19,6 @@ project/project/
 *.iml
 .vscode
 *.asc
+# ...except the committed release-signing PUBLIC keys the release workflow verifies tags against.
+!.github/release-signing-keys.asc
 

@@ -3,11 +3,42 @@ on:
   push:
     tags: ["*"]
 jobs:
+  # Gate the whole release on a signed tag (every `publish*` job needs this): the tag object must carry
+  # a good signature from a key in .github/release-signing-keys.asc — the committed public half of the
+  # maintainer release key. An unsigned tag, a lightweight tag (no signature), or a tag signed by an
+  # unknown key fails here, before anything is published to Maven Central. To add or rotate a signer,
+  # append their ASCII-armored PUBLIC key to that file. (v1.4.0/v1.4.1 shipped from unsigned tags because
+  # nothing checked this; git verify-tag exits non-zero unless a trusted key in the keyring validates it.)
+  verify-tag-signature:
+    name: Require a signed release tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Import trusted release-signing public keys
+        run: gpg --batch --import .github/release-signing-keys.asc
+      - name: Verify the tag is signed by a trusted key
+        run: |
+          if ! git verify-tag --raw "$GITHUB_REF_NAME" 2>gpgstatus.txt; then
+            echo "::error::tag $GITHUB_REF_NAME is not signed by a trusted release key — refusing to publish"
+            cat gpgstatus.txt
+            exit 1
+          fi
+          # Belt-and-suspenders: a good signature from an *available* key emits VALIDSIG. Guards against a
+          # future git that might exit 0 on a warning-only path.
+          if ! grep -q '^\[GNUPG:\] VALIDSIG' gpgstatus.txt; then
+            echo "::error::no valid signature found on $GITHUB_REF_NAME"
+            cat gpgstatus.txt
+            exit 1
+          fi
+
   # Stable job (JDK 22): FFM is finalized in JDK 22 (JEP 454), so on a 22+ JDK the root aggregates the
   # full stack + the stable embedded provider (zio-bdd-rift-embedded) + the natives jar — one standard
   # `ci-release` publishes them all. The container/core modules stay portable (scalac emits Java 8
   # bytecode regardless of the build JDK; the JDK-11 CI `build` job guards their JDK-11 API compat).
   publish:
+    needs: verify-tag-signature
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
