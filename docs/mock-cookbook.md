@@ -16,8 +16,8 @@ Add the WireMock adapter — it runs fully in-process on JDK 11+, no containers:
 ```scala
 // build.sbt
 libraryDependencies ++= Seq(
-  "io.github.etacassiopeia" %% "zio-bdd"          % "1.4.1",
-  "io.github.etacassiopeia" %% "zio-bdd-wiremock" % "1.4.1" % Test
+  "io.github.etacassiopeia" %% "zio-bdd"          % "1.4.2",
+  "io.github.etacassiopeia" %% "zio-bdd-wiremock" % "1.4.2" % Test
 )
 ```
 

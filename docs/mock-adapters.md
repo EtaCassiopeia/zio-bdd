@@ -9,7 +9,7 @@ pick one.
 
 ## 1. The three backends at a glance
 
-| Adapter | Coordinates (1.4.1) | Docker? | JDK | Isolation default | Capabilities |
+| Adapter | Coordinates (1.4.2) | Docker? | JDK | Isolation default | Capabilities |
 |---|---|---|---|---|---|
 | Rift container | `zio-bdd-rift` | yes (testcontainers) | 11+ | PerInstance | all six core + Intercept opt-in |
 | WireMock | `zio-bdd-wiremock` | no | 11+ | Correlated (via `.correlated`) | Faults, StatefulScenarios, StateInspection only |
@@ -44,7 +44,7 @@ against it fails with `Unsupported` (§3 below, and see
 ## 2. Rift container (`zio-bdd-rift`)
 
 ```scala
-"io.github.etacassiopeia" %% "zio-bdd-rift" % "1.4.1"
+"io.github.etacassiopeia" %% "zio-bdd-rift" % "1.4.2"
 ```
 
 Two entry points, both requiring a zio-http `Client` and a `Provisioning` in
@@ -64,7 +64,7 @@ the environment:
   ): ZLayer[Client & Provisioning, MockError, MockControl]
   ```
 
-  `DefaultImage` is the pinned Rift image, currently `zainalpour/rift-proxy:v0.12.0`
+  `DefaultImage` is the pinned Rift image, currently `zainalpour/rift-proxy:v0.13.1`
   — derived from the single `riftVersion` in `build.sbt`, so treat it as "the
   pinned Rift image" rather than a hardcoded tag. Pass `interceptPort` to also
   start the container's HTTPS-intercept listener and advertise
@@ -108,7 +108,7 @@ See [layers](layers.md) for how this composes into a suite's `environment`.
 ## 3. WireMock (`zio-bdd-wiremock`)
 
 ```scala
-"io.github.etacassiopeia" %% "zio-bdd-wiremock" % "1.4.1"
+"io.github.etacassiopeia" %% "zio-bdd-wiremock" % "1.4.2"
 ```
 
 In-process, no Docker, runs on JDK 11+. Only requires `Provisioning`:
@@ -156,15 +156,15 @@ published as **two variants built from the same source**, and you pick
 exactly one for your build's JDK:
 
 ```scala
-"io.github.etacassiopeia" %% "zio-bdd-rift-embedded"       % "1.4.1" // JDK 22+ (stable FFM)
-"io.github.etacassiopeia" %% "zio-bdd-rift-embedded-jdk21" % "1.4.1" // JDK 21   (preview FFM)
+"io.github.etacassiopeia" %% "zio-bdd-rift-embedded"       % "1.4.2" // JDK 22+ (stable FFM)
+"io.github.etacassiopeia" %% "zio-bdd-rift-embedded-jdk21" % "1.4.2" // JDK 21   (preview FFM)
 ```
 
 Both additionally need the native library on the classpath (or an explicit
 override), and neither is scala-versioned — note the single `%`, not `%%`:
 
 ```scala
-"io.github.etacassiopeia" % "zio-bdd-rift-embedded-natives" % "1.4.1" % Test
+"io.github.etacassiopeia" % "zio-bdd-rift-embedded-natives" % "1.4.2" % Test
 ```
 
 `zio-bdd-rift-embedded-natives` bundles the per-platform `librift_ffi`

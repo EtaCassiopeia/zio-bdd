@@ -4,6 +4,40 @@ All notable changes to zio-bdd are documented here.
 
 ## [Unreleased]
 
+## [1.4.2] — 2026-07-10
+
+### Added
+
+- **`EmbeddedRift.shared`** — a safe cross-suite shared embedded Rift instance, so several suites
+  reuse one native runtime instead of each starting (and tearing down) their own.
+
+### Changed
+
+- **Bumped Rift to v0.13.1** (from v0.11.3, through the v0.12.0 migration). The v0.12.0 migration
+  adopted Rift's **v2 scripting API and removed the Lua injection engine** — mock injection and
+  decoration scripts must now be JavaScript. Rift v0.13.0 additionally brought the `_verify`
+  conformance endpoint, the C-ABI admin long tail, `allowInjection`, the runtime intercept
+  lifecycle, and the packaged sdk-conformance corpus. Rift v0.13.1 is a packaging-only release
+  (it renames Rift's internal `rift-core` crate to `rift-mock-core` to clear a crates.io name
+  collision); the FFI cdylib, container image, and binary are functionally identical to v0.13.0,
+  so the C-ABI (`abi: v2`) and every mock behaviour are unchanged. (#310)
+- Marked the `StreamingReporter` / `TestEvent` streaming API `@experimental`.
+- Renamed the test-only reset helper to `resetForTest`. (#300)
+
+### Fixed
+
+- **runner**: a suite-level failure now surfaces its full cause instead of a truncated message. (#311)
+- **core**: a `pending()` step no longer reddens the sbt build. (#306)
+- **core**: `FeatureContext` is synchronized so parallel scenarios don't lose context.
+- **core**: `afterAll` is guarded with `.ensuring` so suite teardown always runs.
+- **core**: all five log levels are accepted; an unknown level now fails loudly instead of silently.
+- **gherkin**: inert `shrink` / `maxShrinks` / `verbose` property settings are warned/rejected.
+- **rift**: fail fast on an unreachable authored container port. (#305)
+- **rift**: honour the `port` field in a raw `NativeSpec.Rift(json)` imposter document. (#214)
+- **rift**: an in-pool-range authored imposter port is claimed to prevent a later auto-provision collision. (#213)
+- **rift**: honour an authored `recordRequests` flag in a raw imposter document.
+- **rift-embedded**: an actionable error (with remediation docs) when the native library fails to load.
+
 ## [1.4.1] — 2026-07-08
 
 ### Added
