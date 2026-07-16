@@ -4,6 +4,17 @@ All notable changes to zio-bdd are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **Bumped Rift to v0.14.0** (from v0.13.1). Realigns the embedded leg — which loads `librift_ffi`
+  from `zio-bdd-rift-embedded-natives` — with the container and external legs, which
+  `rift-conformance` already moved to 0.14.0. The bump is ABI-safe: Rift v0.14.0 ships no
+  C-ABI/FFI change (`abi: v2` unchanged), so the single-source-of-truth `riftVersion` in
+  `build.sbt` drives it — the embedded natives, `Rift.DefaultImage`, and the generated
+  `RiftBuildInfo` all track 0.14.0. v0.14.0 brings decision-cache key completeness fixes, a
+  unified imposter error-response envelope, and `--allowInjection` gating on the runtime intercept
+  path, all now exercised through the embedded serve plane. (#324)
+
 ### Fixed
 
 - **report**: the `pretty` reporter's feature-level header no longer renders a pending-only
