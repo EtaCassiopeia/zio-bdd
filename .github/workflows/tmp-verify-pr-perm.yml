@@ -1,0 +1,26 @@
+name: TEMP — verify Actions can create PRs
+
+# Throwaway probe: reproduces the exact `gh pr create` call that the release
+# workflow's docs-version-bump job died on, to confirm the repo toggle
+# (can_approve_pull_request_reviews) actually unblocks it. Delete after use.
+
+on:
+  push:
+    branches:
+      - chore/verify-pr-perm
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Attempt gh pr create with GITHUB_TOKEN
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create --base master --head chore/verify-pr-perm \
+            --title "TEMP: verify Actions PR-creation permission" \
+            --body "Throwaway probe opened by a temp workflow. If this PR exists, GITHUB_TOKEN can create PRs and the docs-version-bump fix is confirmed. Safe to close and delete."
