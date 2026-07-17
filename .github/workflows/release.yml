@@ -50,6 +50,20 @@ jobs:
           java-version: 22
           cache: sbt
       - uses: sbt/setup-sbt@v1
+      # Gate the artifact BEFORE publishing (#331): the JDK-22 job is the one that publishes
+      # zio-bdd-mock-conformance, and stableFfm (>= 22) is what adds its rift-embedded deps, so this is
+      # the build where an adapter could leak into the compile scope. MIMA is a no-op for the module, so
+      # this POM inspection is the last line of defense — a leak that lands on master still can't publish.
+      - name: Assert the conformance POM compile scope is SPI-only before publishing
+        run: |
+          sbt "conformance/makePom"
+          pom=$(find conformance/target -name "zio-bdd-mock-conformance_3-*.pom")
+          count=$(printf '%s' "$pom" | grep -c . || true)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::expected exactly one conformance POM under conformance/target, found $count"
+            exit 1
+          fi
+          bash scripts/assert-pom-compile-scope.sh "$pom" io.github.etacassiopeia zio-bdd-mock
       - run: sbt ci-release
         env:
           PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}

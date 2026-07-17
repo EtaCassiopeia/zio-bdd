@@ -97,6 +97,20 @@ jobs:
           sbt
           "riftEmbedded/test"
           "conformance/testOnly zio.bdd.mock.conformance.EmbeddedConformanceSpec"
+      # Guard #331: the published zio-bdd-mock-conformance POM must stay SPI-only in compile scope
+      # (its bundled adapters are Test-scope). Runs on the JDK-22 job because stableFfm (>= 22) is what
+      # adds the rift-embedded deps — on an older JDK this check is vacuously green for exactly the leak
+      # class it exists to catch (#330 review). MIMA is a no-op here, so this is the only scope guard.
+      - name: Assert the conformance POM compile scope is SPI-only
+        run: |
+          sbt "conformance/makePom"
+          pom=$(find conformance/target -name "zio-bdd-mock-conformance_3-*.pom")
+          count=$(printf '%s' "$pom" | grep -c . || true)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::expected exactly one conformance POM under conformance/target, found $count"
+            exit 1
+          fi
+          bash scripts/assert-pom-compile-scope.sh "$pom" io.github.etacassiopeia zio-bdd-mock
 
   # The JDK-21 preview variant (zio-bdd-rift-embedded-jdk21): same sources, FFM as a preview API, so the
   # forked test JVM runs with --enable-preview + --enable-native-access. On JDK 21 the root aggregates
