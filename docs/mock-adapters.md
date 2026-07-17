@@ -319,6 +319,58 @@ never by branching adapter-specific logic into step definitions — code
 written against `MockControl` stays adapter-agnostic (see
 [Mocking overview](mocking.md)).
 
+## 6. Verifying a third-party adapter (`zio-bdd-mock-conformance`)
+
+The conformance suite that gates the bundled adapters is published, so an
+adapter written outside this repo can run the *official* definition of
+"implements `MockControl`" in its own CI instead of hand-rolled contract
+tests:
+
+```scala
+"io.github.etacassiopeia" %% "zio-bdd-mock-conformance" % "1.4.3" % Test
+```
+
+Its compile-scope dependency is the SPI (`zio-bdd-mock`) alone — pulling it
+into a test classpath brings **no** bundled backend along.
+
+The artifact ships the portable scenario sets — `CoreConformanceScenarios`,
+`NegotiationErrorScenarios`, `FaultScenarios`, `ScriptingScenarios`,
+`TemplatingScenarios`, `CapStatefulScenarios` (each a
+`lazy val all: List[ConformanceScenario]`) — and the `ConformanceHarness`
+that runs them. Register the adapter as a `MockBackendUnderTest` with the
+capabilities it advertises, and assert the column is conformant:
+
+```scala
+import zio.*
+import zio.bdd.mock.*
+import zio.bdd.mock.conformance.*
+import zio.test.*
+
+object MyAdapterConformanceSpec extends ZIOSpecDefault:
+  private val backend = MockBackendUnderTest(
+    name         = "my-adapter",
+    layer        = MyAdapter.layer,               // ZLayer[Any, Throwable, MockControl]
+    capabilities = Set(Capability.Faults),        // what the adapter advertises
+    isolation    = Isolation.PerInstance
+  )
+
+  def spec = suite("MyAdapter conformance")(
+    test("official conformance column is green") {
+      val scenarios = CoreConformanceScenarios.all ++ NegotiationErrorScenarios.all ++ FaultScenarios.all
+      for
+        matrix <- ConformanceHarness.run(List(backend), scenarios)
+        _      <- ZIO.logInfo("conformance matrix:\n" + matrix.render)
+      yield assertTrue(matrix.conformant(backend))
+    }
+  )
+```
+
+A scenario that requires a capability the backend does not advertise is
+**SKIP**, never **FAIL** — a negotiated gap is not a conformance breach, so
+`conformant` holds as long as no cell fails and every skip is justified by
+the advertised capability set (the same acceptance rule the bundled Rift and
+WireMock adapters are held to).
+
 ---
 
 Next: [Gherkin integration](mock-gherkin.md) · [Cookbook](mock-cookbook.md)
