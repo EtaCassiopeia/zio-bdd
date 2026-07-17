@@ -66,3 +66,51 @@ import zio.bdd.mock.dsl.*
 
 val healthStub = get("/health").respondWith(ok.text("OK"))
 ```
+
+## Verifying a third-party adapter (conformance kit)
+
+An adapter written outside this repo can run the *official* conformance suite — the same one that
+gates the bundled Rift and WireMock adapters — from the published `zio-bdd-mock-conformance`
+artifact. Register the adapter as a `MockBackendUnderTest` with the capabilities it advertises, run
+the portable scenario sets through `ConformanceHarness`, and assert the column is conformant.
+(`myAdapterLayer` stands in for your adapter's own `MockControl` layer.)
+
+```scala
+import zio.*
+import zio.bdd.mock.*
+import zio.bdd.mock.conformance.*
+import zio.test.*
+
+object MyAdapterConformanceSpec extends ZIOSpecDefault:
+
+  val myAdapterLayer: ZLayer[Any, Throwable, MockControl] = ???
+
+  val backend = MockBackendUnderTest(
+    name         = "my-adapter",
+    layer        = myAdapterLayer,
+    capabilities = Set(Capability.Faults), // what the adapter advertises
+    isolation    = Isolation.PerInstance
+  )
+
+  val scenarios: List[ConformanceScenario] =
+    CoreConformanceScenarios.all ++
+      NegotiationErrorScenarios.all ++
+      FaultScenarios.all ++
+      ScriptingScenarios.all ++
+      TemplatingScenarios.all ++
+      CapStatefulScenarios.all
+
+  def spec = suite("MyAdapter conformance")(
+    test("the official conformance column is green") {
+      for
+        matrix <- ConformanceHarness.run(List(backend), scenarios)
+        _      <- ZIO.logInfo("conformance matrix:\n" + matrix.render)
+      yield assertTrue(matrix.conformant(backend))
+    }
+  )
+```
+
+A scenario that requires a capability the backend does not advertise is **SKIP**, never **FAIL** —
+a negotiated gap is not a conformance breach. `matrix.conformant(backend)` holds as long as no cell
+fails and every skip is justified by the advertised capability set, the same acceptance rule the
+bundled adapters are held to.
