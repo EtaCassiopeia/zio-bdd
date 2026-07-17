@@ -561,25 +561,32 @@ lazy val wiremock = (project in file("wiremock"))
   )
 
 // Conformance harness + matrix runner (#124): the executable definition of
-// "implements MockControl". The only module that depends on BOTH adapters, so it
-// can run one feature set across Rift + WireMock and emit the pass/skip/fail matrix.
+// "implements MockControl". Main sources are the portable scenario sets + ConformanceHarness,
+// programmed against the neutral SPI alone — published as `zio-bdd-mock-conformance` (#329) so
+// third-party adapters (rift-scala's, and any future ones) can run the official suite in their
+// own CI. Compile scope is deliberately `mock` only: the bundled adapters are Test-scope, needed
+// by the in-repo matrix runner (the only code that depends on BOTH of them) and must never leak
+// into the published POM.
 lazy val conformance = {
   val base = Project("conformance", file("conformance"))
-    .dependsOn(core, rift, wiremock)
+    .dependsOn(mock, rift % Test, wiremock % Test)
     .settings(
-      name := "zio-bdd-conformance",
+      name := "zio-bdd-mock-conformance",
       libraryDependencies ++= commonDependencies,
       testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
-      publish / skip        := true, // a test harness, not a published artifact
+      javaFloorSettings,
+      // Not yet published as a 1.x artifact — no binary-compat baseline to check against.
       mimaPreviousArtifacts := Set.empty
     )
   // On a 22+ JDK the portable conformance suite also runs against the (stable) embedded provider: add
   // the gated test source (EmbeddedConformanceSpec, src/test/jdk22), the native-access test JVM, and
-  // the rift-embedded + natives dependencies. On JDK < 22 none of this is added — the preview variant
-  // is verified by riftEmbedded21's own suite, so conformance stays wired to the stable variant only.
+  // the rift-embedded + natives dependencies — Test-scope so the JDK-22 release job (which
+  // publishes this module) doesn't leak the embedded adapter into the published POM. On JDK < 22
+  // none of this is added — the preview variant is verified by riftEmbedded21's own suite, so
+  // conformance stays wired to the stable variant only.
   if (stableFfm)
     base
-      .dependsOn(riftEmbedded, embeddedNatives % Test)
+      .dependsOn(riftEmbedded % Test, embeddedNatives % Test)
       .settings(
         Test / unmanagedSourceDirectories += (Test / sourceDirectory).value / "jdk22",
         embeddedTestJvmSettings

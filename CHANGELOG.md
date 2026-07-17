@@ -4,6 +4,18 @@ All notable changes to zio-bdd are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **`zio-bdd-mock-conformance` is now a published artifact** (#329). The portable conformance
+  scenario sets (`CoreConformanceScenarios`, `NegotiationErrorScenarios`, `FaultScenarios`,
+  `ScriptingScenarios`, `TemplatingScenarios`, `CapStatefulScenarios`) and the
+  `ConformanceHarness` already lived in the conformance module's main sources — the module was
+  simply publish-skipped. It now publishes with a compile-scope dependency on the SPI
+  (`zio-bdd-mock`) alone, so third-party `MockControl` adapters (e.g. rift-scala's) can run the
+  official conformance suite in their own CI without pulling in any bundled backend; the
+  in-repo Rift/WireMock/embedded matrix runner moved to test scope, unpublished as before.
+  Usage is documented in `docs/mock-adapters.md` §6.
+
 ## [1.4.3] — 2026-07-16
 
 ### Changed
