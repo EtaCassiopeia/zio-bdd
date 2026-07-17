@@ -4,6 +4,8 @@ All notable changes to zio-bdd are documented here.
 
 ## [Unreleased]
 
+## [1.4.3] — 2026-07-16
+
 ### Changed
 
 - **Bumped Rift to v0.14.0** (from v0.13.1). Realigns the embedded leg — which loads `librift_ffi`
