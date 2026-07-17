@@ -450,7 +450,10 @@ lazy val mock = (project in file("mock"))
 // other docs/*.md stay plain Markdown (mostly illustrative fragments that don't compile standalone).
 lazy val docs = (project in file("docs-mdoc"))
   .enablePlugins(MdocPlugin)
-  .dependsOn(core, mock)
+  // conformance is on the classpath so the third-party-adapter conformance example (#332) compiles
+  // against the real ConformanceHarness/scenario-set API. Its Compile scope is `mock` only (the
+  // bundled adapters are Test-scope), so this pulls in no backend and stays JDK-11-clean (#330).
+  .dependsOn(core, mock, conformance)
   .settings(
     name                  := "zio-bdd-docs",
     publish / skip        := true,

@@ -338,31 +338,16 @@ The artifact ships the portable scenario sets — `CoreConformanceScenarios`,
 `TemplatingScenarios`, `CapStatefulScenarios` (each a
 `lazy val all: List[ConformanceScenario]`) — and the `ConformanceHarness`
 that runs them. Register the adapter as a `MockBackendUnderTest` with the
-capabilities it advertises, and assert the column is conformant:
+capabilities it advertises, run the scenarios through the harness, and assert
+the column is conformant:
 
 ```scala
-import zio.*
-import zio.bdd.mock.*
-import zio.bdd.mock.conformance.*
-import zio.test.*
-
-object MyAdapterConformanceSpec extends ZIOSpecDefault:
-  private val backend = MockBackendUnderTest(
-    name         = "my-adapter",
-    layer        = MyAdapter.layer,               // ZLayer[Any, Throwable, MockControl]
-    capabilities = Set(Capability.Faults),        // what the adapter advertises
-    isolation    = Isolation.PerInstance
-  )
-
-  def spec = suite("MyAdapter conformance")(
-    test("official conformance column is green") {
-      val scenarios = CoreConformanceScenarios.all ++ NegotiationErrorScenarios.all ++ FaultScenarios.all
-      for
-        matrix <- ConformanceHarness.run(List(backend), scenarios)
-        _      <- ZIO.logInfo("conformance matrix:\n" + matrix.render)
-      yield assertTrue(matrix.conformant(backend))
-    }
-  )
+val backend = MockBackendUnderTest(
+  name = "my-adapter", layer = myAdapterLayer,
+  capabilities = Set(Capability.Faults), isolation = Isolation.PerInstance
+)
+for matrix <- ConformanceHarness.run(List(backend), CoreConformanceScenarios.all)
+yield assertTrue(matrix.conformant(backend))
 ```
 
 A scenario that requires a capability the backend does not advertise is
@@ -370,6 +355,12 @@ A scenario that requires a capability the backend does not advertise is
 `conformant` holds as long as no cell fails and every skip is justified by
 the advertised capability set (the same acceptance rule the bundled Rift and
 WireMock adapters are held to).
+
+The complete, compile-checked example (a full `ZIOSpecDefault` running all six
+scenario sets) lives in
+[Verified Examples](verified-examples.md#verifying-a-third-party-adapter-conformance-kit) —
+it is compiled against the real API on every CI run, so it can't silently
+drift the way a hand-written snippet can.
 
 ---
 
