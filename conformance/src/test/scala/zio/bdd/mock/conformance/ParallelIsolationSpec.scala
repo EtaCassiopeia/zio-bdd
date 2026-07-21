@@ -4,7 +4,6 @@ import zio.*
 import zio.bdd.mock.*
 import zio.bdd.mock.rift.{Rift, RiftMode}
 import zio.bdd.mock.wiremock.WireMock
-import zio.http.Client
 import zio.test.*
 
 import java.net.URI
@@ -165,13 +164,13 @@ object ParallelIsolationSpec extends ZIOSpecDefault:
   private val riftBackends = List(
     Backend(
       "rift-perinstance",
-      (Client.default ++ Provisioning.live) >>> Rift.managed(poolSize = N + 8).mapError(asT),
+      Provisioning.live >>> Rift.managed(poolSize = N + 8).mapError(asT),
       Isolation.PerInstance,
       native = true
     ),
     Backend(
       "rift-correlated",
-      (Client.default ++ Provisioning.live) >>> Rift.managed(poolSize = 16, mode = RiftMode.correlated).mapError(asT),
+      Provisioning.live >>> Rift.managed(poolSize = 16, mode = RiftMode.correlated).mapError(asT),
       Isolation.Correlated,
       native = true
     )

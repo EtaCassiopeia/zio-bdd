@@ -1,1 +1,0 @@
-Build base for the JDK-21 preview variant of the embedded provider (zio-bdd-rift-embedded-jdk21). Sources are shared from ../rift-embedded/src via sbt source-dir overrides; this directory only holds sbt's target/.

@@ -12,15 +12,23 @@ import javax.net.ssl.{SSLContext, TrustManagerFactory}
 
 /**
  * End-to-end acceptance for the built-in HTTPS intercept capability (#219,
- * AC4/AC6): the embedded engine runs the TLS-MITM forward-proxy with no extra
- * container, and a real JVM HTTPS client — the stand-in SUT — trusting the
- * exported CA and proxying through the intercept port has its call to a
- * hard-coded external host intercepted and answered by the mock. This is the
- * mitmproxy replacement.
+ * AC4/AC6, re-based onto the rift-scala SDK for #285): the embedded engine runs
+ * the TLS-MITM forward-proxy with no extra container, and a real JVM HTTPS
+ * client — the stand-in SUT — trusting the exported CA and proxying through the
+ * intercept port has its call to a hard-coded external host intercepted and
+ * answered by the mock. This is the mitmproxy replacement.
  *
  * Gated on the native library ([[EmbeddedRift.available]]), mirroring the other
  * embedded specs; the whole suite SKIPs (passes) when no library resolves for
  * the host.
+ *
+ * Pre-#285 this file also unit-tested the FFI-based `EmbeddedIntercept`'s pure
+ * JSON/host-parsing helpers (`startOptions`, `hostOf`, `validateBindHost`)
+ * directly — those were internal to the deleted hand-rolled bridge. The
+ * equivalent validation (both-or-neither CA, IP-literal bind host) now lives in
+ * `RiftMockControl`'s `InterceptSettings.resolve` and is exercised end-to-end
+ * below (the "misconfigured caller CA" case) rather than unit-tested against
+ * internals that no longer exist.
  */
 object EmbeddedInterceptSpec extends ZIOSpecDefault:
 
@@ -227,70 +235,6 @@ object EmbeddedInterceptSpec extends ZIOSpecDefault:
             )
         }
     },
-    // Pure translation of InterceptConfig -> FFI start-options JSON; runs even without the native library,
-    // so the host/port wiring is covered on any host (the e2e tests above SKIP when no library resolves).
-    test("startOptions maps InterceptConfig to the FFI host/port JSON; default stays loopback + OS-assigned") {
-      val default = EmbeddedIntercept.startOptions(EmbeddedRift.InterceptConfig())
-      val configured =
-        EmbeddedIntercept.startOptions(EmbeddedRift.InterceptConfig(bindHost = "0.0.0.0", port = Some(8888)))
-      assertTrue(
-        default == """{"host":"127.0.0.1","port":0}""",
-        configured == """{"host":"0.0.0.0","port":8888}"""
-      )
-    },
-    // Pure CA start-options + both-or-neither validation (#273); no native library needed.
-    test("startOptions emits caCertPath/caKeyPath only when both are set; validateCaPair rejects a lone one") {
-      val none = EmbeddedIntercept.startOptions(EmbeddedRift.InterceptConfig())
-      val both = EmbeddedIntercept.startOptions(
-        EmbeddedRift.InterceptConfig(
-          caCert = Some(java.nio.file.Path.of("/ca.pem")),
-          caKey = Some(java.nio.file.Path.of("/ca.key"))
-        )
-      )
-      assertTrue(
-        !none.contains("caCertPath") && !none.contains("caKeyPath"), // absent → no CA keys (deny_unknown_fields ok)
-        both.contains(""""caCertPath":"/ca.pem"""") && both.contains(""""caKeyPath":"/ca.key""""),
-        EmbeddedIntercept.validateCaPair(EmbeddedRift.InterceptConfig()).isRight,
-        EmbeddedIntercept
-          .validateCaPair(
-            EmbeddedRift.InterceptConfig(
-              caCert = Some(java.nio.file.Path.of("/ca.pem")),
-              caKey = Some(java.nio.file.Path.of("/ca.key"))
-            )
-          )
-          .isRight,
-        EmbeddedIntercept.validateCaPair(
-          EmbeddedRift.InterceptConfig(caCert = Some(java.nio.file.Path.of("/ca.pem")))
-        ) match
-          case Left(MockError.InvalidDefinition(m)) => m.contains("both or neither")
-          case _                                    => false
-      )
-    },
-    // Pure bind-host validation (#262); runs without the native library.
-    test("validateBindHost: IP literals pass; a hostname is rejected with a clear InvalidDefinition naming it") {
-      val ok  = List("127.0.0.1", "0.0.0.0", "192.168.1.5", "10.0.0.1", "255.255.255.255", "::1", "fe80::1")
-      val bad = List("localhost", "myhost.local", "example.com", "not-an-ip", "999.1.1.1", "127.0.0.01", "1.2.3")
-      assertTrue(
-        ok.forall(h => EmbeddedIntercept.validateBindHost(h).isRight),
-        bad.forall { h =>
-          EmbeddedIntercept.validateBindHost(h) match
-            case Left(MockError.InvalidDefinition(msg)) => msg.contains(h)
-            case _                                      => false
-        }
-      )
-    },
-    // Pure parse of the engine's interceptUrl into the reported host (#264); runs on any host. The engine
-    // value is ground truth (rift#425); a malformed / host-less URL yields None (caller → bindHost fallback).
-    test("hostOf reads the engine's bound host from interceptUrl; None when absent") {
-      assertTrue(
-        EmbeddedIntercept.hostOf("http://127.0.0.1:38080").contains("127.0.0.1"),
-        EmbeddedIntercept.hostOf("http://0.0.0.0:38080").contains("0.0.0.0"),
-        // a specific-NIC ground truth is surfaced verbatim (it would win over a requested wildcard bind)
-        EmbeddedIntercept.hostOf("http://192.168.1.5:38080").contains("192.168.1.5"),
-        EmbeddedIntercept.hostOf("").isEmpty,         // no host → None
-        EmbeddedIntercept.hostOf("not a url").isEmpty // unparseable → None
-      )
-    },
     test("trustStoreWithSystemCAs: the merged store trusts the intercepted host AND keeps the JVM default anchors") {
       if !EmbeddedRift.available then ZIO.succeed(assertCompletes)
       else
@@ -388,12 +332,12 @@ object EmbeddedInterceptSpec extends ZIOSpecDefault:
       if !EmbeddedRift.available then ZIO.succeed(assertCompletes)
       else
         for
-          // (1) a lone caCert (no caKey) → validateCaPair rejects it with InvalidDefinition, via the real call.
+          // (1) a lone caCert (no caKey) → InterceptSettings.resolve rejects it with InvalidDefinition.
           lone <-
             withEmbedded(EmbeddedRift.InterceptConfig(caCert = Some(java.nio.file.Path.of("/no/such/ca.pem"))))(mc =>
               mc.intercept.mapError(u => new RuntimeException(u.message)).flatMap(_.proxyPort.either)
             )
-          // (2) both set but pointing at nonexistent PEM files → rift's CA load fails → a loud MockError, not a hang.
+          // (2) both set but pointing at nonexistent PEM files → the read fails → a loud MockError, not a hang.
           bad <- withEmbedded(
                    EmbeddedRift.InterceptConfig(
                      caCert = Some(java.nio.file.Path.of("/no/such/ca.pem")),

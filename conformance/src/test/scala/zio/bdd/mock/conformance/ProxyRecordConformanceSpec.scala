@@ -3,7 +3,6 @@ package zio.bdd.mock.conformance
 import zio.*
 import zio.bdd.mock.*
 import zio.bdd.mock.rift.Rift
-import zio.http.Client
 import zio.test.*
 
 import org.testcontainers.containers.{GenericContainer, Network}
@@ -70,9 +69,9 @@ object ProxyRecordConformanceSpec extends ZIOSpecDefault:
           rift   <- acquire(startRift(net))(_.stop())
           admin   = s"http://${rift.getHost}:${rift.getMappedPort(Integer.valueOf(adminPort))}"
           hostFor = (p: Int) => s"http://${rift.getHost}:${rift.getMappedPort(Integer.valueOf(p))}"
-          // Build Client + Provisioning + control into the test scope (not a nested one) so the
-          // zio-http admin Client stays alive for the whole test, not just the layer build.
-          env     <- ((Client.default ++ Provisioning.live) >>> Rift.connect(admin, imposterPorts)(hostFor)).build
+          // Build Provisioning + control into the test scope (not a nested one) so the SDK's engine
+          // handle stays alive for the whole test, not just the layer build.
+          env     <- (Provisioning.live >>> Rift.connect(admin, imposterPorts)(hostFor)).build
           control  = env.get[MockControl]
           space   <- control.provision(MockSource.Dsl(MockSpec(Nil))).mapError(asT).map(_.head)
           proxy   <- control.proxyRecord.mapError(u => new RuntimeException(u.toString))

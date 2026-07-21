@@ -2,241 +2,29 @@ import xerial.sbt.Sonatype.sonatypeCentralHost
 import StepGeneratorPlugin.autoImport.*
 import com.typesafe.tools.mima.core.*
 
-import java.net.{Authenticator, PasswordAuthentication, URI}
-import java.nio.file.{Files => JFiles, StandardCopyOption}
-import java.security.MessageDigest
-
-// ---- librift_ffi native library packaging (#134) -------------------------------------------
-// The embedded adapter loads librift_ffi from the classpath: the zio-bdd-rift-embedded-natives jar
-// bundles the per-platform cdylibs as resources (native/<os>-<arch>/librift_ffi.<ext>), downloaded
-// + checksum-verified from the Rift release at build time. The runtime loader extracts the host's
-// lib to a temp file and loads it via Panama — no manual install, no system property. (FFM is a
-// preview API on JDK 21, so the embedded code stays JDK-21-gated; see embeddedNativeSettings.)
-// NOTE: build.sbt is compiled with the Scala 2.12 dialect — keep these blocks 2.12-compatible.
-
-// Single source of truth for the pinned Rift release (#195). Both the FFI natives (riftNativesVersion,
-// downloaded into the embedded-natives jar) and the container image tag (Rift.DefaultImage, via the
-// generated RiftBuildInfo below) derive from it, so a version bump touches exactly one line.
-val riftVersion        = "0.14.0"
-val riftNativesVersion = riftVersion
-
-// The (os, arch, ext) cdylibs bundled into the natives jar — linux/macOS × x86_64/aarch64 (#134).
-val riftNativeTriples: Seq[(String, String, String)] = Seq(
-  ("linux", "x86_64", "so"),
-  ("linux", "aarch64", "so"),
-  ("darwin", "x86_64", "dylib"),
-  ("darwin", "aarch64", "dylib")
-)
-
-def sha256Hex(f: File): String =
-  MessageDigest.getInstance("SHA-256").digest(JFiles.readAllBytes(f.toPath)).map(b => f"$b%02x").mkString
-
-// Base URL the natives are fetched from. Defaults to the Rift GitHub releases, overridable to an
-// internal mirror (Artifactory, …) for networks that reach an internal host but not the GitHub CDN.
-def riftNativesBaseUrl(version: String): String =
-  sys.env
-    .get("RIFT_NATIVES_BASE_URL")
-    .filter(_.nonEmpty)
-    .orElse(sys.props.get("rift.natives.baseUrl").filter(_.nonEmpty))
-    .map(_.stripSuffix("/"))
-    .getOrElse(s"https://github.com/EtaCassiopeia/rift/releases/download/v$version")
-
-// Install a proxy Authenticator so `URL.openStream` can authenticate to an HTTPS proxy when
-// `https.proxyUser`/`https.proxyPassword` are set — otherwise a proxied build fails the fetch with a
-// 407. Clearing `jdk.http.auth.tunneling.disabledSchemes` is required: since 8u111 the JDK disables
-// Basic auth on the CONNECT tunnel used for HTTPS-through-proxy, which is exactly this case. A plain
-// def (re-installing an equivalent default Authenticator is harmless) keeps this .sbt-friendly.
-def installRiftProxyAuthenticator(): Unit =
-  for {
-    user <- sys.props.get("https.proxyUser").filter(_.nonEmpty)
-    pass <- sys.props.get("https.proxyPassword")
-  } {
-    System.setProperty("jdk.http.auth.tunneling.disabledSchemes", "")
-    Authenticator.setDefault(new Authenticator {
-      override protected def getPasswordAuthentication(): PasswordAuthentication =
-        if (getRequestorType == Authenticator.RequestorType.PROXY) new PasswordAuthentication(user, pass.toCharArray)
-        else null
-    })
-  }
-
-// Server (mirror) credentials for an authenticated RIFT_NATIVES_BASE_URL host — the mirror itself
-// answers 401 (distinct from a proxy 407, which installRiftProxyAuthenticator handles). Opt-in via
-// RIFT_NATIVES_USER/RIFT_NATIVES_PASSWORD, and ONLY applied when a mirror base is configured, so
-// credentials are never sent to the default GitHub CDN. Sent preemptively as Basic auth, so a
-// challenge-first server and a preemptive-only one both work.
-// The configured mirror base, if any (env RIFT_NATIVES_BASE_URL or sysprop rift.natives.baseUrl). The
-// same selection riftNativesBaseUrl uses, minus the GitHub default — so `None` means "no mirror".
-def riftMirrorBase(): Option[String] =
-  sys.env
-    .get("RIFT_NATIVES_BASE_URL")
-    .filter(_.nonEmpty)
-    .orElse(sys.props.get("rift.natives.baseUrl").filter(_.nonEmpty))
-    .map(_.stripSuffix("/"))
-
-def riftMirrorAuthHeader(): Option[String] =
-  // Only when a mirror is configured — credentials are never produced for the default GitHub CDN. Both
-  // user and pass must be non-empty, so a blank env var (e.g. an unresolved CI secret) disables auth and
-  // surfaces as a loud 401 rather than a silent `user:` credential.
-  if (riftMirrorBase().isEmpty) None
-  else
-    for {
-      user <- sys.env.get("RIFT_NATIVES_USER").filter(_.nonEmpty)
-      pass <- sys.env.get("RIFT_NATIVES_PASSWORD").filter(_.nonEmpty)
-    } yield "Basic " + java.util.Base64.getEncoder.encodeToString(s"$user:$pass".getBytes("UTF-8"))
-
-// Open `url` for reading. With no mirror auth this is a plain openStream (auto-following redirects) — the
-// default GitHub fetch is byte-for-byte unchanged. With mirror auth we follow redirects MANUALLY and
-// re-attach the Basic header ONLY while the host matches the mirror host: the JDK would otherwise forward
-// `Authorization` across a cross-host redirect (a mirror 302 to a blob store), leaking the credential.
-// (For an authenticated mirror, prefer an https:// base so the header isn't sent in cleartext.)
-def openRiftStream(url: String): java.io.InputStream =
-  riftMirrorAuthHeader() match {
-    case None => URI.create(url).toURL.openStream()
-    case Some(header) =>
-      val mirrorHost = riftMirrorBase().map(b => URI.create(b).toURL.getHost)
-      def open(u: java.net.URL, hops: Int): java.io.InputStream = {
-        if (hops > 5) sys.error(s"[rift-ffi] too many redirects fetching $url")
-        val conn = u.openConnection().asInstanceOf[java.net.HttpURLConnection]
-        conn.setInstanceFollowRedirects(false)
-        if (mirrorHost.contains(u.getHost)) conn.setRequestProperty("Authorization", header)
-        val code = conn.getResponseCode
-        if (code >= 300 && code < 400) {
-          val loc = conn.getHeaderField("Location")
-          conn.disconnect()
-          if (loc == null) sys.error(s"[rift-ffi] redirect ($code) with no Location fetching $u")
-          open(u.toURI.resolve(loc).toURL, hops + 1)
-        } else conn.getInputStream // 2xx → stream; 4xx/5xx → getInputStream throws (loud, as before)
-      }
-      open(URI.create(url).toURL, 0)
-  }
-
-def readRiftUrl(url: String): Array[Byte] = {
-  val in = openRiftStream(url)
-  try in.readAllBytes()
-  finally in.close()
-}
-
-// A .sha256 sibling is "<hex>  <filename>"; take the leading digest token.
-def parseRiftSha256(bytes: Array[Byte]): String = new String(bytes, "UTF-8").trim.split("\\s+").head
-
-// Obtain `asset` (a librift_ffi cdylib) into `out`, verifying it against the expected sha256. The
-// source is chosen, in order, from three opt-in escape hatches for restricted networks — the default
-// (none set) is byte-for-byte the original GitHub-releases fetch:
+// ---- Rift adapter, re-based onto the rift-scala SDK (#285) ----------------------------------
+// Pre-#285, `zio-bdd-rift` drove Rift over hand-rolled admin HTTP (the zio HTTP client), and a separate
+// `zio-bdd-rift-embedded(-jdk21)` + `zio-bdd-rift-embedded-natives` artifact set drove an in-process
+// engine over a hand-written Panama FFM bridge to a downloaded `librift_ffi` cdylib — two protocol
+// implementations, a JDK-21/22 class-file split, and ~250 lines of native-library download/mirror/
+// checksum plumbing in this file. #285 re-bases everything onto the official `rift-scala-zio` SDK
+// (io.github.achird-labs), which owns BOTH transports (container admin HTTP and in-process FFM) behind
+// one typed `rift.zio.Rift` service — so there is one adapter (`RiftMockControl`), one published
+// artifact (`zio-bdd-rift`), and this file carries no native-download/mirror code at all: the embedded
+// engine + natives are ordinary `rift-java-embedded`/`rift-java-natives` runtime dependencies resolved
+// like any other jar (see the `rift` project below), not assets this build fetches and packages itself.
 //
-//   1. RIFT_NATIVES_DIR  — an offline directory of pre-provisioned `$asset` + `$asset.sha256`; copied
-//                          from disk with NO network access (air-gapped builds).
-//   2. RIFT_NATIVES_BASE_URL / -Drift.natives.baseUrl — an alternate base URL (internal mirror). If the
-//                          mirror itself needs credentials, set RIFT_NATIVES_USER/RIFT_NATIVES_PASSWORD
-//                          (opt-in Basic auth, applied only to a configured mirror — see openRiftStream).
-//   3. default — https://github.com/EtaCassiopeia/rift/releases/download/v$version.
-//
-// An authenticated HTTPS proxy is honored via the standard https.proxyHost/Port + https.proxyUser/
-// Password sysprops (see installRiftProxyAuthenticator); an authenticated mirror host via
-// RIFT_NATIVES_USER/PASSWORD (see riftMirrorAuthHeader). The `.sha256` checksum is verified on EVERY
-// path — a mirror or offline dir must still match the expected digest.
-// Idempotent: skips the copy/download when `out` already matches the expected checksum. Returns `out`.
-def downloadRiftAsset(version: String, asset: String, out: File, log: sbt.util.Logger): File = {
-  installRiftProxyAuthenticator()
-  // Blank env vars are treated as unset (fall back to the network default) rather than firing the
-  // offline branch — an accidentally-empty RIFT_NATIVES_DIR in CI shouldn't hard-fail the build.
-  sys.env.get("RIFT_NATIVES_DIR").filter(_.nonEmpty).map(d => new File(d)) match {
-    case Some(dir) =>
-      // Offline: copy from disk and verify against the pre-provisioned sibling .sha256. No network.
-      val src     = new File(dir, asset)
-      val shaFile = new File(dir, s"$asset.sha256")
-      if (!src.exists()) sys.error(s"[rift-ffi] RIFT_NATIVES_DIR=$dir is set but $asset is missing")
-      if (!shaFile.exists()) sys.error(s"[rift-ffi] RIFT_NATIVES_DIR=$dir is set but $asset.sha256 is missing")
-      val expected = parseRiftSha256(JFiles.readAllBytes(shaFile.toPath))
-      val got      = sha256Hex(src)
-      if (got != expected) sys.error(s"[rift-ffi] checksum mismatch for $asset: got $got, expected $expected")
-      if (out.exists() && sha256Hex(out) == expected) {
-        log.info(s"[rift-ffi] cached $asset (RIFT_NATIVES_DIR)")
-      } else {
-        JFiles.createDirectories(out.toPath.getParent)
-        JFiles.copy(src.toPath, out.toPath, StandardCopyOption.REPLACE_EXISTING)
-        log.info(s"[rift-ffi] copied $asset from RIFT_NATIVES_DIR")
-      }
-    case None =>
-      val base     = riftNativesBaseUrl(version)
-      val expected = parseRiftSha256(readRiftUrl(s"$base/$asset.sha256"))
-      if (out.exists() && sha256Hex(out) == expected) {
-        log.info(s"[rift-ffi] cached $asset")
-      } else {
-        JFiles.createDirectories(out.toPath.getParent)
-        log.info(s"[rift-ffi] downloading $asset (v$version) from $base ...")
-        // Download to a sibling temp file and atomically move into place only after the checksum
-        // passes, so `out` never exists in a corrupt/partial state (the idempotency guard trusts it).
-        val tmp = new File(out.getParentFile, s".${out.getName}.part")
-        try {
-          val in = openRiftStream(s"$base/$asset")
-          try JFiles.copy(in, tmp.toPath, StandardCopyOption.REPLACE_EXISTING)
-          finally in.close()
-          val got = sha256Hex(tmp)
-          if (got != expected) sys.error(s"[rift-ffi] checksum mismatch for $asset: got $got, expected $expected")
-          JFiles.move(tmp.toPath, out.toPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-          log.info(s"[rift-ffi] downloaded + verified $asset")
-        } finally if (tmp.exists()) tmp.delete()
-      }
-  }
-  out
-}
+// Single source of truth for the pinned Rift release (#195): the container image tag
+// (`Rift.DefaultImage`, via the generated `RiftBuildInfo` below) derives from it, so a version bump
+// touches exactly one line.
+val riftVersion = "0.14.0"
 
-// The major version of the JDK building this project. FFM (java.lang.foreign) drives the embedded
-// Rift provider; it is a PREVIEW API on JDK 21 (JEP 442) and FINALIZED on JDK 22 (JEP 454). Because a
-// class that touches FFM is version-locked at the class-file level (a preview-21 class loads only on
-// 21; a stable-22 class only on 22+), the embedded provider ships as TWO artifacts from one shared
-// source (rift-embedded/src, see the bridge's reflective shim): `zio-bdd-rift-embedded-jdk21` built on
-// JDK 21 and `zio-bdd-rift-embedded` built on JDK 22+. The container adapter + core stay JDK-11 and
-// are unaffected — on a JDK that can't build a given variant it is simply not aggregated.
-def jdkMajor: Int = {
-  val raw = sys.props.getOrElse("java.specification.version", "11")
-  val s   = if (raw.startsWith("1.")) raw.substring(2) else raw
-  s.takeWhile(_.isDigit) match { case "" => 11; case d => d.toInt }
-}
-lazy val previewFfm: Boolean = jdkMajor == 21     // the JDK-21 preview variant builds/publishes here
-lazy val stableFfm: Boolean  = jdkMajor >= 22     // the JDK-22+ stable variant + full stack build here
-lazy val ffmAny: Boolean     = jdkMajor >= 21     // either variant → the natives jar is needed
-
-// Forked-test-JVM flags for the embedded suites. Both variants need --enable-native-access (downgrades
-// the restricted-method warning); the JDK-21 preview variant additionally needs --enable-preview to
-// load its preview-compiled bridge. The native library is on the test classpath via the embeddedNatives
-// test dependency (the loader extracts + loads it — no -Drift.ffi.lib needed).
-lazy val embeddedTestJvmSettings: Seq[Def.Setting[_]] = Seq(
-  Test / fork := true,
-  Test / javaOptions += "--enable-native-access=ALL-UNNAMED"
-)
-lazy val embeddedPreviewTestJvmSettings: Seq[Def.Setting[_]] = Seq(
-  Test / fork := true,
-  Test / javaOptions ++= Seq("--enable-preview", "--enable-native-access=ALL-UNNAMED")
-)
-
-// The bundled per-platform natives (#134): a pure-resources jar that packages the librift_ffi
-// cdylibs (downloaded + checksum-verified at build time) so the embedded provider loads them from
-// the classpath out-of-the-box. No Scala/Java code (JDK-agnostic), published as
-// `zio-bdd-rift-embedded-natives`. JDK-agnostic (same cdylibs serve both embedded variants), so the
-// download is gated on any FFM-capable JDK (21+); the JDK-11 build never pulls the ~60MB natives.
-// Published once, from the JDK-22 stable release job (skipped on the JDK-21 preview job).
-lazy val embeddedNatives = (project in file("embedded-natives"))
-  .settings(
-    name             := "zio-bdd-rift-embedded-natives",
-    crossPaths       := false,
-    autoScalaLibrary := false,
-    // The natives jar is published only by the JDK-22 job; the JDK-21 preview job skips it (avoids a
-    // duplicate publish of the same coordinates).
-    publish / skip := previewFfm,
-    Compile / resourceGenerators ++= (
-      if (!ffmAny) Nil
-      else
-        Seq(Def.task {
-          val log = streams.value.log
-          val dir = (Compile / resourceManaged).value
-          riftNativeTriples.map { case (os, arch, ext) =>
-            downloadRiftAsset(riftNativesVersion, s"librift_ffi-$os-$arch.$ext", dir / "native" / s"$os-$arch" / s"librift_ffi.$ext", log)
-          }
-        }.taskValue)
-    ),
-    mimaPreviousArtifacts := Set.empty
-  )
+// The official Scala 3 SDK the adapters are built on (#285). `rift-scala-zio` -> `rift-scala-bridge`
+// pins `rift-java-core` at riftJavaVersion; the embedded engine + natives jars this build adds at Test
+// scope MUST stay on that same rift-java version — they meet across the FFI/ABI boundary, so a split
+// between the compile-side facade and the runtime engine is exactly the mismatch to avoid.
+val riftScalaVersion = "0.1.0"
+val riftJavaVersion  = "0.1.3"
 
 inThisBuild(
   List(
@@ -263,15 +51,22 @@ inThisBuild(
   )
 )
 
-// Java-version floor for the published NON-FFM modules (#205). Without a pinned `-release`, Scala 3
-// targets the build JDK's class-file version, so a release cut on JDK 22 produced class-66 bytecode
-// that even JDK 21 cannot load. These modules use no Java-22 API (the container adapter + core are
-// JDK-11 by design, see the FFM note above), so pin class 55 — loadable on Java 11+ — regardless of
-// the JDK that cuts the release. The FFM/embedded modules are deliberately NOT given this floor: they
-// are version-locked to JDK 21/22 by their own `--release` and must stay so.
+// Java-version floor for the published modules (#205). Without a pinned `-release`, Scala 3 targets
+// the build JDK's class-file version, so a release cut on JDK 22 produced class-66 bytecode that even
+// JDK 21 cannot load. These modules use no Java-17+ API, so pin class 55 — loadable on Java 11+ —
+// regardless of the JDK that cuts the release.
 lazy val javaFloorSettings: Seq[Def.Setting[_]] = Seq(
   Compile / scalacOptions += "-release:11",
   Compile / javacOptions ++= Seq("--release", "11")
+)
+
+// The `rift` module's floor moves 11 -> 17 (#285): its SDK dependency (`rift-scala-zio` -> `bridge` ->
+// `rift-java-core`) is JDK-17 bytecode (class file 61), so a JDK-11 consumer cannot load it regardless
+// of what `-release` this module itself compiles with. Every other module (core, gherkin, mock,
+// wiremock, conformance) is unaffected and stays on `javaFloorSettings`.
+lazy val javaFloor17Settings: Seq[Def.Setting[_]] = Seq(
+  Compile / scalacOptions += "-release:17",
+  Compile / javacOptions ++= Seq("--release", "17")
 )
 
 lazy val commonDependencies = Seq(
@@ -359,25 +154,11 @@ lazy val mimaSettings = Seq(
   )
 )
 
-// What the root aggregates — i.e. what `test`/`publishSigned`/`ci-release` operate on — depends on
-// the build JDK, so each release job publishes exactly its slice with a standard `ci-release` (no
-// per-module publish/skip juggling):
-//   - JDK 22+ (stableFfm): the full stack + the stable embedded variant + the natives jar.
-//   - JDK 21   (previewFfm): ONLY the JDK-21 preview embedded variant (its rift/mock/natives deps are
-//                            compiled but not published here — they ship from the JDK-22 job).
-//   - JDK < 21: container/core only (the JDK-11 baseline, embedded absent).
-// (Consequence: a bare `sbt test` on JDK 21 builds only the preview variant; run the container stack
-// on JDK 11/17 or the stable embedded stack on JDK 22+. CI drives each variant with an explicit job.)
-lazy val aggregatedProjects: Seq[Project] =
-  if (previewFfm) Seq(riftEmbedded21)
-  else Seq(core, gherkin, mock, rift, wiremock, conformance) ++ (if (stableFfm) Seq(riftEmbedded, embeddedNatives) else Seq.empty)
-
-// Diagnostic: fetch the host-platform cdylib through the real downloadRiftAsset into a temp dir. Lets
-// a restricted-network build validate its RIFT_NATIVES_DIR / RIFT_NATIVES_BASE_URL / https.proxy*
-// config on any JDK, without a full JDK-21+ embedded build (where the natives fetch normally runs). #255
-lazy val riftNativesSelfCheck = taskKey[Unit](
-  "Fetch the host-platform librift_ffi via downloadRiftAsset (honors RIFT_NATIVES_DIR / RIFT_NATIVES_BASE_URL / proxy) into a temp dir."
-)
+// What the root aggregates — i.e. what `test`/`publishSigned`/`ci-release` operate on. Pre-#285 this
+// branched on the build JDK (the JDK-21/22 dual embedded-artifact split); the SDK re-base collapses
+// the whole stack onto a single JDK-17 floor for `rift` (see `javaFloor17Settings`), so every module
+// aggregates unconditionally — one `sbt test` / one release job builds all of it.
+lazy val aggregatedProjects: Seq[Project] = Seq(core, gherkin, mock, rift, wiremock, conformance)
 
 lazy val root = (project in file("."))
   .aggregate(aggregatedProjects.map(p => LocalProject(p.id)): _*)
@@ -385,25 +166,7 @@ lazy val root = (project in file("."))
     name                  := "zio-bdd-root",
     description           := "A ZIO-based BDD testing framework for Scala 3",
     publish / skip        := true,
-    mimaPreviousArtifacts := Set.empty, // not published — MiMa is a no-op here
-    riftNativesSelfCheck := {
-      val log    = streams.value.log
-      val osName = sys.props.getOrElse("os.name", "").toLowerCase
-      val osArch = sys.props.getOrElse("os.arch", "").toLowerCase
-      // librift_ffi is published for linux + macOS only (riftNativeTriples). Windows/other dev boxes
-      // have no native — fail clearly rather than fetch a wrong-OS asset. CI runs on Linux.
-      val (os, ext) =
-        if (osName.contains("mac") || osName.contains("darwin")) ("darwin", "dylib")
-        else if (osName.contains("linux")) ("linux", "so")
-        else sys.error(s"[rift-ffi] no librift_ffi native is published for os.name='$osName' (linux and macOS only)")
-      val arch =
-        if (osArch.contains("aarch64") || osArch.contains("arm64")) "aarch64"
-        else if (osArch.contains("amd64") || osArch.contains("x86_64") || osArch.contains("x86-64")) "x86_64"
-        else sys.error(s"[rift-ffi] unsupported os.arch='$osArch' (x86_64 or aarch64 only)")
-      val out = IO.createTemporaryDirectory / s"librift_ffi.$ext"
-      downloadRiftAsset(riftNativesVersion, s"librift_ffi-$os-$arch.$ext", out, log)
-      log.info(s"[rift-ffi] self-check OK: $os-$arch -> ${out.length()} bytes at $out")
-    }
+    mimaPreviousArtifacts := Set.empty // not published — MiMa is a no-op here
   )
   .dependsOn(core, gherkin)
 
@@ -464,23 +227,40 @@ lazy val docs = (project in file("docs-mdoc"))
     scalacOptions ~= (_.filterNot(_ == "-Wunused:imports"))
   )
 
-// Rift adapter (#113): implements the portable MockControl SPI over the Rift
-// (Mountebank-compatible) backend. Drives the admin API via zio-http and can
-// stand up the published image via testcontainers. Depends on `mock`, never the
-// reverse.
+// Rift adapter (#113, re-based onto the official rift-scala SDK for #285): implements the portable
+// MockControl SPI over `rift.zio.Rift` — the SDK owns both transports (container admin HTTP, and the
+// in-process embedded engine over stable Panama FFM), so this is now ONE adapter and ONE published
+// artifact, collapsing what used to be `zio-bdd-rift` + `zio-bdd-rift-embedded(-jdk21)` +
+// `zio-bdd-rift-embedded-natives`. Depends on `mock`, never the reverse. JDK floor 17 (not the
+// `javaFloorSettings` 11 the rest of the build uses): the SDK's `bridge` module links
+// `rift-java-core`, which is JDK-17 bytecode (class file 61) — a JDK-11 consumer cannot load it
+// regardless of what `-release` this module itself compiles with.
 lazy val rift = Project("rift", file("rift"))
   .dependsOn(mock)
   .settings(
     name := "zio-bdd-rift",
     libraryDependencies ++= commonDependencies,
     libraryDependencies ++= Seq(
-      "dev.zio"      %% "zio-http"                   % "3.2.0",
-      "dev.zio"      %% "zio-json"                   % "0.7.3",
-      "com.dimafeng" %% "testcontainers-scala-core"  % "0.41.4"
-    ),
+      "io.github.achird-labs" %% "rift-scala-zio" % riftScalaVersion,
+      // `rift-java-testcontainers` is `% Optional` on the SDK's own `bridge` module (so a consumer who
+      // never calls `Rift.container`/`Rift.managed` doesn't inherit org.testcontainers/Docker) — but
+      // `Rift.managed` is a documented zio-bdd-rift entry point (used unconditionally, not opt-in), so
+      // THIS module depends on it directly at Compile scope, mirroring the pre-#285 adapter's
+      // always-available `testcontainers-scala-core` dependency.
+      "io.github.achird-labs" % "rift-java-testcontainers" % riftJavaVersion,
+      // The embedded engine + natives are RUNTIME `ServiceLoader` dependencies (`rift.zio.Rift.embedded`
+      // resolves them at call time, not compile time) — Test-scoped here so `rift/test` exercises the
+      // embedded suites; an application wiring `EmbeddedRift.layer` adds them itself (DESIGN.md §5.2).
+      "io.github.achird-labs" % "rift-java-embedded" % riftJavaVersion % Test
+    ) ++ RiftNatives.currentClassifier
+      // No published `rift-java-natives` classifier for this host (Windows, musl, ppc64le, ...):
+      // omit the Test dependency entirely rather than failing `sbt compile` outright.
+      // `EmbeddedRift.available` degrades to `false` and the embedded suites skip, gracefully.
+      .map(c => ("io.github.achird-labs" % "rift-java-natives" % riftJavaVersion % Test).classifier(c))
+      .toSeq,
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
     // Generate RiftBuildInfo from `riftVersion` (the single source of truth, #195) so Rift.DefaultImage
-    // derives its image tag from the same val the FFI natives version does — no hand-maintained literal.
+    // derives its image tag from the same val — no hand-maintained literal.
     Compile / sourceGenerators += Def.task {
       val out = (Compile / sourceManaged).value / "zio" / "bdd" / "mock" / "rift" / "RiftBuildInfo.scala"
       IO.write(
@@ -488,63 +268,21 @@ lazy val rift = Project("rift", file("rift"))
         s"""package zio.bdd.mock.rift
            |
            |// GENERATED from `riftVersion` in build.sbt (#195) — do not edit. The single source of truth
-           |// for the pinned Rift release; Rift.DefaultImage and the FFI natives version both derive from it.
+           |// for the pinned Rift release; Rift.DefaultImage derives its image tag from it.
            |private[rift] object RiftBuildInfo:
            |  val riftVersion: String = "$riftVersion"
            |""".stripMargin
       )
       Seq(out)
     }.taskValue,
-    javaFloorSettings,
+    javaFloor17Settings,
+    // The embedded suites load a native library — fork so `--enable-native-access` applies to a clean
+    // JVM, not the sbt shell's own.
+    Test / fork := true,
+    Test / javaOptions += "--enable-native-access=ALL-UNNAMED",
     // Not yet published as a 1.x artifact — no binary-compat baseline to check against.
     mimaPreviousArtifacts := Set.empty
   )
-
-// Embedded Rift provider (#133/#193): drives the Rift engine in-process over librift_ffi via Panama
-// FFM, so no Docker. A SEPARATE published artifact from the container adapter because it needs FFM
-// (JDK 21/22+) + the native library — keeping `zio-bdd-rift` and core on the JDK-11 baseline. Ships as
-// two variants from ONE shared source (rift-embedded/src): the STABLE variant below (JDK 22+, no
-// preview) and the PREVIEW variant (`riftEmbedded21`, JDK 21) just after. Each is built/aggregated
-// only on the JDK that can produce it.
-lazy val embeddedDeps: Seq[ModuleID] =
-  commonDependencies ++ Seq("dev.zio" %% "zio-http" % "3.2.0", "dev.zio" %% "zio-json" % "0.7.3")
-
-// Both variants share these project deps. test->test on rift: the embedded capabilities spec reuses
-// rift's FakeRift admin-API double (a test source) to stand in for the in-process admin plane, exactly
-// as it did when embedded lived in `rift`.
-lazy val riftEmbedded = Project("riftEmbedded", file("rift-embedded"))
-  .dependsOn(rift % "compile->compile;test->test", mock, embeddedNatives % Test)
-  .settings(
-    name := "zio-bdd-rift-embedded",
-    libraryDependencies ++= embeddedDeps,
-    testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
-    // The Java FFM bridge compiles against the stable Foreign Function & Memory API (JEP 454, JDK 22).
-    // No --enable-preview: the resulting class is a normal JDK-22 class, not version-locked to one JDK.
-    javacOptions ++= Seq("--release", "22"),
-    mimaPreviousArtifacts := Set.empty
-  )
-  .settings(embeddedTestJvmSettings)
-
-// The JDK-21 PREVIEW variant of the embedded provider — the exact same sources as `riftEmbedded`
-// (shared via source-dir overrides; only the FFM compile target differs), compiled
-// `--release 21 --enable-preview`. Its bridge is a preview-21 class that loads only on JDK 21 (with
-// --enable-preview); the reflective shim in RiftFfiBridge binds the preview-named FFM methods. Built
-// and published as `zio-bdd-rift-embedded-jdk21` only on JDK 21.
-lazy val riftEmbedded21 = Project("riftEmbedded21", file("rift-embedded-jdk21"))
-  .dependsOn(rift % "compile->compile;test->test", mock, embeddedNatives % Test)
-  .settings(
-    name := "zio-bdd-rift-embedded-jdk21",
-    libraryDependencies ++= embeddedDeps,
-    testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
-    // Share riftEmbedded's sources verbatim — do not duplicate the bridge/adapter.
-    Compile / scalaSource := (ThisBuild / baseDirectory).value / "rift-embedded" / "src" / "main" / "scala",
-    Compile / javaSource  := (ThisBuild / baseDirectory).value / "rift-embedded" / "src" / "main" / "java",
-    Test / scalaSource    := (ThisBuild / baseDirectory).value / "rift-embedded" / "src" / "test" / "scala",
-    // Preview FFM: the bridge is compiled --release 21 --enable-preview (preview-locked to JDK 21).
-    javacOptions ++= Seq("--release", "21", "--enable-preview"),
-    mimaPreviousArtifacts := Set.empty
-  )
-  .settings(embeddedPreviewTestJvmSettings)
 
 // WireMock adapter (#122): the in-process, pure-JVM, zero-Docker provider with
 // Correlated isolation by default. Implements the portable MockControl SPI over
@@ -570,32 +308,29 @@ lazy val wiremock = (project in file("wiremock"))
 // own CI. Compile scope is deliberately `mock` only: the bundled adapters are Test-scope, needed
 // by the in-repo matrix runner (the only code that depends on BOTH of them) and must never leak
 // into the published POM.
-lazy val conformance = {
-  val base = Project("conformance", file("conformance"))
-    .dependsOn(mock, rift % Test, wiremock % Test)
-    .settings(
-      name := "zio-bdd-mock-conformance",
-      libraryDependencies ++= commonDependencies,
-      testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
-      javaFloorSettings,
-      // Not yet published as a 1.x artifact — no binary-compat baseline to check against.
-      mimaPreviousArtifacts := Set.empty
-    )
-  // On a 22+ JDK the portable conformance suite also runs against the (stable) embedded provider: add
-  // the gated test source (EmbeddedConformanceSpec, src/test/jdk22), the native-access test JVM, and
-  // the rift-embedded + natives dependencies — Test-scope so the JDK-22 release job (which
-  // publishes this module) doesn't leak the embedded adapter into the published POM. On JDK < 22
-  // none of this is added — the preview variant is verified by riftEmbedded21's own suite, so
-  // conformance stays wired to the stable variant only.
-  if (stableFfm)
-    base
-      .dependsOn(riftEmbedded % Test, embeddedNatives % Test)
-      .settings(
-        Test / unmanagedSourceDirectories += (Test / sourceDirectory).value / "jdk22",
-        embeddedTestJvmSettings
-      )
-  else base
-}
+lazy val conformance = Project("conformance", file("conformance"))
+  .dependsOn(mock, rift % Test, wiremock % Test)
+  .settings(
+    name := "zio-bdd-mock-conformance",
+    libraryDependencies ++= commonDependencies,
+    // `EmbeddedConformanceSpec` runs the portable suite against the embedded provider. `rift % Test` is
+    // `test->compile` (sbt classpath-dependency default), which pulls `rift`'s COMPILE classpath only —
+    // it does NOT export `rift`'s own Test-scoped `rift-java-embedded`/`rift-java-natives` (a regression
+    // once silently turned every embedded scenario into a false-green SKIP, since no engine resolved and
+    // `EmbeddedRift.available` reads as legitimately-unsupported rather than misconfigured). Depend on
+    // them directly at Test scope here too — do not rely on transitivity across a `% Test` project dep.
+    libraryDependencies ++= Seq(
+      "io.github.achird-labs" % "rift-java-embedded" % riftJavaVersion % Test
+    ) ++ RiftNatives.currentClassifier
+      .map(c => ("io.github.achird-labs" % "rift-java-natives" % riftJavaVersion % Test).classifier(c))
+      .toSeq,
+    testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
+    javaFloorSettings,
+    Test / fork := true,
+    Test / javaOptions += "--enable-native-access=ALL-UNNAMED",
+    // Not yet published as a 1.x artifact — no binary-compat baseline to check against.
+    mimaPreviousArtifacts := Set.empty
+  )
 
 lazy val example = (project in file("example"))
   .dependsOn(core)

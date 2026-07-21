@@ -9,11 +9,17 @@ pick one.
 
 ## 1. The three backends at a glance
 
-| Adapter | Coordinates (1.4.2) | Docker? | JDK | Isolation default | Capabilities |
+| Adapter | Coordinates (1.4.3) | Docker? | JDK | Isolation default | Capabilities |
 |---|---|---|---|---|---|
-| Rift container | `zio-bdd-rift` | yes (testcontainers) | 11+ | PerInstance | all six core + Intercept opt-in |
+| Rift container | `zio-bdd-rift` | yes (testcontainers) | 17+ | PerInstance | all six always on; Intercept only with `interceptPort` |
 | WireMock | `zio-bdd-wiremock` | no | 11+ | Correlated (via `.correlated`) | Faults, StatefulScenarios, StateInspection only |
-| Rift embedded | `zio-bdd-rift-embedded` / `zio-bdd-rift-embedded-jdk21` | no (FFM) | 22+ / 21 | PerInstance (default) / Correlated | all seven, always on |
+| Rift embedded | `zio-bdd-rift` | no (FFM) | 17+ compile / 22+ runtime | PerInstance (default) / Correlated | all seven, always on |
+
+Rift container, `connect`, and Rift embedded are three entry points of the
+**same** published artifact and the same `RiftMockControl` adapter (#285
+re-based the Rift adapters onto the official `rift-scala-zio` SDK, collapsing
+what used to be four separate published modules into this one) — see §2 and
+§4 for what each entry point needs.
 
 ### Capability × adapter matrix
 
@@ -25,18 +31,23 @@ pick one.
 | Scripting | yes | yes | no |
 | ProxyRecord | yes | yes | no |
 | Templating | yes | yes | no |
-| Intercept | opt-in (`interceptPort`) | yes | no |
+| Intercept | only with `interceptPort`/`interceptProxy` | yes | no |
 
-Rift container and Rift embedded are **capability-complete** on the six core
-capabilities — embedded is a pure backend swap for the container adapter, not
-a reduced subset. `Intercept` (built-in HTTPS intercept) is always-on for
-embedded but opt-in for the container adapter: pass `interceptPort` to
-`Rift.managed` (or `interceptProxy` to `Rift.connect`) to advertise it; without
-that, the container adapter's `intercept` accessor fails with `Unsupported`
-just like WireMock's. WireMock implements exactly the three capabilities in
-the first column of the top table; requesting `Capability.Scripting`,
-`Capability.ProxyRecord`, `Capability.Templating`, or `Capability.Intercept`
-against it fails with `Unsupported` (§3 below, and see
+Rift container and Rift embedded implement the same seven capabilities, but
+Intercept is transport-aware, not uniform: embedded always advertises it (the
+listener starts in-process, on the host, so it's always reachable), while
+container/`connect` advertise it only when the caller actually configured a
+host-reachable listener (`Rift.managed`'s `interceptPort`, or `Rift.connect`'s
+`interceptProxy`). Without one, the container's intercept listener would bind
+inside the container's own network namespace — unreachable from a SUT outside
+it — so `RiftMockControl` does not advertise the capability in that case: a
+clean `Unsupported` beats an unreachable endpoint. Passing `interceptPort`/
+`interceptProxy` is what makes `intercept` capability negotiation succeed in
+the first place, not just what makes the resulting listener host-reachable
+(§9 of [Advanced mocking](mock-advanced.md)). WireMock implements exactly the
+three capabilities in the first column of the top table; requesting
+`Capability.Scripting`, `Capability.ProxyRecord`, `Capability.Templating`, or
+`Capability.Intercept` against it fails with `Unsupported` (§3 below, and see
 [Mocking overview](mocking.md) for the `MockError`/`Unsupported` model).
 
 ---
@@ -47,11 +58,19 @@ against it fails with `Unsupported` (§3 below, and see
 "io.github.etacassiopeia" %% "zio-bdd-rift" % "1.4.3"
 ```
 
-Two entry points, both requiring a zio-http `Client` and a `Provisioning` in
-the environment:
+`zio-bdd-rift` is a single published artifact that covers the container
+entry point, the bare `connect` entry point, and the no-Docker embedded
+provider (§4) — all riding the official `rift-scala-zio` SDK (#285). Its JDK
+floor is 17 (it depends on the SDK's `bridge` module, which links
+`rift-java-core`, JDK-17 bytecode); every other zio-bdd module (core,
+gherkin, mock, wiremock, conformance) stays on JDK 11.
 
-- **`Rift.managed(...)`** starts the pinned Rift image via testcontainers and
-  stops it when the layer's scope closes:
+Two entry points, both requiring only a `Provisioning` in the environment —
+the SDK owns the transport, so no `zio-http` `Client` is needed (an intended
+source break from the pre-#285 adapter):
+
+- **`Rift.managed(...)`** starts the pinned Rift image via the SDK's
+  testcontainers transport and stops it when the layer's scope closes:
 
   ```scala
   def managed(
@@ -61,15 +80,23 @@ the environment:
     imposterBasePort: Int = DefaultImposterBase,
     mode: RiftMode = RiftMode.PerInstance,
     interceptPort: Option[Int] = None
-  ): ZLayer[Client & Provisioning, MockError, MockControl]
+  ): ZLayer[Provisioning, MockError, MockControl]
   ```
 
   `DefaultImage` is the pinned Rift image, currently `zainalpour/rift-proxy:v0.14.0`
   — derived from the single `riftVersion` in `build.sbt`, so treat it as "the
-  pinned Rift image" rather than a hardcoded tag. Pass `interceptPort` to also
-  start the container's HTTPS-intercept listener and advertise
-  `Capability.Intercept` (§9 of [Advanced mocking](mock-advanced.md)); omitted,
-  the container behaves exactly as before.
+  pinned Rift image" rather than a hardcoded tag. `adminPort` is effectively
+  fixed at `DefaultAdminPort` (2525): the SDK's container transport
+  (`RiftContainer`) hardcodes the admin port with no builder override, so a
+  non-default `adminPort` now fails fast with a typed
+  `MockError.InvalidDefinition` instead of silently taking whatever port you
+  configured. Pass `interceptPort` to also start the container's
+  HTTPS-intercept listener bound to `0.0.0.0` and have testcontainers publish
+  it as a host-reachable port (§9 of [Advanced mocking](mock-advanced.md)) —
+  without it, the listener would only ever be reachable inside the
+  container's own network namespace, so `Capability.Intercept` is not
+  advertised at all in that case (§1): pass `interceptPort` to get both a
+  host-reachable listener and successful `intercept` capability negotiation.
 
 - **`Rift.connect(...)`** targets an already-running Rift admin endpoint
   instead of starting a container (used by tests, or when Rift runs
@@ -81,8 +108,16 @@ the environment:
     imposterPorts: List[Int],
     mode: RiftMode = RiftMode.PerInstance,
     interceptProxy: Option[(String, Int)] = None
-  )(hostFor: Int => String): URLayer[Client & Provisioning, MockControl]
+  )(hostFor: Int => String): ZLayer[Provisioning, MockError, MockControl]
   ```
+
+  Widened from a `URLayer` pre-#285: the SDK's `connect` performs a real
+  handshake (an admin-version check) at layer construction, so a bad
+  `adminBase` or an unreachable engine now surfaces as a typed `MockError`
+  there instead of only on first use. Like `Rift.managed`'s `interceptPort`,
+  `interceptProxy` gates `Capability.Intercept`: omit it and the adapter does
+  not advertise Intercept at all, since there'd be no host-reachable address
+  to report.
 
 Both take a `RiftMode`: `RiftMode.PerInstance` (default — one imposter port
 per `MockSpace`) or `RiftMode.Correlated(correlation)` / the `RiftMode.correlated`
@@ -93,12 +128,11 @@ Wiring, lifted from the sample corpus's `support/Backends.scala`:
 ```scala
 import zio.bdd.mock.*
 import zio.bdd.mock.rift.Rift
-import zio.http.Client
 
 val provisioning: ULayer[Provisioning] = ZLayer(Provisioning.make)
 
 val mockControl: ZLayer[Any, Throwable, MockControl] =
-  (Client.default ++ provisioning) >>> Rift.managed().mapError(e => new RuntimeException(s"Rift: $e"))
+  provisioning >>> Rift.managed().mapError(e => new RuntimeException(s"Rift: $e"))
 ```
 
 See [layers](layers.md) for how this composes into a suite's `environment`.
@@ -142,83 +176,83 @@ capability negotiation working as intended, not a bug to work around.
 
 ## 4. Embedded Rift (no-Docker, FFM)
 
-The embedded provider drives the Rift engine in-process over `librift_ffi` via
-Project Panama FFM — no container, no external process — while remaining
-**capability-complete** (parity with the container adapter's six core
-capabilities, plus `Capability.Intercept` always on — all seven). This is the
-adapter to reach for when you want full fidelity without Docker.
+The embedded provider drives the Rift engine in-process through the official
+`rift-scala-zio` SDK's embedded transport over Project Panama FFM — no
+container, no external process — while remaining **capability-complete**
+(parity with the container adapter — all seven capabilities, always on). This
+is the adapter to reach for when you want full fidelity without Docker.
 
-### Two version-locked artifacts
+`EmbeddedRift` (package `zio.bdd.mock.rift.embedded`) lives in the same
+`zio-bdd-rift` artifact as the container/`connect` entry points (#285 folded
+the old standalone `rift-embedded` module into `rift`) — there's no separate
+coordinate to add.
 
-FFM is a class-file-level lock: a class compiled against JDK 21's preview FFM
-API won't load on JDK 22+, and vice versa. So the embedded provider is
-published as **two variants built from the same source**, and you pick
-exactly one for your build's JDK:
+### Runtime dependencies
+
+Unlike the pre-#285 adapter, there's no zio-bdd-published natives jar to add.
+The embedded provider resolves the SDK's own `rift-java-embedded` engine plus
+a matching `rift-java-natives` classifier jar via Java's `ServiceLoader` at
+runtime — ordinary Maven/sbt dependencies your build adds itself (these are
+runtime `ServiceLoader` dependencies, not compile deps of `zio-bdd-rift`,
+which only adds them at `Test` scope for its own specs):
 
 ```scala
-"io.github.etacassiopeia" %% "zio-bdd-rift-embedded"       % "1.4.3" // JDK 22+ (stable FFM)
-"io.github.etacassiopeia" %% "zio-bdd-rift-embedded-jdk21" % "1.4.3" // JDK 21   (preview FFM)
+libraryDependencies ++= Seq(
+  "io.github.achird-labs" % "rift-java-embedded" % "0.1.3",
+  ("io.github.achird-labs" % "rift-java-natives" % "0.1.3").classifier("darwin-aarch64")
+)
 ```
 
-Both additionally need the native library on the classpath (or an explicit
-override), and neither is scala-versioned — note the single `%`, not `%%`:
+Classifiers: `linux-x86_64`, `linux-aarch64`, `darwin-x86_64`,
+`darwin-aarch64`. `project/RiftNatives.scala` in this repo exposes
+`RiftNatives.currentClassifier`, which computes the host's classifier
+programmatically for a `build.sbt` — the same helper `rift`'s own build uses.
+An application wiring `EmbeddedRift.layer` into production or other test code
+(beyond this repo's own specs) needs to add both dependencies itself.
 
-```scala
-"io.github.etacassiopeia" % "zio-bdd-rift-embedded-natives" % "1.4.3" % Test
-```
-
-`zio-bdd-rift-embedded-natives` bundles the per-platform `librift_ffi`
-cdylibs; the loader extracts the one matching your host to a temp file and
-loads it automatically. If you'd rather point at a library you built or
-installed yourself, skip the natives jar and set `-Drift.ffi.lib=<path>`
-instead.
-
-> **Platform note — system LuaJIT (natives ≤ 1.4.1 only).** The `1.4.1` and
-> earlier natives repackage Rift **v0.11.3**, whose `linux-x86_64` and
-> `darwin-aarch64` cdylibs dynamically link **system LuaJIT** — so those hosts
-> needed `libluajit-5.1-2` (apt) / Homebrew `luajit` installed, or the library
-> failed to `dlopen` at engine start (#307). **Natives from `1.4.2` onward
-> (Rift v0.12.0) are self-contained** — Rift dropped the Lua engine, so no host
-> LuaJIT is required on any platform. If you're pinned to an old natives version
-> on a Lua-free host, either upgrade or install system LuaJIT. A bundled library
-> that is present but fails to load surfaces a `MockError.ProvisionFailed` naming
-> the underlying `dlopen` error and this missing-dependency hint.
+If you'd rather point at a native library you built or installed yourself,
+skip the natives classifier and set `-Drift.ffi.lib=<path>` instead.
 
 ### Test-JVM flags
 
-Both variants need `--enable-native-access` to silence the restricted-method
-warning; the JDK 21 variant additionally needs `--enable-preview` to load its
-preview-compiled bridge:
+The embedded provider needs `--enable-native-access` to silence the
+restricted-method warning. It does **not** need `--enable-preview` — the
+SDK's embedded engine targets JDK 22+ stable FFM only, with no
+JDK-21-preview variant:
 
 ```scala
-// build.sbt — JDK 22+ (zio-bdd-rift-embedded)
+// build.sbt
 Test / fork := true,
 Test / javaOptions += "--enable-native-access=ALL-UNNAMED"
-
-// build.sbt — JDK 21 (zio-bdd-rift-embedded-jdk21)
-Test / fork := true,
-Test / javaOptions ++= Seq("--enable-preview", "--enable-native-access=ALL-UNNAMED")
 ```
 
-### Which JDK / which artifact
+### Which JDK
 
-| Your test JDK | Artifact | Test JVM flags |
-|---|---|---|
-| 22 or newer | `zio-bdd-rift-embedded` | `--enable-native-access=ALL-UNNAMED` |
-| 21 | `zio-bdd-rift-embedded-jdk21` | `--enable-preview --enable-native-access=ALL-UNNAMED` |
-| 11–20 | neither — use WireMock or Rift container | — |
+`zio-bdd-rift` itself compiles targeting JDK 17, but the embedded *provider*
+is a runtime dependency gated at the `ServiceLoader`/classload level: the
+minimum JDK to actually use `EmbeddedRift` is 22 (stable FFM), what
+`rift-java-embedded` needs.
+
+| Your test JDK | Embedded available? |
+|---|---|
+| 22 or newer | yes — `EmbeddedRift.available` resolves the SDK's provider |
+| 17–21 | no — use WireMock or Rift container instead |
 
 ### API and wiring
 
 ```scala
-def available: Boolean                                          // true iff a native lib resolves for this host/JDK
+def available: Boolean                                          // true iff an embedded engine provider resolves for this host
+def requireAvailable: IO[MockError, Unit]                        // fail loudly instead of SKIP when unavailable
 def layer: ZLayer[Provisioning, MockError, MockControl]
 ```
 
-`EmbeddedRift.available` lets a harness park the backend (skip) rather than
-fail outright when no native library resolves for the current host/JDK
+`EmbeddedRift.available` checks whether the SDK's embedded engine provider
+(`rift-java-embedded` + a matching `rift-java-natives` classifier) resolves
+via `ServiceLoader` — not whether a bundled cdylib resource is present on the
+classpath, the pre-#285 mechanism. It lets a harness park the backend (skip)
+rather than fail outright when no provider resolves for the current host/JDK
 combination — check it before wiring `EmbeddedRift.layer` in environments
-where the host isn't guaranteed to have a matching native lib.
+where the host isn't guaranteed to have a matching provider.
 
 ```scala
 import zio.bdd.mock.rift.embedded.EmbeddedRift
@@ -281,17 +315,21 @@ document is `PerInstance`-only via `provisionNative`.
 ## 5. Choosing an adapter
 
 - **No Docker, need all seven capabilities, JDK 22+ available** → Rift
-  embedded (`zio-bdd-rift-embedded`). Full fidelity, zero container overhead.
-- **No Docker, stuck on JDK 21** → Rift embedded
-  (`zio-bdd-rift-embedded-jdk21`) with `--enable-preview`, or fall back to
-  WireMock if the three-capability limit is acceptable.
+  embedded (`zio-bdd-rift`, add `rift-java-embedded` + a matching
+  `rift-java-natives` classifier at runtime, §4). Full fidelity, zero
+  container overhead.
+- **No Docker, stuck below JDK 22** → embedded isn't available (§4); fall
+  back to WireMock if the three-capability limit is acceptable, or to the
+  Rift container adapter (which only needs JDK 17+ to compile against) if
+  Docker is an option.
 - **Already on WireMock, or need to run on JDK 11** → WireMock
   (`zio-bdd-wiremock`). Cheapest to stand up; covers Faults,
   StatefulScenarios, StateInspection.
 - **Full fidelity and Docker is available (e.g. CI with testcontainers)** →
-  Rift container (`zio-bdd-rift`). Same six core capabilities as embedded,
-  closer to a production Rift deployment; pass `interceptPort` to also match
-  embedded's `Capability.Intercept`.
+  Rift container (`zio-bdd-rift`). Same six always-on capabilities as
+  embedded, closer to a production Rift deployment; pass `interceptPort` to
+  also get `Capability.Intercept` advertised with a host-reachable listener,
+  matching embedded's already-usable intercept.
 
 The sample corpus's `support/Backends.scala` shows the pattern for switching
 adapters at runtime via an environment variable, so a suite's `environment`
@@ -307,7 +345,7 @@ object Backends:
     selected match
       case "wiremock"    => provisioning >>> WireMock.correlated()
       case "wiremock-pi" => provisioning >>> WireMock.perInstance
-      case "rift"        => (Client.default ++ provisioning) >>> Rift.managed().mapError(e => new RuntimeException(s"Rift: $e"))
+      case "rift"        => provisioning >>> Rift.managed().mapError(e => new RuntimeException(s"Rift: $e"))
       case "embedded"    => provisioning >>> EmbeddedRift.layer.mapError(e => new RuntimeException(s"Embedded Rift: $e"))
       case other =>
         ZLayer.fail(new IllegalArgumentException(s"unknown MOCK_BACKEND='$other'"))

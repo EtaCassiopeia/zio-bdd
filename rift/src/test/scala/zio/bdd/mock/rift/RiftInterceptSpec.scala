@@ -2,7 +2,6 @@ package zio.bdd.mock.rift
 
 import zio.*
 import zio.bdd.mock.*
-import zio.http.Client
 import zio.test.*
 
 import java.net.{InetSocketAddress, ProxySelector, URI}
@@ -87,11 +86,11 @@ object RiftInterceptSpec extends ZIOSpecDefault:
         res  <- sutGet("https://api.example.com/anything", port, ts)
       yield assertTrue(res._1 == 418, res._2.contains("inline-teapot"))
     }
-  ).provideSome[Client](Provisioning.live, riftBackend) @@ TestAspect.sequential @@ TestAspect.withLiveClock
+  ).provide(Provisioning.live, riftBackend) @@ TestAspect.sequential @@ TestAspect.withLiveClock
 
-  private def riftBackend: ZLayer[Client & Provisioning, MockError, MockControl] =
+  private def riftBackend: ZLayer[Provisioning, MockError, MockControl] =
     Rift.managed(interceptPort = Some(InterceptContainerPort))
 
   def spec =
-    if sys.env.contains("RIFT_IT") then suite("Rift intercept ITs")(realSuite).provideShared(Client.default)
+    if sys.env.contains("RIFT_IT") then suite("Rift intercept ITs")(realSuite)
     else suite("RiftInterceptSpec (skipped — set RIFT_IT=1 to run against a real Rift container)")()

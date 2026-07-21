@@ -3,12 +3,12 @@
 # Fail if a published POM exposes a first-party artifact it shouldn't at a consumer-visible scope.
 #
 # Guards issue #331: `zio-bdd-mock-conformance` (#329) publishes with its compile scope deliberately
-# reduced to the SPI (`zio-bdd-mock`) — the bundled adapters (rift, wiremock, rift-embedded, natives)
-# are Test-scope only, so a third-party consumer inherits no backend. Nothing else guards this: MIMA
-# is a no-op for the module (`mimaPreviousArtifacts := Set.empty`) and `sbt test` never inspects a POM,
-# so a future `.dependsOn(<adapter>)` that forgets `% Test` would silently re-leak an adapter into the
-# published POM. This script is wired into the JDK-22 CI job (embedded-stable) and the release publish
-# job — the only builds where `stableFfm` adds the embedded deps, so the leak class is actually present.
+# reduced to the SPI (`zio-bdd-mock`) — the bundled adapters (rift, wiremock; rift's own embedded
+# provider is bundled inside it, #285) are Test-scope only, so a third-party consumer inherits no
+# backend. Nothing else guards this: MIMA is a no-op for the module (`mimaPreviousArtifacts :=
+# Set.empty`) and `sbt test` never inspects a POM, so a future `.dependsOn(<adapter>)` that forgets
+# `% Test` would silently re-leak an adapter into the published POM. This script is wired into the
+# `build` CI job and the release publish job.
 #
 # Rule: every <dependency> whose <groupId> equals <group-id> and whose EFFECTIVE scope is inherited by
 # a downstream consumer (`compile` or `runtime`) must be the SPI itself — <artifactId> exactly
