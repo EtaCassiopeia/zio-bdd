@@ -133,8 +133,16 @@ object Rift:
       )
     else
       val imposterPorts = (0 until poolSize).map(imposterBasePort + _).toVector
+      // `allowInjection = true` unconditionally: the container backend always advertises the
+      // Scripting capability (the engine gates `_rift.script` behind `--allowInjection`, off by
+      // default), matching the pre-#285 adapter that always launched the image with that flag.
       val containerConfig =
-        ContainerConfig(image = Some(image), imposterPorts = imposterPorts, interceptPort = interceptPort)
+        ContainerConfig(
+          image = Some(image),
+          imposterPorts = imposterPorts,
+          interceptPort = interceptPort,
+          allowInjection = true
+        )
       // The intercept listener binds inside the container: "0.0.0.0" (not loopback) so the
       // container's own network stack accepts the connection Docker's port mapping forwards in.
       val intercept = interceptPort.fold(InterceptSettings())(p => InterceptSettings(bindHost = "0.0.0.0", port = p))

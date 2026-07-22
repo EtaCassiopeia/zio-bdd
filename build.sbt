@@ -23,7 +23,7 @@ val riftVersion = "0.14.0"
 // pins `rift-java-core` at riftJavaVersion; the embedded engine + natives jars this build adds at Test
 // scope MUST stay on that same rift-java version — they meet across the FFI/ABI boundary, so a split
 // between the compile-side facade and the runtime engine is exactly the mismatch to avoid.
-val riftScalaVersion = "0.1.1"
+val riftScalaVersion = "0.1.2"
 val riftJavaVersion  = "0.1.3"
 
 inThisBuild(
