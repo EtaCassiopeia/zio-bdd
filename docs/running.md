@@ -208,6 +208,10 @@ Exclusion takes precedence over inclusion.
 sbt "testOnly com.example.MySuite -- --exclude-tags slow,flaky"
 ```
 
+A skipped scenario is skipped completely: its `scenarioLayer`/`flagLayer` is never
+built, so no per-scenario fixtures are provisioned for it — this holds even when the
+scenario also carries a parameterized fixture tag such as `@mock(orders)`.
+
 ### @ignore tag
 
 Any scenario tagged `@ignore` (case-insensitive) is always skipped, independent of

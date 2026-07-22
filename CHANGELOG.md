@@ -47,6 +47,17 @@ All notable changes to zio-bdd are documented here.
   - Update every call site accordingly: drop the `Client` requirement/import, and — for
     `Rift.managed`/`Rift.connect` — drop `Client.default` from the provided environment.
 
+### Fixed
+
+- **`--exclude-tags` no longer provisions an excluded scenario's fixtures** (#337). A scenario
+  removed by a tag or name filter (or carrying `@ignore`/`@skip`) is now short-circuited *before*
+  its scenario-tier layer (`scenarioLayer`/`flagLayer`) is built and acquired, so no
+  `@mock(...)` source is provisioned and no per-scenario resources are set up for it. Previously
+  the `isIgnored` short-circuit fired only *inside* the already-acquired layer scope, so an
+  excluded scenario carrying a parameterized tag such as `@rift @mock(orders)` still provisioned
+  its `orders` source — and, when that source was raw/native under the wrong backend, threw and
+  failed the whole run even though the scenario was meant to be skipped.
+
 ## [1.4.3] — 2026-07-16
 
 ### Changed
