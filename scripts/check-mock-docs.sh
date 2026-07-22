@@ -53,12 +53,17 @@ if grep -RnE 'rift-proxy:v0\.8\.0' docs/mock-adapters.md; then err "stale Rift i
 if grep -RniE 'embedded[^.]{0,40}(no capabilit|four capabilit|only four)' $MOCK_MD; then err "stale 'embedded has no/four capabilities' claim"; fi
 grep -Rq 'StateInspection' docs/mock-adapters.md || err "capability matrix missing StateInspection in mock-adapters.md"
 
-# 7. Embedded JDK story: both artifacts + both JDKs + native-access, in mock-adapters.md
+# 7. Embedded runtime story (#285: single `zio-bdd-rift` artifact, no standalone embedded/natives
+#    jars): the doc must name the single artifact plus the runtime rift-java-embedded/rift-java-natives
+#    ServiceLoader dependencies and --enable-native-access, and must NOT still advertise the deleted
+#    two-artifact/JDK-21-split world.
 A=docs/mock-adapters.md
-grep -q 'zio-bdd-rift-embedded-jdk21' "$A" || err "mock-adapters.md missing the JDK-21 embedded artifact"
-grep -q 'zio-bdd-rift-embedded-natives' "$A" || err "mock-adapters.md missing the embedded-natives artifact"
-grep -qE 'JDK ?21' "$A" && grep -qE 'JDK ?22' "$A" || err "mock-adapters.md missing the JDK 21/22 split"
+grep -q 'zio-bdd-rift' "$A" || err "mock-adapters.md missing the zio-bdd-rift artifact coordinate"
+grep -q 'rift-java-embedded' "$A" || err "mock-adapters.md missing the rift-java-embedded runtime dependency"
+grep -q 'rift-java-natives' "$A" || err "mock-adapters.md missing the rift-java-natives runtime dependency"
 grep -q 'enable-native-access' "$A" || err "mock-adapters.md missing --enable-native-access"
+grep -q 'zio-bdd-rift-embedded-jdk21' "$A" && err "mock-adapters.md still references the deleted zio-bdd-rift-embedded-jdk21 artifact"
+grep -q 'zio-bdd-rift-embedded-natives' "$A" && err "mock-adapters.md still references the deleted zio-bdd-rift-embedded-natives artifact"
 
 # 8. Used By section seeded with Rift (README or docs landing)
 grep -RqiE 'used by' README.md docs/index.md && grep -RqiE '\[?rift\]?\(https://github.com/EtaCassiopeia/rift' README.md docs/index.md \

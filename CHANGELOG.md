@@ -16,6 +16,37 @@ All notable changes to zio-bdd are documented here.
   in-repo Rift/WireMock/embedded matrix runner moved to test scope, unpublished as before.
   Usage is documented in `docs/mock-adapters.md` §6.
 
+### Changed
+
+- **Re-based the Rift `MockControl` adapters onto the official `rift-scala-zio` SDK** (#285).
+  `RiftMockControl` now drives Rift entirely through `rift.zio.Rift`, replacing the hand-rolled
+  admin-HTTP protocol client and the hand-written Panama FFM bridge to a downloaded
+  `librift_ffi` cdylib with the SDK's typed surface — one adapter for every transport (container,
+  in-process embedded, or a bare `connect`), where previously the container and embedded
+  backends were two separate implementations of the same protocol.
+  - **Artifact collapse**: `zio-bdd-rift`, `zio-bdd-rift-embedded`, `zio-bdd-rift-embedded-jdk21`,
+    and `zio-bdd-rift-embedded-natives` (four published artifacts) collapse into the single
+    `zio-bdd-rift`. There is no more JDK-21-preview-vs-JDK-22-stable split: the embedded engine
+    (`rift-java-embedded`) and its native library (`rift-java-natives`, classified per platform)
+    are ordinary runtime `ServiceLoader` dependencies an application adds itself, not a bundled
+    natives jar this build downloads, checksums, and packages.
+  - **JDK floor**: `zio-bdd-rift`'s floor moves 11 -> 17 (its SDK dependency links
+    `rift-java-core`, JDK-17 bytecode); every other module (core, gherkin, mock, wiremock,
+    conformance) is unaffected and stays on 11. The embedded provider still needs JDK 22+ at
+    *runtime* (stable Panama FFM) — `EmbeddedRift.available` reports `false` (not a crash) on an
+    older JVM.
+  - **Source break**: `Rift.managed`/`Rift.connect` now require only `Provisioning` in their
+    environment — the SDK owns the transport, so the `zio-http` `Client` they used to require is
+    gone. `Rift.connect` is now fallible (`ZLayer[Provisioning, MockError, MockControl]`, was
+    `URLayer`): the SDK's `connect` performs a real admin handshake at layer construction.
+    `Rift.managed`'s `adminPort` is effectively fixed at 2525 (the SDK's container transport has
+    no override); a non-default value now fails fast with a typed `MockError.InvalidDefinition`
+    instead of being silently accepted. The Rift adapter now advertises all seven capabilities
+    (including `Intercept`) uniformly on every transport, rather than gating `Intercept` on
+    whether the container was started with an `interceptPort`.
+  - Update every call site accordingly: drop the `Client` requirement/import, and — for
+    `Rift.managed`/`Rift.connect` — drop `Client.default` from the provided environment.
+
 ## [1.4.3] — 2026-07-16
 
 ### Changed

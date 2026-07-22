@@ -2,13 +2,16 @@ package zio.bdd.mock.rift
 
 import zio.*
 import zio.bdd.mock.*
-import zio.http.{Client, Request, URL}
 import zio.test.*
 
+import java.net.URI
+import java.net.http.{HttpClient, HttpRequest as JHttpRequest, HttpResponse as JHttpResponse}
+
 /**
- * End-to-end acceptance against a REAL Rift container (#113 AC1/AC2). Opt-in:
- * runs only when `RIFT_IT` is set, so the default `sbt test` stays hermetic and
- * Docker-free. Run it with `RIFT_IT=1 sbt rift/test`.
+ * End-to-end acceptance against a REAL Rift container (#113 AC1/AC2), driven
+ * over the SDK (`rift-scala-zio`, #285) rather than a hand-rolled admin client.
+ * Opt-in: runs only when `RIFT_IT` is set, so the default `sbt test` stays
+ * hermetic and Docker-free. Run it with `RIFT_IT=1 sbt rift/test`.
  */
 object RiftContainerSpec extends ZIOSpecDefault:
 
@@ -28,18 +31,20 @@ object RiftContainerSpec extends ZIOSpecDefault:
   // Imposter binds slightly after provision returns; retry the first hit briefly.
   private val upWithin: Schedule[Any, Any, Any] = Schedule.recurs(20) && Schedule.spaced(100.millis)
 
-  private def httpGet(base: String, path: String): ZIO[Client, Throwable, (Int, String)] =
-    for
-      url  <- ZIO.fromEither(URL.decode(base + path))
-      resp <- Client.batched(Request.get(url))
-      body <- resp.body.asString
-    yield (resp.status.code, body)
+  private val http1Client: HttpClient = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build()
+
+  private def httpGet(base: String, path: String): Task[(Int, String)] =
+    ZIO.attemptBlocking {
+      val req = JHttpRequest.newBuilder(URI.create(base + path)).GET().build()
+      val res = http1Client.send(req, JHttpResponse.BodyHandlers.ofString())
+      (res.statusCode, res.body)
+    }
 
   // Teardown is observed even through the client's pooled keep-alive connection:
   // as of Rift v0.2.0 (rift#207) DELETE /imposters/:port closes existing
   // connections, so a destroyed imposter stops serving. Poll briefly since the
   // socket close races the DELETE response.
-  private def waitUntilGone(base: String): ZIO[Client, Nothing, Boolean] =
+  private def waitUntilGone(base: String): UIO[Boolean] =
     (ZIO.sleep(100.millis) *> httpGet(base, "/ping").either.map(_.isLeft))
       .repeatUntilEquals(true)
       .timeoutTo(false)(identity)(5.seconds)
@@ -98,7 +103,7 @@ object RiftContainerSpec extends ZIOSpecDefault:
         _       <- control.destroy(space)
       yield assertTrue(miss._1 == 404)
     }
-  ).provideSome[Client](Provisioning.live, riftBackend) @@ TestAspect.sequential @@ TestAspect.withLiveClock
+  ).provide(Provisioning.live, riftBackend) @@ TestAspect.sequential @@ TestAspect.withLiveClock
 
   // Correlated isolation (#156): one shared imposter, spaces told apart by the
   // X-Mock-Space header. The SAME checks pass with a one-line layer swap (AC1),
@@ -142,25 +147,23 @@ object RiftContainerSpec extends ZIOSpecDefault:
         _       <- control.destroy(space)
       yield assertTrue(miss.status == 404)
     }
-  ).provideSome[Client](Provisioning.live, correlatedBackend) @@ TestAspect.sequential @@ TestAspect.withLiveClock
+  ).provide(Provisioning.live, correlatedBackend) @@ TestAspect.sequential @@ TestAspect.withLiveClock
 
-  // Two ways to reach a real Rift: testcontainers spins one up (default), or —
-  // when RIFT_ADMIN points at an already-running Rift admin URL whose imposter
-  // ports are mapped 1:1 to localhost — connect to it directly. The latter
-  // exercises the same adapter without depending on the host's testcontainers
-  // Docker discovery.
-  private def riftBackend: ZLayer[Client & Provisioning, MockError, MockControl] =
+  // Two ways to reach a real Rift: the SDK's testcontainers transport spins one up (default), or —
+  // when RIFT_ADMIN points at an already-running Rift admin URL whose imposter ports are mapped 1:1
+  // to localhost — connect to it directly. The latter exercises the same adapter without depending on
+  // the host's testcontainers Docker discovery.
+  private def riftBackend: ZLayer[Provisioning, MockError, MockControl] =
     sys.env.get("RIFT_ADMIN") match
       case Some(admin) => Rift.connect(admin, (4545 until 4561).toList)(p => s"http://localhost:$p")
       case None        => Rift.managed()
 
-  private def correlatedBackend: ZLayer[Client & Provisioning, MockError, MockControl] =
+  private def correlatedBackend: ZLayer[Provisioning, MockError, MockControl] =
     sys.env.get("RIFT_ADMIN") match
       case Some(admin) =>
         Rift.connect(admin, (4545 until 4561).toList, RiftMode.correlated)(p => s"http://localhost:$p")
       case None => Rift.managed(mode = RiftMode.correlated)
 
   def spec =
-    if sys.env.contains("RIFT_IT") then
-      suite("Rift container ITs")(realSuite, correlatedSuite).provideShared(Client.default)
+    if sys.env.contains("RIFT_IT") then suite("Rift container ITs")(realSuite, correlatedSuite)
     else suite("RiftContainerSpec (skipped — set RIFT_IT=1 to run against a real Rift container)")()

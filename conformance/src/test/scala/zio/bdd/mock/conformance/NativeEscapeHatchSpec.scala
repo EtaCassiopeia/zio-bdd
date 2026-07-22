@@ -4,7 +4,6 @@ import zio.*
 import zio.bdd.mock.*
 import zio.bdd.mock.rift.Rift
 import zio.bdd.mock.wiremock.WireMock
-import zio.http.Client
 import zio.test.*
 
 /**
@@ -101,7 +100,7 @@ object NativeEscapeHatchSpec extends ZIOSpecDefault:
   private val riftBackend =
     NativeBackend(
       "rift-native",
-      (Client.default ++ Provisioning.live) >>> Rift.managed().mapError(asT),
+      Provisioning.live >>> Rift.managed().mapError(asT),
       _.provisionNative(NativeSpec.Rift(riftNative)),
       200,
       "native!"

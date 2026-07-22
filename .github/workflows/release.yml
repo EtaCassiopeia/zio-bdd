@@ -33,10 +33,10 @@ jobs:
             exit 1
           fi
 
-  # Stable job (JDK 22): FFM is finalized in JDK 22 (JEP 454), so on a 22+ JDK the root aggregates the
-  # full stack + the stable embedded provider (zio-bdd-rift-embedded) + the natives jar — one standard
-  # `ci-release` publishes them all. The container/core modules stay portable (scalac emits Java 8
-  # bytecode regardless of the build JDK; the JDK-11 CI `build` job guards their JDK-11 API compat).
+  # #285 collapsed the JDK-21/22 dual embedded-artifact split: `rift` (JDK floor 17, see
+  # `javaFloor17Settings` in build.sbt) is the ONE published Rift artifact — the embedded engine +
+  # natives are ordinary runtime deps, not a second class-file-locked build. One `ci-release` on JDK 17
+  # (the lowest JDK that can compile every module's `-release` target) publishes the whole aggregate.
   publish:
     needs: verify-tag-signature
     runs-on: ubuntu-latest
@@ -47,12 +47,11 @@ jobs:
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: 22
+          java-version: 17
           cache: sbt
       - uses: sbt/setup-sbt@v1
-      # Gate the artifact BEFORE publishing (#331): the JDK-22 job is the one that publishes
-      # zio-bdd-mock-conformance, and stableFfm (>= 22) is what adds its rift-embedded deps, so this is
-      # the build where an adapter could leak into the compile scope. MIMA is a no-op for the module, so
+      # Gate the artifact BEFORE publishing (#331): zio-bdd-mock-conformance's bundled adapters
+      # (rift, wiremock) must stay Test-scope in the published POM. MIMA is a no-op for the module, so
       # this POM inspection is the last line of defense — a leak that lands on master still can't publish.
       - name: Assert the conformance POM compile scope is SPI-only before publishing
         run: |
@@ -71,49 +70,13 @@ jobs:
           SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
           SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
 
-  # Preview job (JDK 21): the JDK-21 preview variant (zio-bdd-rift-embedded-jdk21) is a preview-compiled
-  # class that can only be built on JDK 21. On JDK 21 the root aggregates ONLY that variant, so the same
-  # standard `ci-release` publishes exactly it (its rift/mock/natives deps are compiled but not published
-  # here — they ship from the stable job). Runs after `publish` so the two Sonatype bundles don't race.
-  publish-preview:
-    needs: publish
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: 21
-          cache: sbt
-      - uses: sbt/setup-sbt@v1
-      # Gate the artifact BEFORE publishing: the -jdk21 cut must be class <= 65 so it loads on JDK 21.
-      # v1.3.1 published it as class 66 (#247); this check would have caught that.
-      - name: Assert the JDK-21 bridge is class <= 65 before publishing
-        run: |
-          sbt "riftEmbedded21/Compile/compile"
-          bridges=$(find rift-embedded-jdk21/target -name RiftFfiBridge.class)
-          count=$(printf '%s' "$bridges" | grep -c . || true)
-          if [ "$count" -ne 1 ]; then
-            echo "::error::expected exactly one RiftFfiBridge.class under rift-embedded-jdk21/target, found $count"
-            exit 1
-          fi
-          bash scripts/assert-class-max-version.sh "$bridges" 65
-      - run: sbt ci-release
-        env:
-          PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
-          PGP_SECRET: ${{ secrets.PGP_SECRET }}
-          SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
-          SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
-
   # GitHub Release object (the "Releases" page): `ci-release` only publishes to Maven Central, so without
-  # this step a pushed tag never appears under Releases (only under Tags). Runs after both Sonatype bundles
-  # succeed, so a failed publish never yields a Release. A pre-release tag (contains a hyphen, e.g. v1.0.0-RC1)
+  # this step a pushed tag never appears under Releases (only under Tags). Runs after the Sonatype bundle
+  # succeeds, so a failed publish never yields a Release. A pre-release tag (contains a hyphen, e.g. v1.0.0-RC1)
   # is flagged --prerelease (never marked Latest); a plain vX.Y.Z is marked --latest. Notes are auto-generated
   # from the merged PRs since the previous release.
   github-release:
-    needs: [publish, publish-preview]
+    needs: publish
     runs-on: ubuntu-latest
     permissions:
       contents: write

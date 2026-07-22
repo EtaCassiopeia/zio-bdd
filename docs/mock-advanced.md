@@ -30,23 +30,25 @@ _  <- sc.define(space, defineRetry(path))
 | `Capability.Scripting` | `scripting: IO[Unsupported, Scripting]` | yes | yes | no |
 | `Capability.ProxyRecord` | `proxyRecord: IO[Unsupported, ProxyRecord]` | yes | yes | no |
 | `Capability.Templating` | `templating: IO[Unsupported, Templating]` | yes | yes | no |
-| `Capability.Intercept` | `intercept: IO[Unsupported, Intercept]` | opt-in¹ | yes | no |
+| `Capability.Intercept` | `intercept: IO[Unsupported, Intercept]` | only with `interceptPort`/`interceptProxy` | yes | no |
 
 Faults, StatefulScenarios, and StateInspection are portable across all three
 adapters. Scripting, ProxyRecord, and Templating are Rift-only (container or
 embedded — embedded is capability-complete, a pure backend swap for the
 container, not a reduced subset); WireMock does not advertise them. `Intercept`
-(built-in HTTPS intercept, §9) runs the TLS-MITM listener over the **embedded**
-FFI always-on, and over the **container** adapter opt-in (#253) — only when
-`Rift.managed`/`Rift.connect` is given an `interceptPort`/`interceptProxy`;
-WireMock inherits the `Unsupported` fallback. See
+(built-in HTTPS intercept, §9) is transport-aware, not uniform: the
+**embedded** adapter always advertises it (the listener starts in-process, on
+the host, so it's always reachable), while the **container**/`connect`
+adapters advertise it only when the caller passed `interceptPort`
+(`Rift.managed`) or `interceptProxy` (`Rift.connect`) — the setting that makes
+the listener bind somewhere the SUT can actually reach, rather than only
+inside the container's network namespace. Without it, `RiftMockControl` does
+not advertise `Capability.Intercept` at all: a clean `Unsupported` at
+negotiation time beats a listener `proxyPort` reports that the SUT can never
+reach. WireMock inherits the `Unsupported` fallback. See
 [Adapters](mock-adapters.md) for the full per-adapter breakdown and
 [Mocking overview](mocking.md) for the `MockControl` port these accessors sit
 on.
-
-¹ The container adapter advertises `Capability.Intercept` only when started with
-an `interceptPort` (`Rift.managed`) or `interceptProxy` (`Rift.connect`); without
-one, `intercept` returns `Unsupported`.
 
 ---
 
@@ -422,13 +424,14 @@ loopback port the SUT proxies through. Starting the listener is lazy and opt-in:
 a suite that never calls `mc.intercept` pays nothing.
 
 > **Fail loudly in a hermetic CI suite.** The embedded specs guard on
-> `EmbeddedRift.available` and **SKIP** (pass) when no `librift_ffi` resolves —
-> right for a cross-platform matrix, but for a suite whose whole point is to
-> exercise intercept, a missing/misconfigured natives jar would then read as a
-> green run that never ran. Guard the setup so it fails loudly instead:
-> `EmbeddedRift.requireAvailable` (a `no-op` when a native resolves; otherwise a
-> `MockError.ProvisionFailed` naming the host `os-arch` and how to fix it — add
-> the `zio-bdd-rift-embedded-natives` dependency or set `-Drift.ffi.lib`). Use
+> `EmbeddedRift.available` and **SKIP** (pass) when no embedded engine
+> provider resolves — right for a cross-platform matrix, but for a suite whose
+> whole point is to exercise intercept, a missing/misconfigured natives jar
+> would then read as a green run that never ran. Guard the setup so it fails
+> loudly instead: `EmbeddedRift.requireAvailable` (a `no-op` when a provider
+> resolves; otherwise a `MockError.ProvisionFailed` naming the host `os-arch`
+> and how to fix it — add the `rift-java-embedded` + matching
+> `rift-java-natives` classifier dependencies, or set `-Drift.ffi.lib`). Use
 > the boolean `EmbeddedRift.available` only where a SKIP is genuinely desired.
 
 Build rules with the DSL — `intercept(host).redirectTo(space)` or
@@ -565,14 +568,19 @@ persistent-CA reuse case in `EmbeddedInterceptSpec` (two instances, one committe
 mutually-trusted leaves).
 
 **CONTAINER variant (`Rift.managed`).** The containerized Rift adapter
-(#253) advertises `Capability.Intercept` too, opt-in: pass a
-container-internal `interceptPort` to `Rift.managed`, and testcontainers
-exposes + maps it alongside the admin and imposter ports:
+advertises `Capability.Intercept` only when you pass a container-internal
+`interceptPort` to `Rift.managed`, which testcontainers exposes + maps
+alongside the admin and imposter ports — without it, the listener would only
+ever be reachable inside the container's own network namespace, so the
+adapter does not advertise the capability at all (a clean `Unsupported` beats
+an unreachable endpoint):
 
 ```scala
 import zio.bdd.mock.rift.Rift
 
-// Opt-in: without interceptPort, the container adapter doesn't advertise Intercept, exactly as before.
+// Without interceptPort, RiftMockControl does not advertise Capability.Intercept
+// at all — `control.intercept` fails fast with Unsupported. interceptPort is
+// what makes the listener host-reachable AND what makes negotiation succeed.
 val mock = Provisioning.live >>> Rift.managed(interceptPort = Some(8474))
 ```
 

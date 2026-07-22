@@ -4,7 +4,6 @@ import zio.*
 import zio.bdd.mock.*
 import zio.bdd.mock.rift.Rift
 import zio.bdd.mock.wiremock.WireMock
-import zio.http.Client
 import zio.test.*
 
 /**
@@ -96,8 +95,12 @@ object ConformanceMatrixSpec extends ZIOSpecDefault:
   private val rift =
     MockBackendUnderTest(
       "rift",
-      (Client.default ++ Provisioning.live) >>> Rift.managed().mapError(asT),
-      Capability.values.toSet - Capability.Intercept, // the container advertises all but Intercept (#219, embedded-only)
+      Provisioning.live >>> Rift.managed().mapError(asT),
+      // #285/B5: `Rift.managed()` here passes no `interceptPort`, so nothing is published on the
+      // container's port mapping and the adapter itself does NOT advertise Intercept (a clean
+      // Unsupported beats an unreachable endpoint) — this must mirror RiftMockControl.capabilities,
+      // not the aspirational "all seven on every transport" this used to claim.
+      Capability.values.toSet - Capability.Intercept,
       Isolation.PerInstance,
       available = riftEnabled
     )

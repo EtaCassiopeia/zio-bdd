@@ -100,7 +100,7 @@ val mockControl: ZLayer[Any, Throwable, MockControl] =
     case "wiremock" => Provisioning.live >>> WireMock.correlated()
     // Rift and embedded fail with the typed `MockError` (not a `Throwable`), so map it into the
     // layer's `Throwable` error channel — exactly as support/Backends.scala does:
-    case "rift"     => (Client.default ++ Provisioning.live) >>> Rift.managed().mapError(e => new RuntimeException(s"Rift: $e"))
+    case "rift"     => Provisioning.live >>> Rift.managed().mapError(e => new RuntimeException(s"Rift: $e"))
     case "embedded" => Provisioning.live >>> EmbeddedRift.layer.mapError(e => new RuntimeException(s"Embedded Rift: $e"))
 ```
 
