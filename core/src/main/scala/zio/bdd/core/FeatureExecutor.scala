@@ -97,23 +97,34 @@ object FeatureExecutor {
   ): ZIO[R & StepRegistry[R, S], Nothing, List[ScenarioResult]] = {
     def runOne(scenario: Scenario, flags: Map[String, String]): ZIO[R & StepRegistry[R, S], Nothing, ScenarioResult] =
       ZIO.logAnnotate("scenarioId", scenario.id.toString) {
-        scenario.propertyConfig match
-          case Some(_) =>
-            // Property scenario — dispatch to PropertyExecutor. `flags` (if any @flags(...)
-            // tag is present) is forwarded so each sample uses suite.flagLayer like the
-            // literal path does; expandFlagScenarios already multiplied one full sample
-            // batch per @flags(...) combination upstream. `dryRun` is forwarded too, so
-            // --dry-run validates step matching with one sample instead of running the full
-            // configured sample count for real.
-            PropertyExecutor.run[R, S](scenario, suite, genLookup, flags, dryRun)
-          case None =>
-            val meta = ScenarioMetadata.from(scenario, flags)
-            val layer =
-              if (flags.isEmpty) suite.scenarioLayer(meta)
-              else suite.flagLayer(meta, flags)
-            ScenarioExecutor
-              .executeScenario[R, S](scenario, suite, dryRun, flags, suite.stepTimeout)
-              .provideSomeLayer[R & StepRegistry[R, S]](layer.orDie)
+        if (scenario.isIgnored)
+          // An ignored scenario (excluded by a tag/name filter, or carrying @ignore/@skip) must
+          // not have its scenario-tier layer built or acquired: scenarioLayer(meta)/flagLayer can
+          // provision per-scenario fixtures (e.g. an @mock(...) source), and that provisioning —
+          // which for a raw source under the wrong backend throws and dies the whole run — must
+          // not happen for a scenario the run asked to skip (#337). The isIgnored short-circuit in
+          // ScenarioExecutor.executeScenario is not enough on its own because it runs *inside* the
+          // provided layer scope, so the layer would already have been acquired. Return the ignored
+          // result directly, provisioning nothing.
+          ScenarioExecutor.executeScenario[R, S](scenario, suite, dryRun, flags, suite.stepTimeout)
+        else
+          scenario.propertyConfig match
+            case Some(_) =>
+              // Property scenario — dispatch to PropertyExecutor. `flags` (if any @flags(...)
+              // tag is present) is forwarded so each sample uses suite.flagLayer like the
+              // literal path does; expandFlagScenarios already multiplied one full sample
+              // batch per @flags(...) combination upstream. `dryRun` is forwarded too, so
+              // --dry-run validates step matching with one sample instead of running the full
+              // configured sample count for real.
+              PropertyExecutor.run[R, S](scenario, suite, genLookup, flags, dryRun)
+            case None =>
+              val meta = ScenarioMetadata.from(scenario, flags)
+              val layer =
+                if (flags.isEmpty) suite.scenarioLayer(meta)
+                else suite.flagLayer(meta, flags)
+              ScenarioExecutor
+                .executeScenario[R, S](scenario, suite, dryRun, flags, suite.stepTimeout)
+                .provideSomeLayer[R & StepRegistry[R, S]](layer.orDie)
       }
 
     val resolved = resolveParallelism(scenarioParallelism)
