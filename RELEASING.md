@@ -48,9 +48,12 @@ zio-bdd follows [Semantic Versioning](https://semver.org/):
    ```bash
    git push origin v1.0.0
    ```
-   The GitHub Actions workflow (`.github/workflows/release.yml`) runs three jobs on the tag:
-   - **publish** / **publish-preview** — `sbt ci-release` signs and publishes the stable bundle
-     (JDK 22) and the JDK 21 preview variant to Sonatype Central.
+   The GitHub Actions workflow (`.github/workflows/release.yml`) runs these jobs on the tag:
+   - **verify-tag-signature** — rejects the tag unless a key in `.github/release-signing-keys.asc`
+     signed it.
+   - **publish** — one job on JDK 17. It first asserts that the `zio-bdd-mock-conformance` POM's
+     compile scope is SPI-only (#331), then `sbt ci-release` signs and publishes the whole
+     aggregate to Sonatype Central. There is no separate JDK-21 preview job since #285.
    - **github-release** — creates the GitHub Release with auto-generated notes; `--latest` for a
      plain `vX.Y.Z`, `--prerelease` for a hyphenated `vX.Y.Z-RCn`. (#275)
    - **docs-version-bump** — opens a `docs/bump-X.Y.Z` PR syncing the README/docs install snippets
@@ -62,6 +65,18 @@ zio-bdd follows [Semantic Versioning](https://semver.org/):
 4. **Merge the docs-bump PR** if step 5 of the checklist was skipped — it's docs-only, so a repo
    admin can merge it directly (a bot-opened PR does not re-trigger CI, which is expected). The
    GitHub Release is already created by the workflow — no manual step.
+
+5. **Prepend breaking changes to the GitHub Release notes** when the release has any. The workflow's
+   `--generate-notes` lists merged PR titles only, so a coordinate change or a JDK-floor move is
+   invisible there. Copy the release's `Breaking changes` and `Security` sections from
+   `CHANGELOG.md` above the generated notes:
+   ```bash
+   # everything in the version's section before its first `### Added` heading
+   awk '/^## \[X\.Y\.Z\]/{f=1;next} f&&/^### Added/{exit} f' CHANGELOG.md > breaking.md
+   gh release view vX.Y.Z --json body --jq .body > generated.md
+   cat breaking.md generated.md > notes.md
+   gh release edit vX.Y.Z --notes-file notes.md
+   ```
 
 ## Local test publish
 
@@ -84,8 +99,15 @@ from the last tag + commit hash: `1.0.1-SNAPSHOT`.
 
 ## Module structure
 
-| Artifact               | Contents                                      |
-|------------------------|-----------------------------------------------|
-| `zio-bdd-gherkin`      | Gherkin parser (no ZIO dependency beyond core) |
-| `zio-bdd`              | Core runner, step DSL, reporters, hooks        |
+| Artifact                   | Contents                                                    | JDK floor |
+|----------------------------|-------------------------------------------------------------|-----------|
+| `zio-bdd-gherkin`          | Gherkin parser                                              | 11        |
+| `zio-bdd`                  | Core runner, step DSL, reporters, hooks                     | 11        |
+| `zio-bdd-mock`             | Portable `MockControl` SPI                                  | 11        |
+| `zio-bdd-rift`             | Rift adapter: container, `connect`, and embedded (via `rift-scala-zio`) | 17 |
+| `zio-bdd-wiremock`         | In-process WireMock adapter                                 | 11        |
+| `zio-bdd-mock-conformance` | Conformance scenario sets + `ConformanceHarness` for adapters | 11      |
+
+`zio-bdd-rift-embedded`, `zio-bdd-rift-embedded-jdk21`, and `zio-bdd-rift-embedded-natives` were
+retired in 1.5.0 (#285) and must not reappear in a release.
 

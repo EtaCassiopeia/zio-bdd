@@ -4,6 +4,56 @@ All notable changes to zio-bdd are documented here.
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-09-22
+
+### Breaking changes
+
+This release changes the Rift adapter's Maven coordinates, not just its version. Read this before
+upgrading from 1.4.x if you depend on any `zio-bdd-rift*` artifact.
+
+- **Three artifacts are retired**: `zio-bdd-rift-embedded`, `zio-bdd-rift-embedded-jdk21`, and
+  `zio-bdd-rift-embedded-natives` are not published at 1.5.0. The container, `connect`, and
+  embedded entry points all live in `zio-bdd-rift` (#285).
+- **`zio-bdd-rift` needs JDK 17+** (was 11). The embedded provider needs JDK 22+ at runtime.
+  Every other module (`zio-bdd`, `zio-bdd-gherkin`, `zio-bdd-mock`, `zio-bdd-wiremock`,
+  `zio-bdd-mock-conformance`) stays on JDK 11.
+- **Source break in the Rift layers**: `Rift.managed`/`Rift.connect` no longer require a
+  `zio-http` `Client`, and `Rift.connect` is now a fallible `ZLayer[Provisioning, MockError,
+  MockControl]`. Drop `Client.default` from the provided environment.
+- **Migration** for a build that used the embedded backend:
+
+  ```scala
+  // 1.4.x: remove all of these
+  "io.github.etacassiopeia" %% "zio-bdd-rift-embedded-jdk21"  % "1.4.4" % Test, // or zio-bdd-rift-embedded
+  "io.github.etacassiopeia"  % "zio-bdd-rift-embedded-natives" % "1.4.4" % Test,
+  // Test / javaOptions += "--enable-preview"   (the -jdk21 build only; no longer needed)
+
+  // 1.5.0: one artifact; the embedded engine and natives are ordinary runtime dependencies
+  "io.github.etacassiopeia" %% "zio-bdd-rift"       % "1.5.0" % Test,
+  "io.github.achird-labs"    % "rift-java-embedded" % "0.1.3" % Test,
+  ("io.github.achird-labs"   % "rift-java-natives"  % "0.1.3" % Test).classifier("linux-x86_64"),
+  // plus: Test / fork := true
+  //       Test / javaOptions += "--enable-native-access=ALL-UNNAMED"
+  ```
+
+  Natives classifiers: `linux-x86_64`, `linux-aarch64`, `darwin-x86_64`, `darwin-aarch64`. See
+  `docs/mock-adapters.md` §4.
+
+  **Users of `zio-bdd-rift-embedded-jdk21` must also move their test JVM to JDK 22+.** There is no
+  JDK-21 preview variant any more. On JDK 17–21 `EmbeddedRift.available` is `false` and embedded
+  suites skip rather than fail, so a build that stays on JDK 21 loses embedded coverage silently.
+  Guard with `EmbeddedRift.requireAvailable` to make that loud, or switch to the Rift container or
+  WireMock backend.
+
+### Security
+
+- **No netty on any published module's classpath** (#339). In 1.4.4, `zio-bdd-rift` and
+  `zio-bdd-rift-embedded(-jdk21)` transitively carried netty 4.1.119.Final through `zio-http`
+  3.2.0, the transport of the old hand-rolled Rift admin client, exposing consumers to 27 open
+  netty advisories. The #285 re-base removed that client, so 1.5.0 carries neither `zio-http` nor
+  netty. This is a dependency removal, not a netty version bump. Consumers on 1.4.x clear the
+  advisories by upgrading and applying the migration above.
+
 ### Added
 
 - **`zio-bdd-mock-conformance` is now a published artifact** (#329). The portable conformance
@@ -41,9 +91,10 @@ All notable changes to zio-bdd are documented here.
     `URLayer`): the SDK's `connect` performs a real admin handshake at layer construction.
     `Rift.managed`'s `adminPort` is effectively fixed at 2525 (the SDK's container transport has
     no override); a non-default value now fails fast with a typed `MockError.InvalidDefinition`
-    instead of being silently accepted. The Rift adapter now advertises all seven capabilities
-    (including `Intercept`) uniformly on every transport, rather than gating `Intercept` on
-    whether the container was started with an `interceptPort`.
+    instead of being silently accepted. The embedded transport advertises all seven capabilities.
+    The container and `connect` transports advertise `Intercept` only when a host-reachable
+    listener is configured (`Rift.managed`'s `interceptPort`, or `Rift.connect`'s
+    `interceptProxy`), and fail `require(Capability.Intercept)` with `Unsupported` otherwise.
   - Update every call site accordingly: drop the `Client` requirement/import, and — for
     `Rift.managed`/`Rift.connect` — drop `Client.default` from the provided environment.
 
