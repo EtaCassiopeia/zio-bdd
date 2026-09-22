@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Bump the zio-bdd install-snippet version across README + docs to <version>.
 #
-# Only lines that declare an `io.github.etacassiopeia` coordinate are touched, so a
-# free-form version mention in prose is never disturbed. Idempotent: running it with
-# the version the docs already carry produces no change.
+# Only lines that declare an `io.github.etacassiopeia` coordinate, or the adapter
+# table's `Coordinates (x.y.z)` header, are touched — so a free-form version mention
+# in prose is never disturbed. Idempotent: running it with the version the docs
+# already carry produces no change.
 #
 # Usage: scripts/bump-doc-versions.sh <version>   (e.g. 1.5.0, or 1.5.0-RC1)
 set -euo pipefail
@@ -21,10 +22,13 @@ changed=0
 for rel in "${files[@]}"; do
   f="$root/$rel"
   [ -f "$f" ] || continue
-  # On any line carrying an io.github.etacassiopeia coordinate, bump the `% "x.y.z"` literal.
+  # On any line carrying an io.github.etacassiopeia coordinate, bump the `% "x.y.z"` literal;
+  # also bump the adapter table's `Coordinates (x.y.z)` column header, which names the
+  # version those coordinates are published at but carries no coordinate of its own.
   # `/ge` builds the replacement as an expression, so the version needs no regex-escaping.
   VERSION="$version" perl -i -pe \
-    'if (/io\.github\.etacassiopeia/) { s/(%\s*)"[0-9]+\.[0-9]+\.[0-9]+(?:[-.][0-9A-Za-z.]+)?"/$1 . q{"} . $ENV{VERSION} . q{"}/ge }' \
+    'if (/io\.github\.etacassiopeia/) { s/(%\s*)"[0-9]+\.[0-9]+\.[0-9]+(?:[-.][0-9A-Za-z.]+)?"/$1 . q{"} . $ENV{VERSION} . q{"}/ge }
+     s/(Coordinates \()[0-9]+\.[0-9]+\.[0-9]+(?:[-.][0-9A-Za-z.]+)?(\))/$1 . $ENV{VERSION} . $2/ge;' \
     "$f"
   if ! git -C "$root" diff --quiet -- "$rel" 2>/dev/null; then
     echo "  bumped $rel"
