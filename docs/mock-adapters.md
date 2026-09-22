@@ -9,7 +9,7 @@ pick one.
 
 ## 1. The three backends at a glance
 
-| Adapter | Coordinates (1.4.4) | Docker? | JDK | Isolation default | Capabilities |
+| Adapter | Coordinates (1.5.0) | Docker? | JDK | Isolation default | Capabilities |
 |---|---|---|---|---|---|
 | Rift container | `zio-bdd-rift` | yes (testcontainers) | 17+ | PerInstance | all six always on; Intercept only with `interceptPort` |
 | WireMock | `zio-bdd-wiremock` | no | 11+ | Correlated (via `.correlated`) | Faults, StatefulScenarios, StateInspection only |
@@ -55,7 +55,7 @@ three capabilities in the first column of the top table; requesting
 ## 2. Rift container (`zio-bdd-rift`)
 
 ```scala
-"io.github.etacassiopeia" %% "zio-bdd-rift" % "1.4.4"
+"io.github.etacassiopeia" %% "zio-bdd-rift" % "1.5.0"
 ```
 
 `zio-bdd-rift` is a single published artifact that covers the container
@@ -142,7 +142,7 @@ See [layers](layers.md) for how this composes into a suite's `environment`.
 ## 3. WireMock (`zio-bdd-wiremock`)
 
 ```scala
-"io.github.etacassiopeia" %% "zio-bdd-wiremock" % "1.4.4"
+"io.github.etacassiopeia" %% "zio-bdd-wiremock" % "1.5.0"
 ```
 
 In-process, no Docker, runs on JDK 11+. Only requires `Provisioning`:
@@ -365,7 +365,7 @@ adapter written outside this repo can run the *official* definition of
 tests:
 
 ```scala
-"io.github.etacassiopeia" %% "zio-bdd-mock-conformance" % "1.4.4" % Test
+"io.github.etacassiopeia" %% "zio-bdd-mock-conformance" % "1.5.0" % Test
 ```
 
 Its compile-scope dependency is the SPI (`zio-bdd-mock`) alone — pulling it
