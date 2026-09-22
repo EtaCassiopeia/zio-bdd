@@ -4,6 +4,14 @@ All notable changes to zio-bdd are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **Bumped Rift to v0.18.0** (from v0.14.0), and the official SDK to `rift-scala-zio` 0.1.4 /
+  `rift-java` 0.2.3 (from 0.1.2 / 0.1.3). `Rift.DefaultImage` is now `zainalpour/rift-proxy:v0.18.0`.
+  The embedded leg runs the engine bundled with `rift-java-natives` 0.2.3 — Rift 0.17.0 — until a
+  rift-java release carrying 0.18.0 ships; the C-ABI is `abi: v2` on both, so the skew is safe.
+  Embedded users should bump their own `rift-java-embedded`/`rift-java-natives` to 0.2.3.
+
 ## [1.5.0] — 2026-09-22
 
 ### Breaking changes

@@ -17,14 +17,14 @@ import com.typesafe.tools.mima.core.*
 // Single source of truth for the pinned Rift release (#195): the container image tag
 // (`Rift.DefaultImage`, via the generated `RiftBuildInfo` below) derives from it, so a version bump
 // touches exactly one line.
-val riftVersion = "0.14.0"
+val riftVersion = "0.18.0"
 
 // The official Scala 3 SDK the adapters are built on (#285). `rift-scala-zio` -> `rift-scala-bridge`
 // pins `rift-java-core` at riftJavaVersion; the embedded engine + natives jars this build adds at Test
 // scope MUST stay on that same rift-java version — they meet across the FFI/ABI boundary, so a split
 // between the compile-side facade and the runtime engine is exactly the mismatch to avoid.
-val riftScalaVersion = "0.1.2"
-val riftJavaVersion  = "0.1.3"
+val riftScalaVersion = "0.1.4"
+val riftJavaVersion  = "0.2.3"
 
 inThisBuild(
   List(
