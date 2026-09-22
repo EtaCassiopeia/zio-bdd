@@ -37,7 +37,7 @@ Remove:
 Add:
 
 ```scala
-"io.github.etacassiopeia" %% "zio-bdd" % "1.4.3"
+"io.github.etacassiopeia" %% "zio-bdd" % "1.4.4"
 ```
 
 The `zio-bdd` artifact includes the sbt test framework integration. You do not need a
