@@ -79,7 +79,8 @@ source break from the pre-#285 adapter):
     adminPort: Int = DefaultAdminPort,
     imposterBasePort: Int = DefaultImposterBase,
     mode: RiftMode = RiftMode.PerInstance,
-    interceptPort: Option[Int] = None
+    interceptPort: Option[Int] = None,
+    upstreamTrust: Option[UpstreamTrust] = None
   ): ZLayer[Provisioning, MockError, MockControl]
   ```
 
@@ -97,6 +98,10 @@ source break from the pre-#285 adapter):
   container's own network namespace, so `Capability.Intercept` is not
   advertised at all in that case (§1): pass `interceptPort` to get both a
   host-reachable listener and successful `intercept` capability negotiation.
+  `upstreamTrust` lets proxy stubs reach an HTTPS origin behind a private CA
+  (the CA is copied into the container); see
+  [the embedded section](#proxying-to-an-https-origin-behind-a-private-ca--upstreamtrust),
+  which works the same way on both backends.
 
 - **`Rift.connect(...)`** targets an already-running Rift admin endpoint
   instead of starting a container (used by tests, or when Rift runs
@@ -198,8 +203,8 @@ which only adds them at `Test` scope for its own specs):
 
 ```scala
 libraryDependencies ++= Seq(
-  "io.github.achird-labs" % "rift-java-embedded" % "0.3.0",
-  ("io.github.achird-labs" % "rift-java-natives" % "0.3.0").classifier("darwin-aarch64")
+  "io.github.achird-labs" % "rift-java-embedded" % "0.3.1",
+  ("io.github.achird-labs" % "rift-java-natives" % "0.3.1").classifier("darwin-aarch64")
 )
 ```
 
@@ -287,21 +292,22 @@ verification off:
 
 ```scala
 import java.nio.file.Path
-import zio.bdd.mock.rift.embedded.EmbeddedRift.{InterceptConfig, UpstreamTrust}
+import zio.bdd.mock.rift.{Rift, UpstreamTrust}
+import zio.bdd.mock.rift.embedded.EmbeddedRift.InterceptConfig
 
-val trustingCa = Provisioning.live >>> EmbeddedRift.layer(
-  RiftMode.PerInstance,
-  InterceptConfig(),
-  upstreamTrust = Some(UpstreamTrust.CaFile(Path.of("certs/internal-ca.pem")))
-  // or UpstreamTrust.CaPem(pemString), or UpstreamTrust.SkipVerify (logs a warning)
-)
+val ca = Some(UpstreamTrust.CaFile(Path.of("certs/internal-ca.pem")))
+// or UpstreamTrust.CaPem(pemString), or UpstreamTrust.SkipVerify (logs a warning)
+
+val embedded  = Provisioning.live >>> EmbeddedRift.layer(RiftMode.PerInstance, InterceptConfig(), upstreamTrust = ca)
+val container = Provisioning.live >>> Rift.managed(upstreamTrust = ca)
 ```
 
 The engine applies the same trust to the intercept listener's leg to a real
 origin. It is an engine-wide setting applied at startup, not per space. A `CaPem`
-without a certificate block, or a `CaFile` that isn't a readable file, fails
-the layer with `MockError.InvalidDefinition`. The container backend has no
-equivalent yet: the SDK's container transport doesn't expose it (#342).
+without a certificate block, a `CaFile` that isn't a readable file, or (on the
+container backend) an image older than Rift 0.18.0 fails the layer with
+`MockError.InvalidDefinition`. `Rift.connect` targets an engine someone else
+started, so configure it there (`--upstream-ca-file`).
 
 #### Sharing one engine across `@Suite` classes — `EmbeddedRift.shared`
 

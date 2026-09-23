@@ -114,6 +114,11 @@ object Rift:
    * Docker's port mapping automatically (`RiftContainer`'s own `hostResolver`),
    * so every [[zio.bdd.mock.MockSpace]] `baseUri` is already host-reachable
    * with no adapter-side mapping.
+   *
+   * `upstreamTrust` sets the proxy stubs' outbound TLS trust (see
+   * [[UpstreamTrust]]); the CA is copied into the container. It needs an image
+   * of Rift 0.18.0 or later — an older version tag fails with
+   * [[MockError.InvalidDefinition]].
    */
   def managed(
     image: String = DefaultImage,
@@ -121,7 +126,8 @@ object Rift:
     adminPort: Int = DefaultAdminPort,
     imposterBasePort: Int = DefaultImposterBase,
     mode: RiftMode = RiftMode.PerInstance,
-    interceptPort: Option[Int] = None
+    interceptPort: Option[Int] = None,
+    upstreamTrust: Option[UpstreamTrust] = None
   ): ZLayer[Provisioning, MockError, MockControl] =
     if adminPort != DefaultAdminPort then
       ZLayer.fail(
@@ -141,13 +147,17 @@ object Rift:
           image = Some(image),
           imposterPorts = imposterPorts,
           interceptPort = interceptPort,
-          allowInjection = true
+          allowInjection = true,
+          upstreamTrust = upstreamTrust
         )
       // The intercept listener binds inside the container: "0.0.0.0" (not loopback) so the
       // container's own network stack accepts the connection Docker's port mapping forwards in.
       val intercept = interceptPort.fold(InterceptSettings())(p => InterceptSettings(bindHost = "0.0.0.0", port = p))
       ZLayer.makeSome[Provisioning, MockControl](
-        SdkRift.container(containerConfig).mapError(RiftModelMapping.toMockError(None)),
+        UpstreamTrustCheck.guarded(
+          upstreamTrust,
+          SdkRift.container(containerConfig).mapError(RiftModelMapping.toMockError(None))
+        ),
         // Without `interceptPort`, nothing is published on the container's port mapping: the listener
         // would bind inside the container's netns and `proxyPort` would report an address the SUT can
         // never reach. Advertise Intercept only when the caller actually exposed a port for it (#285/B5).

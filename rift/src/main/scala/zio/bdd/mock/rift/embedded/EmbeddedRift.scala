@@ -1,10 +1,17 @@
 package zio.bdd.mock.rift.embedded
 
-import java.nio.file.{Files, Path}
+import java.nio.file.Path
 
 import zio.*
 import zio.bdd.mock.{MockControl, MockError, Provisioning, SharedLayer}
-import zio.bdd.mock.rift.{InterceptSettings, RiftMode, RiftModelMapping, Rift as RiftAdapter}
+import zio.bdd.mock.rift.{
+  InterceptSettings,
+  RiftMode,
+  RiftModelMapping,
+  UpstreamTrust,
+  UpstreamTrustCheck,
+  Rift as RiftAdapter
+}
 
 import rift.bridge.EmbeddedConfig
 import rift.zio.Rift as SdkRift
@@ -138,14 +145,6 @@ object EmbeddedRift:
   def layer(mode: RiftMode): ZLayer[Provisioning, MockError, MockControl] = layer(mode, InterceptConfig())
 
   /**
-   * How the engine trusts an HTTPS origin that a proxy stub (the `proxyRecord`
-   * capability) dials: `CaFile(path)` / `CaPem(pem)` trust a private CA,
-   * `SkipVerify` disables verification. Unset, the engine trusts only public
-   * roots. The SDK's type, re-exported so callers need no `rift.bridge` import.
-   */
-  export rift.bridge.UpstreamTrust
-
-  /**
    * A scoped [[MockControl]] backed by the in-process Rift engine, in the given
    * isolation `mode`: the engine starts on layer construction and stops when
    * the scope closes. `upstreamTrust` sets the proxy stubs' outbound TLS trust
@@ -169,25 +168,10 @@ object EmbeddedRift:
     upstreamTrust match
       case None => SdkRift.embedded.mapError(RiftModelMapping.toMockError(None))
       case Some(trust) =>
-        ZLayer.fromZIO(checkUpstreamTrust(trust)).flatMap { _ =>
+        UpstreamTrustCheck.guarded(
+          upstreamTrust,
           SdkRift.embedded(EmbeddedConfig(upstreamTrust = Some(trust))).mapError(RiftModelMapping.toMockError(None))
-        }
-
-  // The SDK refuses a bad trust setting with an IllegalArgumentException at engine start, outside its
-  // typed error channel — a defect (achird-labs/rift-scala#193). Check the same things first so the
-  // caller gets a typed failure.
-  private def checkUpstreamTrust(trust: UpstreamTrust): IO[MockError, Unit] = trust match
-    case UpstreamTrust.CaPem(pem) =>
-      ZIO
-        .fail(MockError.InvalidDefinition("upstreamTrust CaPem holds no PEM certificate block"))
-        .unless(pem.contains("-----BEGIN CERTIFICATE-----"))
-        .unit
-    case UpstreamTrust.CaFile(path) =>
-      ZIO
-        .fail(MockError.InvalidDefinition(s"upstreamTrust CaFile is not a readable file: $path"))
-        .unlessZIO(ZIO.succeedBlocking(Files.isRegularFile(path) && Files.isReadable(path)))
-        .unit
-    case UpstreamTrust.SkipVerify => ZIO.unit
+        )
 
   /**
    * A **process-wide shared** embedded [[MockControl]] (PerInstance): the

@@ -89,7 +89,7 @@ jobs:
       - name: Real-container suites (RiftContainerSpec + RiftInterceptSpec + conformance Rift column)
         env:
           RIFT_IT: "1"
-        run: sbt "rift/testOnly zio.bdd.mock.rift.RiftContainerSpec zio.bdd.mock.rift.RiftInterceptSpec" "conformance/test"
+        run: sbt "rift/testOnly zio.bdd.mock.rift.RiftContainerSpec zio.bdd.mock.rift.RiftInterceptSpec zio.bdd.mock.rift.RiftContainerUpstreamTrustSpec" "conformance/test"
 
   # #285 collapsed the embedded provider into the single `zio-bdd-rift` artifact: `rift-java-embedded`
   # (the SDK's runtime ServiceLoader provider, added at Test scope in build.sbt) needs the STABLE
