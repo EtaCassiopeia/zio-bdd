@@ -20,10 +20,14 @@ object InterceptDslSpec extends ZIOSpecDefault:
       )
     },
     test("intercept(host).respondWith(stub) builds a Serve rule") {
-      val stub = InterceptStub(status = 418, headers = Map("X-Teapot" -> "1"), body = Some("teapot"))
+      val stub = InterceptStub(status = 418, headers = Headers("X-Teapot" -> "1"), body = Some("teapot"))
       assertTrue(
         intercept("cdn.example.com").respondWith(stub) == InterceptRule.Serve("cdn.example.com", stub)
       )
+    },
+    test("InterceptStub.withHeader appends, so a repeated name keeps every value in order") {
+      val stub = InterceptStub().withHeader("Set-Cookie", "a=1").withHeader("set-cookie", "b=2")
+      assertTrue(stub.headers.values("Set-Cookie") == List("a=1", "b=2"))
     },
     test("TrustStoreFormat.wire is the backend token") {
       assertTrue(TrustStoreFormat.Pkcs12.wire == "pkcs12", TrustStoreFormat.Jks.wire == "jks")

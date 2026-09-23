@@ -63,8 +63,9 @@ private[rift] final class RiftIntercept(
     yield spi.TrustStore(path, password, format)
 
   private def interceptResponse(stub: spi.InterceptStub): IsResponseBuilder =
-    val withHeaders = stub.headers.toVector.sortBy(_._1).foldLeft(status(stub.status)) { case (b, (k, v)) =>
-      b.header(k, v)
+    // One `header` call per value: the SDK sends a repeated name once per value (engine >= 0.18.0).
+    val withHeaders = stub.headers.entries.sortBy(_._1).foldLeft(status(stub.status)) { case (b, (k, vs)) =>
+      vs.foldLeft(b)(_.header(k, _))
     }
     stub.body.fold(withHeaders)(withHeaders.text)
 

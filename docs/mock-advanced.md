@@ -419,7 +419,7 @@ either forwards the intercepted host to a mock space or answers it inline.
 
 The MITM constraint is intrinsic — the SUT must trust the intercept CA — so the
 goal is to *provision* that trust, not eliminate it: `trustStore` hands you a
-ready-to-use JVM truststore (JKS by default) + password, and `proxyPort` is the
+ready-to-use JVM truststore (PKCS#12 by default) + password, and `proxyPort` is the
 loopback port the SUT proxies through. Starting the listener is lazy and opt-in:
 a suite that never calls `mc.intercept` pays nothing.
 
@@ -457,7 +457,7 @@ val setUp: ZIO[MockControl, Throwable, TrustStore] =
               .mapError(e => new RuntimeException(e.toString))
     // (or answer inline, no imposter needed:)
     //   _ <- ic.add(intercept("cdn.example.com").respondWith(InterceptStub(200, body = Some("""{"cdn":"mocked"}"""))))
-    ts     <- ic.trustStore().mapError(e => new RuntimeException(e.toString)) // JKS path + password
+    ts     <- ic.trustStore().mapError(e => new RuntimeException(e.toString)) // PKCS#12 path + password
     port   <- ic.proxyPort.mapError(e => new RuntimeException(e.toString))    // the loopback proxy port
   yield ts
 ```
@@ -479,7 +479,17 @@ gone. See `EmbeddedInterceptSpec` for the runnable end-to-end version (a real
 **Isolation semantics.** `redirectTo` forwards to the target space's imposter
 **port**; under PerInstance (the embedded default) each space has its own port,
 so the redirect lands on exactly that space. `respondWith` is
-isolation-independent. Because a Correlated space shares one imposter port and is
+isolation-independent.
+
+**Repeated headers in an inline stub.** `InterceptStub.headers` is multi-valued
+(the same `Headers` type as a `ResponseDef`), so a stub can send a header several
+times — e.g. two `Set-Cookie` lines — each value on its own line:
+
+```scala
+InterceptStub(body = Some("ok")).withHeader("Set-Cookie", "a=1").withHeader("Set-Cookie", "b=2")
+```
+
+This needs Rift ≥ 0.18.0 (the pinned version); an older engine refuses the rule. Because a Correlated space shares one imposter port and is
 separated by a correlation header the intercepted request does not carry, use
 PerInstance (the default) for host redirects.
 
