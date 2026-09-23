@@ -6,13 +6,14 @@ import java.net.http.{HttpClient, HttpRequest as JHttpRequest, HttpResponse as J
 import zio.*
 import zio.bdd.mock.*
 import zio.bdd.mock.rift.embedded.EmbeddedRift
+import zio.stream.ZStream
 import zio.test.*
 
 import _root_.rift.RiftError
 import _root_.rift.json.Json
 import _root_.rift.model.{ApplyResult, EngineInfo, Port}
 import _root_.rift.dsl.ImposterBuilder
-import _root_.rift.bridge.{ImposterDefinition, InterceptConfig as SdkInterceptConfig}
+import _root_.rift.bridge.{EventStreamConfig, ImposterDefinition, RiftEvent, InterceptConfig as SdkInterceptConfig}
 import _root_.rift.zio.{ImposterHandle, InterceptHandle, Rift as SdkRift}
 
 /**
@@ -42,18 +43,20 @@ object RiftMockControlSpec extends ZIOSpecDefault:
   // ── engine-free contract ─────────────────────────────────────────────────────────────────────
 
   private object FailingRift extends SdkRift:
-    private def die[A]: IO[RiftError, A]                                              = ZIO.die(new NotImplementedError("FailingRift"))
-    def create(definition: ImposterDefinition): IO[RiftError, ImposterHandle]         = die
-    def create(builder: ImposterBuilder): IO[RiftError, ImposterHandle]               = die
-    def createFromJson(json: String): IO[RiftError, ImposterHandle]                   = die
-    def imposter(port: Port): IO[RiftError, ImposterHandle]                           = die
-    def imposters: IO[RiftError, Chunk[ImposterHandle]]                               = die
-    def deleteAll: IO[RiftError, Unit]                                                = die
-    def replaceAll(definitions: Chunk[ImposterDefinition]): IO[RiftError, Unit]       = die
-    def applyConfig(config: Json): IO[RiftError, ApplyResult]                         = die
-    def info: IO[RiftError, EngineInfo]                                               = die
-    def adminUri: UIO[URI]                                                            = ZIO.die(new NotImplementedError("FailingRift"))
-    def intercept(config: SdkInterceptConfig): ZIO[Scope, RiftError, InterceptHandle] = die
+    private def die[A]: IO[RiftError, A]                                                 = ZIO.die(new NotImplementedError("FailingRift"))
+    def create(definition: ImposterDefinition): IO[RiftError, ImposterHandle]            = die
+    def create(builder: ImposterBuilder): IO[RiftError, ImposterHandle]                  = die
+    def createFromJson(json: String): IO[RiftError, ImposterHandle]                      = die
+    def imposter(port: Port): IO[RiftError, ImposterHandle]                              = die
+    def imposters: IO[RiftError, Chunk[ImposterHandle]]                                  = die
+    def deleteAll: IO[RiftError, Unit]                                                   = die
+    def replaceAll(definitions: Chunk[ImposterDefinition]): IO[RiftError, Unit]          = die
+    def applyConfig(config: Json): IO[RiftError, ApplyResult]                            = die
+    def info: IO[RiftError, EngineInfo]                                                  = die
+    def adminUri: UIO[URI]                                                               = ZIO.die(new NotImplementedError("FailingRift"))
+    def intercept(config: SdkInterceptConfig): ZIO[Scope, RiftError, InterceptHandle]    = die
+    def interceptAttach(host: String, port: Int): ZIO[Scope, RiftError, InterceptHandle] = die
+    def events(config: EventStreamConfig): ZStream[Any, RiftError, RiftEvent]            = ZStream.fromZIO(die)
 
   private def controlOf(mode: RiftMode, interceptCapable: Boolean = true): ULayer[MockControl] =
     Provisioning.live >>> ZLayer.scoped(

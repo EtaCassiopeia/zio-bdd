@@ -83,7 +83,7 @@ source break from the pre-#285 adapter):
   ): ZLayer[Provisioning, MockError, MockControl]
   ```
 
-  `DefaultImage` is the pinned Rift image, currently `zainalpour/rift-proxy:v0.14.0`
+  `DefaultImage` is the pinned Rift image, currently `zainalpour/rift-proxy:v0.18.0`
   — derived from the single `riftVersion` in `build.sbt`, so treat it as "the
   pinned Rift image" rather than a hardcoded tag. `adminPort` is effectively
   fixed at `DefaultAdminPort` (2525): the SDK's container transport
@@ -198,8 +198,8 @@ which only adds them at `Test` scope for its own specs):
 
 ```scala
 libraryDependencies ++= Seq(
-  "io.github.achird-labs" % "rift-java-embedded" % "0.1.3",
-  ("io.github.achird-labs" % "rift-java-natives" % "0.1.3").classifier("darwin-aarch64")
+  "io.github.achird-labs" % "rift-java-embedded" % "0.3.0",
+  ("io.github.achird-labs" % "rift-java-natives" % "0.3.0").classifier("darwin-aarch64")
 )
 ```
 
@@ -277,6 +277,31 @@ val perInstance = Provisioning.live >>> EmbeddedRift.layer                      
 // header (like WireMock.correlated) — cheaper under heavy scenario-parallelism
 val correlated  = Provisioning.live >>> EmbeddedRift.layer(RiftMode.correlated)
 ```
+
+#### Proxying to an HTTPS origin behind a private CA — `upstreamTrust`
+
+A `proxyRecord` proxy that dials an HTTPS upstream verifies its certificate
+against public roots only, so an origin signed by a private (corporate or test)
+CA fails. Give the engine that CA, or — for development only — turn
+verification off:
+
+```scala
+import java.nio.file.Path
+import zio.bdd.mock.rift.embedded.EmbeddedRift.{InterceptConfig, UpstreamTrust}
+
+val trustingCa = Provisioning.live >>> EmbeddedRift.layer(
+  RiftMode.PerInstance,
+  InterceptConfig(),
+  upstreamTrust = Some(UpstreamTrust.CaFile(Path.of("certs/internal-ca.pem")))
+  // or UpstreamTrust.CaPem(pemString), or UpstreamTrust.SkipVerify (logs a warning)
+)
+```
+
+The engine applies the same trust to the intercept listener's leg to a real
+origin. It is an engine-wide setting applied at startup, not per space. A `CaPem`
+without a certificate block, or a `CaFile` that isn't a readable file, fails
+the layer with `MockError.InvalidDefinition`. The container backend has no
+equivalent yet: the SDK's container transport doesn't expose it (#342).
 
 #### Sharing one engine across `@Suite` classes — `EmbeddedRift.shared`
 

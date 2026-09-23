@@ -5,10 +5,11 @@ import zio.bdd.mock.*
 import zio.test.*
 
 import java.net.{InetSocketAddress, ProxySelector, URI}
-import java.net.http.{HttpClient, HttpRequest, HttpResponse}
+import java.net.http.{HttpClient, HttpHeaders, HttpRequest, HttpResponse}
 import java.nio.file.Files
 import java.security.KeyStore
 import javax.net.ssl.{SSLContext, TrustManagerFactory}
+import scala.jdk.CollectionConverters.*
 
 /**
  * End-to-end acceptance for the built-in HTTPS intercept capability (#219,
@@ -75,7 +76,7 @@ object EmbeddedInterceptSpec extends ZIOSpecDefault:
     proxyPort: Int,
     ts: TrustStore,
     proxyHost: String = "127.0.0.1"
-  ): Task[(Int, String)] =
+  ): Task[(Int, String, HttpHeaders)] =
     ZIO.attemptBlocking {
       val ks = KeyStore.getInstance(ts.format.keystoreName)
       val in = Files.newInputStream(ts.path)
@@ -93,7 +94,7 @@ object EmbeddedInterceptSpec extends ZIOSpecDefault:
         .build()
       val resp =
         client.send(HttpRequest.newBuilder(URI.create(url)).GET().build(), HttpResponse.BodyHandlers.ofString())
-      (resp.statusCode, resp.body)
+      (resp.statusCode, resp.body, resp.headers)
     }
 
   private val cdnConfig = MockSource.Dsl(
@@ -196,6 +197,22 @@ object EmbeddedInterceptSpec extends ZIOSpecDefault:
           port <- ic.proxyPort.mapError(asT)
           res  <- sutGet("https://api.example.com/anything", port, ts)
         yield assertTrue(res._1 == 418, res._2.contains("inline-teapot")))
+          .provide(Provisioning.live, EmbeddedRift.layer.mapError(asT))
+    },
+    test("respondWith: a repeated header (Set-Cookie) reaches the SUT once per value, in order") {
+      if !EmbeddedRift.available then ZIO.succeed(assertCompletes)
+      else
+        (for
+          mc <- ZIO.service[MockControl]
+          ic <- mc.intercept.mapError(u => new RuntimeException(u.message))
+          stub = InterceptStub(body = Some("cookies"))
+                   .withHeader("Set-Cookie", "a=1")
+                   .withHeader("Set-Cookie", "b=2")
+          _    <- ic.respondWith("cookies.example.com", stub).mapError(asT)
+          ts   <- ic.trustStore().mapError(asT)
+          port <- ic.proxyPort.mapError(asT)
+          res  <- sutGet("https://cookies.example.com/login", port, ts)
+        yield assertTrue(res._1 == 200, res._3.allValues("set-cookie").asScala.toList == List("a=1", "b=2")))
           .provide(Provisioning.live, EmbeddedRift.layer.mapError(asT))
     },
     test("bindHost 0.0.0.0: the proxy binds a wider interface, reports it, and a redirect completes through it") {

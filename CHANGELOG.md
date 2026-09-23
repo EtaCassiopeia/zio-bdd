@@ -4,6 +4,30 @@ All notable changes to zio-bdd are documented here.
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **`InterceptStub.headers` is now `Headers`** (was `Map[String, String]`), the same multi-valued type
+  a `ResponseDef` uses, so an inline intercept response can send a header several times (e.g. two
+  `Set-Cookie` lines). Migrate `headers = Map("k" -> "v")` to `headers = Headers("k" -> "v")`, or
+  use the new `InterceptStub.withHeader(name, value)`, which appends.
+
+### Added
+
+- **Intercept serve rules send repeated headers** once per value (engine 0.18.0, rift-scala#187).
+- **`upstreamTrust` on `EmbeddedRift.layer`** — `UpstreamTrust.CaFile` / `CaPem` / `SkipVerify` for
+  proxy stubs (and the intercept listener's origin leg) dialing an HTTPS origin behind a private
+  CA (engine 0.18.0, rift-scala#186). A malformed setting fails the layer with
+  `MockError.InvalidDefinition`. The container backend has no equivalent yet (#342).
+
+### Changed
+
+- **Bumped Rift to v0.18.0** (from v0.14.0), and the official SDK to `rift-scala-zio` 0.2.0 /
+  `rift-java` 0.3.0 (from 0.1.2 / 0.1.3). `Rift.DefaultImage` is now `zainalpour/rift-proxy:v0.18.0`,
+  and the embedded engine (`rift-java-natives` 0.3.0) is 0.18.0 too. Embedded users should bump
+  their own `rift-java-embedded`/`rift-java-natives` to 0.3.0.
+- **ZIO 2.1.17 → 2.1.21**, which rift-scala 0.2.0 requires (an older `zio-test` fails its layer
+  macros at compile time).
+
 ## [1.5.0] — 2026-09-22
 
 ### Breaking changes

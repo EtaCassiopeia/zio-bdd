@@ -17,14 +17,14 @@ import com.typesafe.tools.mima.core.*
 // Single source of truth for the pinned Rift release (#195): the container image tag
 // (`Rift.DefaultImage`, via the generated `RiftBuildInfo` below) derives from it, so a version bump
 // touches exactly one line.
-val riftVersion = "0.14.0"
+val riftVersion = "0.18.0"
 
 // The official Scala 3 SDK the adapters are built on (#285). `rift-scala-zio` -> `rift-scala-bridge`
 // pins `rift-java-core` at riftJavaVersion; the embedded engine + natives jars this build adds at Test
 // scope MUST stay on that same rift-java version — they meet across the FFI/ABI boundary, so a split
 // between the compile-side facade and the runtime engine is exactly the mismatch to avoid.
-val riftScalaVersion = "0.1.2"
-val riftJavaVersion  = "0.1.3"
+val riftScalaVersion = "0.2.0"
+val riftJavaVersion  = "0.3.0"
 
 inThisBuild(
   List(
@@ -70,12 +70,12 @@ lazy val javaFloor17Settings: Seq[Def.Setting[_]] = Seq(
 )
 
 lazy val commonDependencies = Seq(
-  "dev.zio" %% "zio"                   % "2.1.17",
+  "dev.zio" %% "zio"                   % "2.1.21",
   "dev.zio" %% "zio-schema"            % "1.6.6",
   "dev.zio" %% "zio-schema-derivation" % "1.6.6",
   "dev.zio" %% "zio-logging"           % "2.5.0",
-  "dev.zio" %% "zio-test"              % "2.1.17",
-  "dev.zio" %% "zio-test-sbt"          % "2.1.17" % Test
+  "dev.zio" %% "zio-test"              % "2.1.21",
+  "dev.zio" %% "zio-test-sbt"          % "2.1.21" % Test
 )
 
 // Binary-compatibility checking. The baseline is established at 1.0.0: until a 1.x is published,
@@ -178,7 +178,7 @@ lazy val core = (project in file("core"))
     libraryDependencies ++= Seq(
       "org.scala-sbt"           % "test-interface" % "1.0" % "provided",
       "org.scala-lang.modules" %% "scala-xml"      % "2.3.0",
-      "dev.zio"                %% "zio-streams"    % "2.1.17",
+      "dev.zio"                %% "zio-streams"    % "2.1.21",
       "dev.zio"                %% "izumi-reflect"  % "3.0.2"
     ),
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),

@@ -110,12 +110,18 @@ object TrustStore:
 
 /**
  * An inline response served for an intercepted host (the `respondWith` action).
+ * `headers` is multi-valued like a [[ResponseDef]]'s: a header with several
+ * values (e.g. `Set-Cookie`) is sent once per value.
  */
 final case class InterceptStub(
   status: Int = 200,
-  headers: Map[String, String] = Map.empty,
+  headers: Headers = Headers.empty,
   body: Option[String] = None
-)
+):
+  /**
+   * Append a header value; calling it twice with one name sends both values.
+   */
+  def withHeader(name: String, value: String): InterceptStub = copy(headers = headers.add(name, value))
 
 /**
  * A portable intercept rule: match an intercepted HTTPS `host` and either
