@@ -248,6 +248,10 @@ Construct it either way:
 - **`SutClient.make(space)`** — a plain value, handy inline in a step.
 - **`SutClient.layer(space)`** — the same client as a `ULayer[SutClient]`, for
   wiring into a suite's environment.
+- **`SutClient.make(space, ssl)`** / **`SutClient.layer(space, ssl)`** — for an
+  HTTPS space (`Capability.Tls`), handshaking with an `SSLContext` built by
+  `Tls.trust` or `Tls.clientIdentity`. See
+  [Advanced mocking §12](mock-advanced.md#12-https-mock-spaces-with-optional-mtls-capabilitytls).
 
 ```scala
 trait SutClient:

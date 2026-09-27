@@ -31,6 +31,7 @@ _  <- sc.define(space, defineRetry(path))
 | `Capability.ProxyRecord` | `proxyRecord: IO[Unsupported, ProxyRecord]` | yes | yes | no |
 | `Capability.Templating` | `templating: IO[Unsupported, Templating]` | yes | yes | no |
 | `Capability.Intercept` | `intercept: IO[Unsupported, Intercept]` | only with `interceptPort`/`interceptProxy` | yes | no |
+| `Capability.Tls` | none — a provisioning option (`MockSpec.tls`, §12) | yes | yes | yes |
 
 Faults, StatefulScenarios, and StateInspection are portable across all three
 adapters. Scripting, ProxyRecord, and Templating are Rift-only (container or
@@ -652,3 +653,71 @@ test("times out under latency") {
   ...
 } @@ withLatency(2.seconds)
 ```
+
+---
+
+## 12. HTTPS mock spaces, with optional mTLS (`Capability.Tls`)
+
+A space can serve HTTPS instead of plain HTTP, and can demand a client
+certificate (mTLS). This is for testing the SUT's own TLS client: that it
+trusts the right CA, and that it presents the right certificate. You supply
+the PEM material; zio-bdd never generates certificates.
+
+```scala
+import zio.bdd.mock.dsl.*
+
+// HTTPS: the space presents this certificate (chain) and PKCS#8 key.
+val https = mock(get("/ping").respondWith(ok.text("pong"))).https(serverCertPem, serverKeyPem)
+
+// mTLS: also demand a client certificate chaining to one of these CAs.
+val mtls = mock(get("/ping").respondWith(ok.text("pong")))
+  .mutualTls(serverCertPem, serverKeyPem, clientCaPem)
+```
+
+Provision it like any other `MockSource.Dsl`. The space's `baseUri` is then
+`https://…`, and it still takes rules, records requests and is destroyed like
+any other space. Rift maps it to an `https` imposter (client certificates need
+engine 0.18.0 or newer); WireMock starts a dedicated HTTPS-only server with
+`needClientAuth`.
+
+Four rules to know:
+
+- **The key must be unencrypted PKCS#8** (`-----BEGIN PRIVATE KEY-----`).
+  Convert a PKCS#1 or SEC1 key with `openssl pkcs8 -topk8 -nocrypt -in key.pem`.
+- **Material is checked at provisioning.** An unparsable certificate or key, a
+  key that does not match its certificate, or a malformed client CA fails
+  `provision` with `MockError.InvalidDefinition`, the same on every backend.
+- **A TLS space is always its own listener.** TLS is per-server, so under
+  Correlated isolation a TLS space still gets a dedicated imposter or server,
+  with `inject = identity`.
+- **A backend without `Capability.Tls` must refuse a TLS spec** with
+  `InvalidDefinition`, never serve plain HTTP in its place. The conformance
+  negotiation scenario checks this for third-party adapters.
+
+### Calling an HTTPS space
+
+`SutClient` trusts only the JVM's default CAs, so point it at the space's CA
+with the `Tls` helpers. Both build a `javax.net.ssl.SSLContext` from PEM and
+fail with `MockError.InvalidDefinition` on bad material:
+
+```scala
+for
+  ssl  <- Tls.trust(serverCaPem)                                  // HTTPS
+  resp <- SutClient.make(space, ssl).send(Method.Get, "/ping")
+  mssl <- Tls.clientIdentity(clientCertPem, clientKeyPem, serverCaPem) // mTLS
+yield resp
+```
+
+`SutClient.layer(space, ssl)` is the layer form. For your real SUT, configure
+its own HTTP client to trust the CA that signed the space's certificate (and,
+for mTLS, to present a certificate from one of the CAs you passed). That wiring
+is yours: zio-bdd cannot reach into the SUT.
+
+The built-in `MockSteps` Gherkin steps provision plain-HTTP spaces only.
+
+### The `provisionNative` escape hatch
+
+A raw `NativeSpec.Rift` document with `"protocol": "https"` (plus Rift's own
+`cert`/`key`, and `mutualAuth`/`rejectUnauthorized`/`ca` for mTLS) also works;
+its space reports an `https://` base URI.
+

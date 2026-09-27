@@ -1,6 +1,6 @@
 package zio.bdd.mock
 
-import zio.Duration
+import zio.{Duration, NonEmptyChunk}
 
 /**
  * Portable fluent builders over the canonical mock model (#112).
@@ -116,6 +116,23 @@ object dsl:
      * one. Omit it for the share-nothing default (a fresh free port per space).
      */
     def onPort(port: Int): MockSpec = spec.copy(port = Some(port))
+
+    /**
+     * Serve this space over HTTPS with the given PEM certificate (chain) and
+     * PKCS#8 private key (#343; needs [[Capability.Tls]]). Clients must trust
+     * the certificate — see [[Tls.trust]].
+     */
+    def https(certPem: String, keyPem: String): MockSpec = withTls(Tls(TlsMaterial(certPem, keyPem)))
+
+    /**
+     * Serve this space over HTTPS and demand a client certificate chaining to
+     * one of the given PEM CAs (mTLS, #343). See [[Tls.clientIdentity]].
+     */
+    def mutualTls(certPem: String, keyPem: String, trustedCaPem: String, moreCaPems: String*): MockSpec =
+      withTls(Tls(TlsMaterial(certPem, keyPem), ClientAuth.Required(NonEmptyChunk(trustedCaPem, moreCaPems*))))
+
+    /** Set this space's TLS settings (#343). */
+    def withTls(tls: Tls): MockSpec = spec.copy(tls = Some(tls))
 
     /** Wrap this spec as a DSL [[MockSource]]. */
     def source: MockSource = MockSource.Dsl(spec)

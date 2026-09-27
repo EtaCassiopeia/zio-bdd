@@ -13,12 +13,31 @@ All notable changes to zio-bdd are documented here.
 
 ### Added
 
+- **HTTPS mock spaces, with optional mTLS** (#343): `Capability.Tls`, advertised by Rift (container,
+  `connect`, embedded) and WireMock. Set it on a spec with `dsl.https(cert, key)` or
+  `dsl.mutualTls(cert, key, clientCa, …)` (or `MockSpec(tls = Some(Tls(…)))`); the space serves
+  HTTPS on an `https://` base URI and, for mTLS, refuses clients without a certificate from those
+  CAs. PEM material is validated at provisioning (`MockError.InvalidDefinition`; keys must be
+  unencrypted PKCS#8). A TLS space is always its own listener, even under Correlated isolation.
+  `Tls.trust` / `Tls.clientIdentity` build an `SSLContext` from PEM, and
+  `SutClient.make(space, ssl)` / `SutClient.layer(space, ssl)` use it. New `cap-tls` conformance
+  scenarios; the negotiation scenario now checks that a backend without `Tls` refuses a TLS spec.
+  **Third-party adapter authors:** an adapter that does not advertise `Capability.Tls` must now fail
+  `provision` with `MockError.InvalidDefinition` for a spec whose `tls` is set (see
+  `NormalizedSource.tls`). One that ignores the field serves plain HTTP in its place, and the
+  published negotiation scenario reports that as a FAIL.
 - **Intercept serve rules send repeated headers** once per value (engine 0.18.0, rift-scala#187).
 - **`upstreamTrust` on `EmbeddedRift.layer` and `Rift.managed`** — `UpstreamTrust.CaFile` / `CaPem` /
   `SkipVerify` (`zio.bdd.mock.rift.UpstreamTrust`) for proxy stubs (and the intercept listener's
   origin leg) dialing an HTTPS origin behind a private CA (engine 0.18.0; rift-scala#186, and #194 for
   the container backend, #342). A malformed setting, or a container image older than Rift 0.18.0,
   fails the layer with `MockError.InvalidDefinition`.
+
+### Fixed
+
+- **A native `https` Rift imposter now reports an `https://` base URI.** The SDK reports every
+  imposter as `http://`, so a `NativeSpec.Rift` HTTPS space was unreachable through its own
+  `baseUri`; the adapter now derives the scheme from the imposter's protocol.
 
 ### Changed
 

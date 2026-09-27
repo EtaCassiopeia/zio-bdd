@@ -1,15 +1,18 @@
 package zio.bdd.mock
 
 /**
- * A minimal, portable spec a [[MockSource.Dsl]] carries: canonical rules plus
- * an optional fixed port.
+ * A minimal, portable spec a [[MockSource.Dsl]] carries: canonical rules, an
+ * optional fixed port, and optional TLS.
  *
  * `port` is the opt-in fixed port (#211, set via `onPort`): when present the
  * Rift adapters bind exactly it instead of auto-assigning; when absent each
  * space gets a fresh free port (the share-nothing default, and the
  * fixed-port-trap-safe behaviour of #111).
+ *
+ * `tls` makes the space serve HTTPS, optionally demanding client certificates
+ * (#343, set via `https` / `mutualTls`; needs [[Capability.Tls]]).
  */
-final case class MockSpec(rules: List[MockRule], port: Option[Int] = None)
+final case class MockSpec(rules: List[MockRule], port: Option[Int] = None, tls: Option[Tls] = None)
 
 /**
  * Where mock definitions come from. Every case normalizes through the single

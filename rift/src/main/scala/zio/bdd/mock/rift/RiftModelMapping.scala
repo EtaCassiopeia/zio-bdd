@@ -190,15 +190,28 @@ private[rift] object RiftModelMapping:
    * 200-empty), flow state always attached, and the port either
    * authored/pool-drawn verbatim (`Some`) or engine-assigned (`None`) — see
    * `RiftPortPool` for which transports need a pool-drawn port instead of an
-   * engine-assigned one.
+   * engine-assigned one. With `tls` it serves HTTPS with the given identity
+   * and, for [[spi.ClientAuth.Required]], demands a client certificate chaining
+   * to those CAs (#343; engine >= 0.18.0 for the client-certificate part).
    */
-  def imposterShell(name: String, port: Option[Int], correlationHeader: Option[String]): ImposterBuilder =
+  def imposterShell(
+    name: String,
+    port: Option[Int],
+    correlationHeader: Option[String],
+    tls: Option[spi.Tls] = None
+  ): ImposterBuilder =
     val base0 = imposter(name).record.defaultResponse(notFound)
     val based = port.fold(base0)(p => base0.port(p))
     val flow = correlationHeader.fold(inMemoryFlowState.ttl(300.seconds))(h =>
       inMemoryFlowState.ttl(300.seconds).flowIdFromHeader(h)
     )
-    based.flowState(flow)
+    tls.fold(based)(withTls(based, _)).flowState(flow)
+
+  private def withTls(b: ImposterBuilder, tls: spi.Tls): ImposterBuilder =
+    val https = b.https(tls.server.certPem, tls.server.keyPem)
+    tls.clientAuth match
+      case spi.ClientAuth.Off           => https
+      case spi.ClientAuth.Required(cas) => https.requireClientCertificate(cas.head, cas.tail*)
 
   /**
    * Parse a raw imposter document, defaulting recording ON unless the document

@@ -41,6 +41,37 @@ object ConformanceHarnessSpec extends ZIOSpecDefault:
   private def matrixOf(scenarios: List[ConformanceScenario], cells: Cell*): Matrix =
     Matrix(List(backend), scenarios, cells.toList)
 
+  // A non-Tls backend handed a TLS spec (#343): `refuse` = the honest InvalidDefinition refusal;
+  // otherwise it silently serves plain HTTP, the downgrade the negotiation scenario must catch.
+  private def tlsStub(refuse: Boolean): MockControl = new MockControl:
+    def backendName: String                                                                = stub.backendName
+    def capabilities: Set[Capability]                                                      = stub.capabilities
+    def provisionNative[B <: Backend](spec: NativeSpec[B]): IO[MockError, List[MockSpace]] = stub.provisionNative(spec)
+    def addRule(space: MockSpace, rule: MockRule, priority: Priority): IO[MockError, RuleId] =
+      stub.addRule(space, rule, priority)
+    def removeRule(space: MockSpace, id: RuleId): IO[MockError, Unit]              = stub.removeRule(space, id)
+    def replaceRules(space: MockSpace, rules: List[MockRule]): IO[MockError, Unit] = stub.replaceRules(space, rules)
+    def destroy(space: MockSpace): IO[MockError, Unit]                             = stub.destroy(space)
+    def received(space: MockSpace): IO[MockError, List[RecordedRequest]]           = stub.received(space)
+    def faults: IO[Unsupported, Faults]                                            = stub.faults
+    def scenarios: IO[Unsupported, StatefulScenarios]                              = stub.scenarios
+    def stateInspection: IO[Unsupported, StateInspection]                          = stub.stateInspection
+    def scripting: IO[Unsupported, Scripting]                                      = stub.scripting
+    def proxyRecord: IO[Unsupported, ProxyRecord]                                  = stub.proxyRecord
+    def templating: IO[Unsupported, Templating]                                    = stub.templating
+    def provision(source: MockSource): IO[MockError, List[MockSpace]] = source match
+      case MockSource.Dsl(spec) if spec.tls.isDefined && refuse =>
+        ZIO.fail(MockError.InvalidDefinition("Capability Tls is not supported by backend 'stub'"))
+      case _ => ZIO.succeed(List(MockSpace("http://localhost:1", identity, SpaceId("x"))))
+
+  private val honesty =
+    NegotiationErrorScenarios.all.filter(_.name.startsWith("negotiation: capabilities are honest"))
+
+  private def honestyOutcome(control: MockControl) =
+    ConformanceHarness
+      .run(List(MockBackendUnderTest("stub", ZLayer.succeed(control), Set.empty, Isolation.PerInstance)), honesty)
+      .map(m => honesty.flatMap(s => m.cell(s.name, "stub").map(_.outcome)))
+
   def spec = suite("ConformanceHarness")(
     suite("conformant predicate")(
       test("a FAIL cell makes the column non-conformant") {
@@ -98,6 +129,14 @@ object ConformanceHarnessSpec extends ZIOSpecDefault:
           matrix.cell("needs-faults", "broken").map(_.outcome).contains(Outcome.Fail),
           !matrix.conformant(broken)
         )
+      }
+    ),
+    suite("Tls negotiation honesty (#343)")(
+      test("a non-Tls backend that refuses a TLS spec with InvalidDefinition is honest") {
+        honestyOutcome(tlsStub(refuse = true)).map(o => assertTrue(honesty.size == 1, o == List(Outcome.Pass)))
+      },
+      test("a non-Tls backend that silently serves a TLS spec as plain HTTP FAILs") {
+        honestyOutcome(tlsStub(refuse = false)).map(o => assertTrue(o == List(Outcome.Fail)))
       }
     )
   )

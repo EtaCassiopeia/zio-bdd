@@ -13,6 +13,14 @@ import java.nio.file.Path
 enum Capability:
   case Faults, StatefulScenarios, StateInspection, Scripting, ProxyRecord, Templating, Intercept
 
+  /**
+   * HTTPS mock spaces, with optional client-certificate (mTLS) auth (#343).
+   * Unlike the others it has no accessor: it gates a provisioning option
+   * ([[MockSpec.tls]]). A backend that does not advertise it must refuse a TLS
+   * spec with [[MockError.InvalidDefinition]] rather than serve plain HTTP.
+   */
+  case Tls
+
 /**
  * How a backend keeps mock spaces isolated under parallel features/scenarios.
  *   - PerInstance: a unique base URI per space (e.g. Rift's own port).
