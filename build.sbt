@@ -23,12 +23,8 @@ val riftVersion = "0.18.0"
 // pins `rift-java-core` at riftJavaVersion; the embedded engine + natives jars this build adds at Test
 // scope MUST stay on that same rift-java version — they meet across the FFI/ABI boundary, so a split
 // between the compile-side facade and the runtime engine is exactly the mismatch to avoid.
-// TEMPORARY (#346): local snapshots, resolved from ~/.ivy2/local (rift-scala publishLocal) and
-// ~/.m2 (rift-java mvn install) via the mavenLocal resolver below. Pin the released rift-scala /
-// rift-java versions and drop that resolver before merging.
-val riftScalaVersion = "0.3.0-SNAPSHOT"
-val riftJavaVersion  = "0.3.2-SNAPSHOT"
-ThisBuild / resolvers += Resolver.mavenLocal
+val riftScalaVersion = "0.3.0"
+val riftJavaVersion  = "0.3.2"
 
 inThisBuild(
   List(
