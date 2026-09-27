@@ -4,59 +4,7 @@ All notable changes to zio-bdd are documented here.
 
 ## [Unreleased]
 
-### Breaking changes
-
-- **`InterceptStub.headers` is now `Headers`** (was `Map[String, String]`), the same multi-valued type
-  a `ResponseDef` uses, so an inline intercept response can send a header several times (e.g. two
-  `Set-Cookie` lines). Migrate `headers = Map("k" -> "v")` to `headers = Headers("k" -> "v")`, or
-  use the new `InterceptStub.withHeader(name, value)`, which appends.
-
-### Added
-
-- **HTTPS mock spaces, with optional mTLS** (#343): `Capability.Tls`, advertised by Rift (container,
-  `connect`, embedded) and WireMock. Set it on a spec with `dsl.https(cert, key)` or
-  `dsl.mutualTls(cert, key, clientCa, …)` (or `MockSpec(tls = Some(Tls(…)))`); the space serves
-  HTTPS on an `https://` base URI and, for mTLS, refuses clients without a certificate from those
-  CAs. PEM material is validated at provisioning (`MockError.InvalidDefinition`; keys must be
-  unencrypted PKCS#8). A TLS space is always its own listener, even under Correlated isolation.
-  `Tls.trust` / `Tls.clientIdentity` build an `SSLContext` from PEM, and
-  `SutClient.make(space, ssl)` / `SutClient.layer(space, ssl)` use it. New `cap-tls` conformance
-  scenarios; the negotiation scenario now checks that a backend without `Tls` refuses a TLS spec.
-  **Third-party adapter authors:** an adapter that does not advertise `Capability.Tls` must now fail
-  `provision` with `MockError.InvalidDefinition` for a spec whose `tls` is set (see
-  `NormalizedSource.tls`). One that ignores the field serves plain HTTP in its place, and the
-  published negotiation scenario reports that as a FAIL.
-- **Intercept serve rules send repeated headers** once per value (engine 0.18.0, rift-scala#187).
-- **`upstreamTrust` on `EmbeddedRift.layer` and `Rift.managed`** — `UpstreamTrust.CaFile` / `CaPem` /
-  `SkipVerify` (`zio.bdd.mock.rift.UpstreamTrust`) for proxy stubs (and the intercept listener's
-  origin leg) dialing an HTTPS origin behind a private CA (engine 0.18.0; rift-scala#186, and #194 for
-  the container backend, #342). A malformed setting, or a container image older than Rift 0.18.0,
-  fails the layer with `MockError.InvalidDefinition`.
-
-### Fixed
-
-- **A native `https` Rift imposter now reports an `https://` base URI.** rift-java 0.3.1 reported
-  every imposter as `http://`, so a `NativeSpec.Rift` HTTPS space was unreachable through its own
-  `baseUri`. rift-java 0.3.2 reports the imposter's own protocol (rift-java#251), and the adapter
-  now takes that URI as is (#346) instead of rewriting the scheme itself.
-
-### Changed
-
-- **Bumped Rift to v0.18.0** (from v0.14.0), and the official SDK to `rift-scala-zio` 0.2.1 /
-  `rift-java` 0.3.1 (from 0.1.2 / 0.1.3). `Rift.DefaultImage` is now `zainalpour/rift-proxy:v0.18.0`,
-  and the embedded engine (`rift-java-natives` 0.3.1) is 0.18.0 too. Embedded users should bump
-  their own `rift-java-embedded`/`rift-java-natives` to 0.3.1.
-- **SDK bumped to `rift-scala-zio` 0.3.0 / `rift-java` 0.3.2** (#346), which carry rift-java's
-  protocol-aware `HostResolver` (rift-java#251, rift-scala#199). Embedded users should bump their
-  own `rift-java-embedded`/`rift-java-natives` to 0.3.2 to match.
-- **`Rift.connect`'s `hostFor` now only locates the listener; the scheme follows the imposter's
-  protocol** (#346). An HTTPS space reports `https://` even when `hostFor` returns `http://…`, which
-  is what the adapter already did, now through the SDK's resolver seam. A `hostFor` URI whose scheme
-  is neither `http` nor `https` is used verbatim.
-- **ZIO 2.1.17 → 2.1.21**, which rift-scala 0.2.x requires (an older `zio-test` fails its layer
-  macros at compile time).
-
-## [1.5.0] — 2026-09-22
+## [1.5.0] — 2026-09-27
 
 ### Breaking changes
 
@@ -82,8 +30,8 @@ upgrading from 1.4.x if you depend on any `zio-bdd-rift*` artifact.
 
   // 1.5.0: one artifact; the embedded engine and natives are ordinary runtime dependencies
   "io.github.etacassiopeia" %% "zio-bdd-rift"       % "1.5.0" % Test,
-  "io.github.achird-labs"    % "rift-java-embedded" % "0.1.3" % Test,
-  ("io.github.achird-labs"   % "rift-java-natives"  % "0.1.3" % Test).classifier("linux-x86_64"),
+  "io.github.achird-labs"    % "rift-java-embedded" % "0.3.2" % Test,
+  ("io.github.achird-labs"   % "rift-java-natives"  % "0.3.2" % Test).classifier("linux-x86_64"),
   // plus: Test / fork := true
   //       Test / javaOptions += "--enable-native-access=ALL-UNNAMED"
   ```
@@ -96,6 +44,11 @@ upgrading from 1.4.x if you depend on any `zio-bdd-rift*` artifact.
   suites skip rather than fail, so a build that stays on JDK 21 loses embedded coverage silently.
   Guard with `EmbeddedRift.requireAvailable` to make that loud, or switch to the Rift container or
   WireMock backend.
+
+- **`InterceptStub.headers` is now `Headers`** (was `Map[String, String]`), the same multi-valued type
+  a `ResponseDef` uses, so an inline intercept response can send a header several times (e.g. two
+  `Set-Cookie` lines). Migrate `headers = Map("k" -> "v")` to `headers = Headers("k" -> "v")`, or
+  use the new `InterceptStub.withHeader(name, value)`, which appends.
 
 ### Security
 
@@ -117,6 +70,25 @@ upgrading from 1.4.x if you depend on any `zio-bdd-rift*` artifact.
   official conformance suite in their own CI without pulling in any bundled backend; the
   in-repo Rift/WireMock/embedded matrix runner moved to test scope, unpublished as before.
   Usage is documented in `docs/mock-adapters.md` §6.
+- **HTTPS mock spaces, with optional mTLS** (#343): `Capability.Tls`, advertised by Rift (container,
+  `connect`, embedded) and WireMock. Set it on a spec with `dsl.https(cert, key)` or
+  `dsl.mutualTls(cert, key, clientCa, …)` (or `MockSpec(tls = Some(Tls(…)))`); the space serves
+  HTTPS on an `https://` base URI and, for mTLS, refuses clients without a certificate from those
+  CAs. PEM material is validated at provisioning (`MockError.InvalidDefinition`; keys must be
+  unencrypted PKCS#8). A TLS space is always its own listener, even under Correlated isolation.
+  `Tls.trust` / `Tls.clientIdentity` build an `SSLContext` from PEM, and
+  `SutClient.make(space, ssl)` / `SutClient.layer(space, ssl)` use it. New `cap-tls` conformance
+  scenarios; the negotiation scenario now checks that a backend without `Tls` refuses a TLS spec.
+  **Third-party adapter authors:** an adapter that does not advertise `Capability.Tls` must now fail
+  `provision` with `MockError.InvalidDefinition` for a spec whose `tls` is set (see
+  `NormalizedSource.tls`). One that ignores the field serves plain HTTP in its place, and the
+  published negotiation scenario reports that as a FAIL.
+- **Intercept serve rules send repeated headers** once per value (engine 0.18.0, rift-scala#187).
+- **`upstreamTrust` on `EmbeddedRift.layer` and `Rift.managed`** — `UpstreamTrust.CaFile` / `CaPem` /
+  `SkipVerify` (`zio.bdd.mock.rift.UpstreamTrust`) for proxy stubs (and the intercept listener's
+  origin leg) dialing an HTTPS origin behind a private CA (engine 0.18.0; rift-scala#186, and #194 for
+  the container backend, #342). A malformed setting, or a container image older than Rift 0.18.0,
+  fails the layer with `MockError.InvalidDefinition`.
 
 ### Changed
 
@@ -143,12 +115,21 @@ upgrading from 1.4.x if you depend on any `zio-bdd-rift*` artifact.
     `URLayer`): the SDK's `connect` performs a real admin handshake at layer construction.
     `Rift.managed`'s `adminPort` is effectively fixed at 2525 (the SDK's container transport has
     no override); a non-default value now fails fast with a typed `MockError.InvalidDefinition`
-    instead of being silently accepted. The embedded transport advertises all seven capabilities.
+    instead of being silently accepted. The embedded transport advertises every capability.
     The container and `connect` transports advertise `Intercept` only when a host-reachable
     listener is configured (`Rift.managed`'s `interceptPort`, or `Rift.connect`'s
     `interceptProxy`), and fail `require(Capability.Intercept)` with `Unsupported` otherwise.
   - Update every call site accordingly: drop the `Client` requirement/import, and — for
     `Rift.managed`/`Rift.connect` — drop `Client.default` from the provided environment.
+- **Rift v0.18.0 through `rift-scala-zio` 0.3.0 / `rift-java` 0.3.2** (from Rift v0.14.0; #341,
+  #346). `Rift.DefaultImage` is now `zainalpour/rift-proxy:v0.18.0`, and the embedded engine
+  (`rift-java-natives` 0.3.2) is 0.18.0 too. Embedded users should add `rift-java-embedded` /
+  `rift-java-natives` at 0.3.2, matching the `rift-java-core` that `zio-bdd-rift` pulls in.
+- **`Rift.connect`'s `hostFor` only locates the listener; the scheme follows the imposter's
+  protocol** (#346). An HTTPS space reports `https://` even when `hostFor` returns `http://…`. A
+  `hostFor` URI whose scheme is neither `http` nor `https` is used verbatim.
+- **ZIO 2.1.17 → 2.1.21**, which rift-scala requires (an older `zio-test` fails its layer macros
+  at compile time).
 
 ### Fixed
 
@@ -160,6 +141,10 @@ upgrading from 1.4.x if you depend on any `zio-bdd-rift*` artifact.
   excluded scenario carrying a parameterized tag such as `@rift @mock(orders)` still provisioned
   its `orders` source — and, when that source was raw/native under the wrong backend, threw and
   failed the whole run even though the scenario was meant to be skipped.
+- **A native `https` Rift imposter now reports an `https://` base URI.** rift-java 0.3.1 reported
+  every imposter as `http://`, so a `NativeSpec.Rift` HTTPS space was unreachable through its own
+  `baseUri`. rift-java 0.3.2 reports the imposter's own protocol (rift-java#251), and the adapter
+  now takes that URI as is (#346) instead of rewriting the scheme itself.
 
 ## [1.4.3] — 2026-07-16
 
