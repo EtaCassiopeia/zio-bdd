@@ -46,6 +46,11 @@ host-unreachable and is rejected up front with a clear `MockError.InvalidDefinit
 (#303) — use a port in the pool range, or omit it to auto-assign. The **embedded**
 adapter binds `localhost` directly and has no such limit: any free port works.
 
+A spec can also serve HTTPS: `.https(certPem, keyPem)`, or
+`.mutualTls(certPem, keyPem, clientCaPem)` to demand client certificates
+(`Capability.Tls`, #343). See
+[Advanced mocking §12](mock-advanced.md#12-https-mock-spaces-with-optional-mtls-capabilitytls).
+
 ---
 
 ## 2. Matching requests

@@ -4,6 +4,7 @@ import zio.*
 
 import java.net.URI
 import java.net.http.{HttpClient, HttpRequest as JHttpRequest, HttpResponse as JHttpResponse}
+import javax.net.ssl.SSLContext
 import scala.jdk.CollectionConverters.*
 
 /** A response the SUT received from its (mocked) dependency. */
@@ -42,18 +43,30 @@ trait SutClient:
   ): IO[Throwable, SutResponse]
 
 object SutClient:
-  def make(space: MockSpace): SutClient = Live(space)
+  def make(space: MockSpace): SutClient = Live(space, None)
 
-  // Mock servers speak cleartext HTTP/1.1; the JDK client defaults to HTTP/2, whose h2c upgrade
-  // path intermittently EOFs on a 201 response under the test runtime (#183). Pin HTTP/1.1 — there
-  // is no reason to negotiate HTTP/2 against a mock. Shared with MockSteps.sendThrough.
+  /**
+   * Bind to an HTTPS space (#343), using `ssl` for the handshake — typically
+   * built with [[Tls.trust]], or [[Tls.clientIdentity]] for an mTLS space.
+   */
+  def make(space: MockSpace, ssl: SSLContext): SutClient = Live(space, Some(ssl))
+
+  // Mock servers speak HTTP/1.1; the JDK client defaults to HTTP/2, whose h2c upgrade path
+  // intermittently EOFs on a 201 response under the test runtime (#183). Pin HTTP/1.1 — there is
+  // no reason to negotiate HTTP/2 against a mock. Shared with MockSteps.sendThrough.
   private[mock] def http1Client: HttpClient =
     HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build()
+
+  private def tlsClient(ssl: SSLContext): HttpClient =
+    HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).sslContext(ssl).build()
 
   /** Per-scenario layer: bind the SUT's dependency client to `space`. */
   def layer(space: MockSpace): ULayer[SutClient] = ZLayer.succeed(make(space))
 
-  private final case class Live(space: MockSpace) extends SutClient:
+  /** Per-scenario layer for an HTTPS space, handshaking with `ssl` (#343). */
+  def layer(space: MockSpace, ssl: SSLContext): ULayer[SutClient] = ZLayer.succeed(make(space, ssl))
+
+  private final case class Live(space: MockSpace, ssl: Option[SSLContext]) extends SutClient:
     def baseUrl: String = space.baseUri
 
     def send(
@@ -72,7 +85,8 @@ object SutClient:
           case Some(content) => JHttpRequest.BodyPublishers.ofString(content)
           case None          => JHttpRequest.BodyPublishers.noBody()
         val request  = builder.method(injected.method.toString.toUpperCase, publisher).build()
-        val response = http1Client.send(request, JHttpResponse.BodyHandlers.ofString())
+        val client   = ssl.fold(http1Client)(tlsClient)
+        val response = client.send(request, JHttpResponse.BodyHandlers.ofString())
         // Preserve every value per response header key (Headers canonicalises keys to lower-case).
         val respHeaders = response.headers().map().asScala.foldLeft(Headers.empty) { case (h, (k, vs)) =>
           vs.asScala.foldLeft(h)((acc, v) => acc.add(k, v))

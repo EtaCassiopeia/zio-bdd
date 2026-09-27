@@ -18,8 +18,15 @@ import java.nio.file.{Files, Paths}
  *     opt-in fixed port by the adapters' port selection
  *     ([[Provisioning.choosePort]], #211); when absent a fresh free port is
  *     auto-assigned (the default).
+ *   - `tls`: the space's TLS settings (#343), already validated — only a DSL
+ *     source carries them; a raw document speaks its backend's own TLS keys.
  */
-final case class NormalizedSource(name: String, payload: SourcePayload, authoredPort: Option[Int])
+final case class NormalizedSource(
+  name: String,
+  payload: SourcePayload,
+  authoredPort: Option[Int],
+  tls: Option[Tls] = None
+)
 
 /** The two shapes a normalized source can take. */
 enum SourcePayload:
@@ -118,9 +125,10 @@ final case class Provisioning(allocator: PortAllocator, cache: Ref[Map[MockSourc
     normalize(source).flatMap { sources =>
       ZIO.foreach(sources) { src =>
         for
-          port <- allocator.freePort
-          space = MockSpace(s"http://localhost:$port", identity, SpaceId(s"${src.name}-$port"))
-          _    <- serve(src, space)
+          port  <- allocator.freePort
+          scheme = if src.tls.isDefined then "https" else "http"
+          space  = MockSpace(s"$scheme://localhost:$port", identity, SpaceId(s"${src.name}-$port"))
+          _     <- serve(src, space)
         yield space
       }
     }
@@ -128,7 +136,9 @@ final case class Provisioning(allocator: PortAllocator, cache: Ref[Map[MockSourc
   private def load(source: MockSource): IO[MockError, List[NormalizedSource]] =
     source match
       case MockSource.Dsl(spec) =>
-        ZIO.succeed(List(NormalizedSource("dsl", SourcePayload.Rules(spec.rules), spec.port)))
+        ZIO
+          .foreachDiscard(spec.tls)(tls => ZIO.fromEither(Tls.validate(tls)).mapError(MockError.InvalidDefinition(_)))
+          .as(List(NormalizedSource("dsl", SourcePayload.Rules(spec.rules), spec.port, spec.tls)))
       case MockSource.Json(raw) =>
         ZIO.succeed(List(NormalizedSource("json", SourcePayload.Raw(raw), None)))
       case MockSource.Resource(path) =>

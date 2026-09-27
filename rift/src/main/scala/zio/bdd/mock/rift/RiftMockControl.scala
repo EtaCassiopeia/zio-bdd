@@ -7,7 +7,7 @@ import zio.bdd.mock as spi
 
 import rift.RiftError
 import rift.dsl.{StubBuilder, StubPhase}
-import rift.model.{FlowId, Port, RecordedRequest, Stub, StubId}
+import rift.model.{FlowId, Port, Protocol, RecordedRequest, Stub, StubId}
 import rift.bridge.CaMaterial
 import rift.zio.{ImposterHandle, InterceptHandle, Rift as SdkRift, SpaceHandle}
 
@@ -177,7 +177,7 @@ private[rift] final case class RiftMockControl(
                       .create(definition)
                       .mapError(M.toMockError(None))
                       .onError(_ => ZIO.whenDiscard(pooled)(portOpt.fold(ZIO.unit)(releasePortValue)))
-          space <- registerPerInstance("native", handle, pooled)
+          space <- registerPerInstance("native", handle, pooled, https = definition.protocol == Protocol.Https)
         yield List(space)
       case spi.NativeSpec.WireMock(_) =>
         ZIO.fail(spi.MockError.InvalidDefinition("the Rift adapter cannot provision a WireMock native spec"))
@@ -476,10 +476,13 @@ private[rift] final case class RiftMockControl(
 
   // ── provisioning internals ───────────────────────────────────────────────────────────────────
 
+  // TLS is per-listener, so a TLS space can't share the Correlated imposter: it always gets its
+  // own (PerInstance, inject = identity), exactly like a provisionNative space (#343).
   private def serveSpace(src: spi.NormalizedSource): IO[spi.MockError, spi.MockSpace] =
     mode match
-      case RiftMode.PerInstance      => servePerInstance(src)
-      case RiftMode.Correlated(corr) => serveCorrelated(src, corr)
+      case RiftMode.PerInstance                        => servePerInstance(src)
+      case RiftMode.Correlated(_) if src.tls.isDefined => servePerInstance(src)
+      case RiftMode.Correlated(corr)                   => serveCorrelated(src, corr)
 
   private def servePerInstance(src: spi.NormalizedSource): IO[spi.MockError, spi.MockSpace] =
     src.payload match
@@ -492,14 +495,15 @@ private[rift] final case class RiftMockControl(
           // already validated on the way to `StubBuilder`s — so the class name is prefixed to make
           // that distinguishable from genuine InvalidDefinition callers, on top of the null-safe
           // message (#285/B10).
-          builder <- ZIO
-                       .attempt(tagged.foldLeft(M.imposterShell(src.name, portOpt, None))((b, t) => b.stub(t._2)))
-                       .mapError(t => spi.MockError.InvalidDefinition(s"${t.getClass.getSimpleName}: ${M.message(t)}"))
-          handle <- rift
-                      .create(builder)
-                      .mapError(M.toMockError(None))
+          // The pooled port is released if either the builder or create fails.
+          handle <- ZIO
+                      .attempt(
+                        tagged.foldLeft(M.imposterShell(src.name, portOpt, None, src.tls))((b, t) => b.stub(t._2))
+                      )
+                      .mapError(t => spi.MockError.InvalidDefinition(s"${t.getClass.getSimpleName}: ${M.message(t)}"))
+                      .flatMap(builder => rift.create(builder).mapError(M.toMockError(None)))
                       .onError(_ => ZIO.whenDiscard(pooled)(portOpt.fold(ZIO.unit)(releasePortValue)))
-          space <- registerPerInstance(src.name, handle, pooled, tagged.map(_._1).toSet)
+          space <- registerPerInstance(src.name, handle, pooled, tagged.map(_._1).toSet, https = src.tls.isDefined)
         yield space
       case spi.SourcePayload.Raw(text) =>
         // A raw source is the portable `provision()` path (unlike `provisionNative`), so the
@@ -516,7 +520,7 @@ private[rift] final case class RiftMockControl(
                       .create(definition)
                       .mapError(M.toMockError(None))
                       .onError(_ => ZIO.whenDiscard(pooled)(portOpt.fold(ZIO.unit)(releasePortValue)))
-          space <- registerPerInstance(src.name, handle, pooled)
+          space <- registerPerInstance(src.name, handle, pooled, https = definition.protocol == Protocol.Https)
         yield space
 
   /**
@@ -548,15 +552,22 @@ private[rift] final case class RiftMockControl(
     name: String,
     handle: ImposterHandle,
     pooled: Boolean,
-    ruleIds: Set[spi.RuleId] = Set.empty
+    ruleIds: Set[spi.RuleId] = Set.empty,
+    https: Boolean = false
   ): IO[spi.MockError, spi.MockSpace] =
     for
       ids  <- Ref.make(ruleIds)
       scen <- Ref.make(Map.empty[String, spi.ScenarioState])
       id    = spi.SpaceId(s"$name-${Port.value(handle.port)}")
-      space = spi.MockSpace(handle.uri.toString, identity, id)
+      space = spi.MockSpace(baseUriOf(handle, https), identity, id)
       _    <- spaces.update(_.updated(id, SpaceRec.PerInstance(handle, ids, scen, pooled)))
     yield space
+
+  // The SDK reports every imposter URI as http:// (rift-java builds it with HostAuthority.httpUri,
+  // whatever the protocol), so an HTTPS imposter's scheme is derived here from what we created.
+  private def baseUriOf(handle: ImposterHandle, https: Boolean): String =
+    val uri = handle.uri.toString
+    if https && uri.startsWith("http://") then "https://" + uri.stripPrefix("http://") else uri
 
   private def serveCorrelated(src: spi.NormalizedSource, corr: Correlation): IO[spi.MockError, spi.MockSpace] =
     src.payload match

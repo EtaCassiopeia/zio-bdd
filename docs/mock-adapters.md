@@ -11,9 +11,9 @@ pick one.
 
 | Adapter | Coordinates (1.5.0) | Docker? | JDK | Isolation default | Capabilities |
 |---|---|---|---|---|---|
-| Rift container | `zio-bdd-rift` | yes (testcontainers) | 17+ | PerInstance | all six always on; Intercept only with `interceptPort` |
-| WireMock | `zio-bdd-wiremock` | no | 11+ | Correlated (via `.correlated`) | Faults, StatefulScenarios, StateInspection only |
-| Rift embedded | `zio-bdd-rift` | no (FFM) | 17+ compile / 22+ runtime | PerInstance (default) / Correlated | all seven, always on |
+| Rift container | `zio-bdd-rift` | yes (testcontainers) | 17+ | PerInstance | all but Intercept always on; Intercept only with `interceptPort` |
+| WireMock | `zio-bdd-wiremock` | no | 11+ | Correlated (via `.correlated`) | Faults, StatefulScenarios, StateInspection, Tls only |
+| Rift embedded | `zio-bdd-rift` | no (FFM) | 17+ compile / 22+ runtime | PerInstance (default) / Correlated | all eight, always on |
 
 Rift container, `connect`, and Rift embedded are three entry points of the
 **same** published artifact and the same `RiftMockControl` adapter (#285
@@ -32,8 +32,9 @@ what used to be four separate published modules into this one) — see §2 and
 | ProxyRecord | yes | yes | no |
 | Templating | yes | yes | no |
 | Intercept | only with `interceptPort`/`interceptProxy` | yes | no |
+| Tls (HTTPS / mTLS spaces) | yes | yes | yes |
 
-Rift container and Rift embedded implement the same seven capabilities, but
+Rift container and Rift embedded implement the same eight capabilities, but
 Intercept is transport-aware, not uniform: embedded always advertises it (the
 listener starts in-process, on the host, so it's always reachable), while
 container/`connect` advertise it only when the caller actually configured a
@@ -45,7 +46,7 @@ clean `Unsupported` beats an unreachable endpoint. Passing `interceptPort`/
 `interceptProxy` is what makes `intercept` capability negotiation succeed in
 the first place, not just what makes the resulting listener host-reachable
 (§9 of [Advanced mocking](mock-advanced.md)). WireMock implements exactly the
-three capabilities in the first column of the top table; requesting
+four capabilities in the first column of the top table; requesting
 `Capability.Scripting`, `Capability.ProxyRecord`, `Capability.Templating`, or
 `Capability.Intercept` against it fails with `Unsupported` (§3 below, and see
 [Mocking overview](mocking.md) for the `MockError`/`Unsupported` model).

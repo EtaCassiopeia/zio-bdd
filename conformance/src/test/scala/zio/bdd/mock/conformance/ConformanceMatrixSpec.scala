@@ -87,7 +87,7 @@ object ConformanceMatrixSpec extends ZIOSpecDefault:
     MockBackendUnderTest(
       "wiremock",
       Provisioning.live >>> WireMock.correlated(),
-      Set(Capability.Faults, Capability.StatefulScenarios, Capability.StateInspection),
+      Set(Capability.Faults, Capability.StatefulScenarios, Capability.StateInspection, Capability.Tls),
       Isolation.Correlated
     )
 
@@ -208,6 +208,21 @@ object ConformanceMatrixSpec extends ZIOSpecDefault:
     } @@ TestAspect.withLiveClock,
     test("cap-templating feature PASSes on Rift; SKIPs on WireMock (un-advertised) (#132)") {
       riftOnlyCapability("cap-templating", TemplatingScenarios.all)
+    } @@ TestAspect.withLiveClock,
+    test("cap-tls feature PASSes on WireMock (Correlated) and on Rift (#343)") {
+      val all = TlsScenarios.all
+      for
+        matrix   <- ConformanceHarness.run(List(wiremock, rift), all)
+        _        <- ZIO.logInfo(s"cap-tls matrix:\n${matrix.render}")
+        wmFails   = nonPass(matrix, "wiremock", all)
+        _        <- ZIO.logInfo(s"wiremock non-pass: $wmFails").when(wmFails.nonEmpty)
+        riftCells = all.flatMap(s => matrix.cell(s.name, "rift").map(_.outcome))
+      yield assertTrue(
+        all.nonEmpty,
+        wmFails.isEmpty,
+        if riftEnabled then all.forall(s => matrix.cell(s.name, "rift").exists(_.outcome == Outcome.Pass))
+        else riftCells.size == all.size && riftCells.forall(_ == Outcome.Skip)
+      )
     } @@ TestAspect.withLiveClock
   )
 

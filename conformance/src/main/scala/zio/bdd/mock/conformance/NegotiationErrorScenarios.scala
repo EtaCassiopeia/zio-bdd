@@ -47,9 +47,11 @@ object NegotiationErrorScenarios:
       )
       for
         outcomes <- ZIO.foreach(accessors)((cap, acc) => acc.either.map(cap -> _))
+        tlsOk    <- tlsHonest(control)
         _ <- ensure(
-               // the check must cover EVERY capability, so a future one can't escape it,
-               outcomes.map(_._1).toSet == Capability.values.toSet &&
+               // the check must cover EVERY capability, so a future one can't escape it (Tls has no
+               // accessor — it is a provisioning option, probed by `tlsHonest`),
+               outcomes.map(_._1).toSet + Capability.Tls == Capability.values.toSet && tlsOk &&
                  // advertised => the accessor succeeds; un-advertised => fails fast with Unsupported(cap, backend).
                  outcomes.forall { (cap, e) =>
                    if control.capabilities.contains(cap) then e.isRight
@@ -83,6 +85,25 @@ object NegotiationErrorScenarios:
       yield ()
     }
   )
+
+  // Tls is honest when an advertising backend serves a TLS spec on an https:// base URI, and a
+  // non-advertising one refuses it at provision with InvalidDefinition rather than silently serving
+  // plain HTTP (a downgrade the SUT's test would never notice).
+  private def tlsHonest(control: MockControl): UIO[Boolean] =
+    val spec = MockSpec(
+      List(rule("/tls", "tls")),
+      tls = Some(Tls(TlsMaterial(TlsFixtures.serverCert, TlsFixtures.serverKey)))
+    )
+    control.provision(MockSource.Dsl(spec)).either.flatMap {
+      case Right(spaces) =>
+        ZIO.foreachDiscard(spaces)(control.destroy(_).ignore) *>
+          ZIO.succeed(
+            control.capabilities.contains(Capability.Tls) && spaces.nonEmpty && spaces
+              .forall(_.baseUri.startsWith("https://"))
+          )
+      case Left(MockError.InvalidDefinition(_)) => ZIO.succeed(!control.capabilities.contains(Capability.Tls))
+      case Left(_)                              => ZIO.succeed(false)
+    }
 
   // ---- error-semantics ----------------------------------------------------------
 

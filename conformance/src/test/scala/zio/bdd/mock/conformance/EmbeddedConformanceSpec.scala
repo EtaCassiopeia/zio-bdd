@@ -2,6 +2,7 @@ package zio.bdd.mock.conformance
 
 import zio.*
 import zio.bdd.mock.*
+import zio.bdd.mock.rift.{Correlation, RiftMode}
 import zio.bdd.mock.rift.embedded.EmbeddedRift
 import zio.test.*
 
@@ -48,7 +49,8 @@ object EmbeddedConformanceSpec extends ZIOSpecDefault:
         Capability.Templating,
         Capability.StatefulScenarios,
         Capability.StateInspection,
-        Capability.Intercept
+        Capability.Intercept,
+        Capability.Tls
       ),
       Isolation.PerInstance,
       available = EmbeddedRift.available
@@ -90,12 +92,46 @@ object EmbeddedConformanceSpec extends ZIOSpecDefault:
       assertTrue(jdkFeature < 22 || EmbeddedRift.available)
     }
 
+  // #343: the escape hatch too — a raw `NativeSpec.Rift` https imposter must report an https base URI.
+  // The SDK's handle URI is always http:// (rift-java HostAuthority.httpUri), which made a native
+  // HTTPS space unreachable through its own baseUri before the adapter derived the scheme itself.
+  private def nativeHttpsSpec =
+    test("a native https imposter reports an https base URI and serves over TLS (#343)") {
+      def js(pem: String) = pem.replace("\n", "\\n")
+      val doc =
+        s"""{"protocol":"https","cert":"${js(TlsFixtures.serverCert)}","key":"${js(TlsFixtures.serverKey)}",""" +
+          """"stubs":[{"predicates":[{"equals":{"path":"/n"}}],"responses":[{"is":{"statusCode":200,"body":"n"}}]}]}"""
+      ZIO.scoped {
+        for
+          control <- ZIO.service[MockControl]
+          space <- ZIO.acquireRelease(control.provisionNative(NativeSpec.Rift(doc)).mapError(asT).map(_.head))(s =>
+                     control.destroy(s).ignoreLogged
+                   )
+          ssl  <- Tls.trust(TlsFixtures.caCert).mapError(asT)
+          resp <- SutClient.make(space, ssl).send(Method.Get, "/n")
+        yield assertTrue(space.baseUri.startsWith("https://"), resp.body == "n")
+      }.provide(embedded.layer)
+    } @@ (if EmbeddedRift.available then TestAspect.identity else TestAspect.ignore)
+
   def spec = suite("EmbeddedConformance")(
     embeddedAvailabilityGuardSpec,
+    nativeHttpsSpec,
     conforms("core (#125)", CoreConformanceScenarios.all),
     conforms("negotiation/error (#127)", NegotiationErrorScenarios.all),
     conforms("cap-stateful (#131)", CapStatefulScenarios.all),
     conforms("faults (#128)", FaultScenarios.all),
     conforms("scripting (#132)", ScriptingScenarios.all),
-    conforms("templating (#132)", TemplatingScenarios.all)
+    conforms("templating (#132)", TemplatingScenarios.all),
+    conforms("cap-tls (#343)", TlsScenarios.all),
+    test("cap-tls under Correlated isolation: a TLS space gets its own imposter (#343)") {
+      val correlated = embedded.copy(
+        name = "embedded-correlated",
+        layer = Provisioning.live >>> EmbeddedRift.layer(RiftMode.Correlated(Correlation.spaceHeader)).mapError(asT),
+        isolation = Isolation.Correlated
+      )
+      for
+        matrix <- ConformanceHarness.run(List(correlated), TlsScenarios.all)
+        _      <- ZIO.logInfo(s"embedded-correlated cap-tls:\n${matrix.render}")
+      yield assertTrue(matrix.conformant(correlated))
+    }
   ) @@ TestAspect.withLiveClock

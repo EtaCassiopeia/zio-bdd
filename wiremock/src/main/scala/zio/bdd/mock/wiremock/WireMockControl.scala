@@ -7,7 +7,10 @@ import com.github.tomakehurst.wiremock.WireMockServer
 import com.github.tomakehurst.wiremock.core.WireMockConfiguration.options
 import com.github.tomakehurst.wiremock.stubbing.StubMapping
 
+import java.nio.file.{Files, Path}
+import java.security.KeyStore
 import scala.jdk.CollectionConverters.*
+import scala.util.control.NonFatal
 
 /**
  * The WireMock adapter: implements the portable [[MockControl]] core port over
@@ -22,6 +25,10 @@ import scala.jdk.CollectionConverters.*
  *
  * PerInstance isolation (option): each space owns a fresh server on its own
  * port, `inject == identity`, and `destroy` stops that server.
+ *
+ * TLS (#343): a space with [[Tls]] settings always owns a fresh HTTPS-only
+ * server (TLS is server-wide, so it cannot share the Correlated one), with
+ * `needClientAuth` and a trust store when the spec demands client certificates.
  */
 private[wiremock] final case class WireMockControl(
   mode: WireMock.Mode,
@@ -35,7 +42,7 @@ private[wiremock] final case class WireMockControl(
 
   def backendName: String = "wiremock"
   def capabilities: Set[Capability] =
-    Set(Capability.Faults, Capability.StatefulScenarios, Capability.StateInspection)
+    Set(Capability.Faults, Capability.StatefulScenarios, Capability.StateInspection, Capability.Tls)
 
   override def isolation: Isolation = mode match
     case WireMock.Mode.Correlated(_) => Isolation.Correlated
@@ -255,8 +262,8 @@ private[wiremock] final case class WireMockControl(
       id       <- freshSpaceId(src.name)
       rulesRef <- Ref.make(Vector.empty[(RuleId, StubMapping)])
       scenRef  <- Ref.make(Map.empty[String, ScenarioRecord])
-      corr      = correlationOf
-      server   <- serverFor(id)
+      corr      = if src.tls.isDefined then None else correlationOf
+      server   <- src.tls.fold(serverFor(id))(WireMockControl.startTlsServer)
       st        = SpaceState(server, ownsServer = corr.isEmpty, corr, rulesRef, scenRef)
       // If a rule fails mid-batch the space is never tracked, so destroy can
       // never reach it: undo its stubs (and stop its own server) here, or they
@@ -373,3 +380,82 @@ private[wiremock] object WireMockControl:
       server.start()
       server
     }
+
+  // WireMock only reads key stores from a path; this password guards two temp files that live only
+  // until Jetty has loaded them at start.
+  private val storePassword = "zio-bdd"
+
+  /**
+   * Start an HTTPS-only server presenting `tls.server`, demanding a client
+   * certificate from `tls.clientAuth`'s CAs when required. The PEMs were
+   * validated at provisioning, so a store that still fails to build here is
+   * reported as InvalidDefinition; a server that fails to start, as
+   * ProvisionFailed.
+   */
+  private[wiremock] def startTlsServer(tls: Tls): IO[MockError, WireMockServer] =
+    val pass = storePassword.toCharArray
+    val stores = for
+      ks <- Tls.keyStore(tls.server, pass)
+      ts <- tls.clientAuth match
+              case ClientAuth.Off           => Right(None)
+              case ClientAuth.Required(cas) => Tls.trustStore(cas.toList).map(Some(_))
+    yield (ks, ts)
+    ZIO
+      .fromEither(stores)
+      .mapError(MockError.InvalidDefinition(_))
+      .flatMap { (ks, ts) =>
+        // Jetty reads both stores during start, so the scope (and the files) close right after it.
+        ZIO.scoped {
+          for
+            k <- tempStore(ks, pass)
+            t <- ZIO.foreach(ts)(tempStore(_, pass))
+            server <- ZIO.attemptBlocking {
+                        val base = options()
+                          .httpDisabled(true)
+                          .dynamicHttpsPort()
+                          .keystorePath(k.toString)
+                          .keystoreType("PKCS12")
+                          .keystorePassword(storePassword)
+                          .keyManagerPassword(storePassword)
+                        val opts = t.fold(base)(tp =>
+                          base
+                            .needClientAuth(true)
+                            .trustStorePath(tp.toString)
+                            .trustStoreType("PKCS12")
+                            .trustStorePassword(storePassword)
+                        )
+                        val server = new WireMockServer(opts)
+                        server.start()
+                        server
+                      }
+          yield server
+        }.mapError(e =>
+          MockError.ProvisionFailed(s"starting the HTTPS WireMock server: ${e.getClass.getSimpleName}: ${e.getMessage}")
+        )
+      }
+
+  /**
+   * Write `store` to a fresh temp file, deleted when the scope closes. The file
+   * holds a private key, so it is also deleted if the write itself fails.
+   */
+  private[wiremock] def tempStore(
+    store: KeyStore,
+    pass: Array[Char],
+    dir: Option[Path] = None
+  ): ZIO[Scope, Throwable, Path] =
+    ZIO.acquireRelease(
+      ZIO.attemptBlocking {
+        val path = dir.fold(Files.createTempFile("zio-bdd-wiremock-", ".p12"))(
+          Files.createTempFile(_, "zio-bdd-wiremock-", ".p12")
+        )
+        try
+          val out = Files.newOutputStream(path)
+          try store.store(out, pass)
+          finally out.close()
+          path
+        catch
+          case NonFatal(e) =>
+            Files.deleteIfExists(path)
+            throw e
+      }
+    )(path => ZIO.attemptBlocking(Files.deleteIfExists(path)).ignoreLogged)
