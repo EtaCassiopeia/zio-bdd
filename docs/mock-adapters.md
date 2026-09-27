@@ -125,6 +125,11 @@ source break from the pre-#285 adapter):
   not advertise Intercept at all, since there'd be no host-reachable address
   to report.
 
+  `hostFor` says where the SUT reaches an imposter's port. The scheme follows
+  the imposter's protocol, so an HTTPS space (`dsl.https`, or a native `https`
+  imposter) reports `https://` even when `hostFor` returns `http://…`. A
+  `hostFor` URI with any other scheme is used verbatim.
+
 Both take a `RiftMode`: `RiftMode.PerInstance` (default — one imposter port
 per `MockSpace`) or `RiftMode.Correlated(correlation)` / the `RiftMode.correlated`
 shorthand (one shared imposter, spaces tagged by a correlation header).
@@ -204,8 +209,8 @@ which only adds them at `Test` scope for its own specs):
 
 ```scala
 libraryDependencies ++= Seq(
-  "io.github.achird-labs" % "rift-java-embedded" % "0.3.1",
-  ("io.github.achird-labs" % "rift-java-natives" % "0.3.1").classifier("darwin-aarch64")
+  "io.github.achird-labs" % "rift-java-embedded" % "0.3.2",
+  ("io.github.achird-labs" % "rift-java-natives" % "0.3.2").classifier("darwin-aarch64")
 )
 ```
 

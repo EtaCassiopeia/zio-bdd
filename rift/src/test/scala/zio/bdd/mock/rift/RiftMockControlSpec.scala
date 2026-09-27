@@ -74,6 +74,17 @@ object RiftMockControlSpec extends ZIOSpecDefault:
         _       <- control.require(Capability.values*)
       yield assertTrue(control.backendName == "rift", control.capabilities == Capability.values.toSet)
     },
+    test("Rift.connect's resolver takes the scheme from the imposter's protocol, only for an http(s) hostFor (#346)") {
+      import _root_.rift.model.Protocol
+      val plain   = URI.create("http://sut-host:14545")
+      val gateway = URI.create("gw://edge/__rift/4545")
+      assertTrue(
+        Rift.followProtocol(plain, Protocol.Https) == URI.create("https://sut-host:14545"),
+        Rift.followProtocol(plain, Protocol.Http) == plain,
+        Rift.followProtocol(URI.create("https://sut-host:14545"), Protocol.Http) == plain,
+        Rift.followProtocol(gateway, Protocol.Https) == gateway
+      )
+    },
     test("reports the isolation mode it was built with") {
       for
         perInstance <- ZIO.service[MockControl]

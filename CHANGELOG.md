@@ -35,9 +35,10 @@ All notable changes to zio-bdd are documented here.
 
 ### Fixed
 
-- **A native `https` Rift imposter now reports an `https://` base URI.** The SDK reports every
-  imposter as `http://`, so a `NativeSpec.Rift` HTTPS space was unreachable through its own
-  `baseUri`; the adapter now derives the scheme from the imposter's protocol.
+- **A native `https` Rift imposter now reports an `https://` base URI.** rift-java 0.3.1 reported
+  every imposter as `http://`, so a `NativeSpec.Rift` HTTPS space was unreachable through its own
+  `baseUri`. rift-java 0.3.2 reports the imposter's own protocol (rift-java#251), and the adapter
+  now takes that URI as is (#346) instead of rewriting the scheme itself.
 
 ### Changed
 
@@ -45,6 +46,13 @@ All notable changes to zio-bdd are documented here.
   `rift-java` 0.3.1 (from 0.1.2 / 0.1.3). `Rift.DefaultImage` is now `zainalpour/rift-proxy:v0.18.0`,
   and the embedded engine (`rift-java-natives` 0.3.1) is 0.18.0 too. Embedded users should bump
   their own `rift-java-embedded`/`rift-java-natives` to 0.3.1.
+- **SDK bumped to `rift-scala-zio` 0.3.0 / `rift-java` 0.3.2** (#346), which carry rift-java's
+  protocol-aware `HostResolver` (rift-java#251, rift-scala#199). Embedded users should bump their
+  own `rift-java-embedded`/`rift-java-natives` to 0.3.2 to match.
+- **`Rift.connect`'s `hostFor` now only locates the listener; the scheme follows the imposter's
+  protocol** (#346). An HTTPS space reports `https://` even when `hostFor` returns `http://…`, which
+  is what the adapter already did, now through the SDK's resolver seam. A `hostFor` URI whose scheme
+  is neither `http` nor `https` is used verbatim.
 - **ZIO 2.1.17 → 2.1.21**, which rift-scala 0.2.x requires (an older `zio-test` fails its layer
   macros at compile time).
 
