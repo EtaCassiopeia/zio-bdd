@@ -5,7 +5,8 @@ import java.net.URI
 import zio.*
 import zio.bdd.mock.{MockControl, MockError, Provisioning, SpaceId}
 
-import rift.bridge.{ConnectConfig, ContainerConfig}
+import rift.bridge.{ConnectConfig, ContainerConfig, HostResolver}
+import rift.model.Protocol
 import rift.zio.Rift as SdkRift
 
 /**
@@ -81,6 +82,11 @@ object Rift:
    * imposter port to its SUT-reachable base URI (the identity under host
    * networking) — wired into the SDK's `ConnectConfig.hostResolver`.
    *
+   * `hostFor` locates the imposter's own listener, so the space's scheme
+   * follows the imposter's protocol: an HTTPS space (`dsl.https`, or a native
+   * `https` imposter) reports `https://` even when `hostFor` returns
+   * `http://…`. A `hostFor` URI with any other scheme is used verbatim.
+   *
    * Widened from a `URLayer` (pre-#285): the SDK's `connect` performs a real
    * handshake at layer construction (an admin-version check), so a bad
    * `adminBase` or an unreachable engine now surfaces as a typed [[MockError]]
@@ -95,7 +101,8 @@ object Rift:
     parseUri(adminBase) match
       case Left(e) => ZLayer.fail(e)
       case Right(uri) =>
-        val config    = ConnectConfig(adminUri = uri, hostResolver = Some(p => URI.create(hostFor(p))))
+        val resolver  = HostResolver.ByProtocol((protocol, port) => followProtocol(URI.create(hostFor(port)), protocol))
+        val config    = ConnectConfig(adminUri = uri, hostResolver = Some(resolver))
         val intercept = interceptSettingsOf(interceptProxy)
         ZLayer.makeSome[Provisioning, MockControl](
           SdkRift.connect(config).mapError(RiftModelMapping.toMockError(None)),
@@ -163,6 +170,17 @@ object Rift:
         // never reach. Advertise Intercept only when the caller actually exposed a port for it (#285/B5).
         adapterLayer(mode, Some(imposterPorts), intercept, interceptCapable = interceptPort.isDefined)
       )
+
+  // `hostFor` answers where the imposter's listener is; the scheme is the imposter's own protocol.
+  // Only an http/https base is re-schemed, so a caller routing through a hop with its own scheme
+  // keeps it.
+  private[rift] def followProtocol(base: URI, protocol: Protocol): URI =
+    val scheme = protocol match
+      case Protocol.Http  => "http"
+      case Protocol.Https => "https"
+    base.getScheme match
+      case "http" | "https" => URI.create(scheme + base.toString.stripPrefix(base.getScheme))
+      case _                => base
 
   private def interceptSettingsOf(interceptProxy: Option[(String, Int)]): InterceptSettings =
     interceptProxy.fold(InterceptSettings())((host, port) => InterceptSettings(bindHost = host, port = port))
