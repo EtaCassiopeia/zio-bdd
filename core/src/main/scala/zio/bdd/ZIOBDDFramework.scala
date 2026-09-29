@@ -131,19 +131,11 @@ class ZIOBDDTask(
    * "target" directory containing the class, giving us the same base that sbt's
    * JUnit listener uses for TEST-*.xml files.
    */
-  private def resolveTestReportDir(className: String): String = {
-    val resource = testClassLoader.getResource(className.replace('.', '/') + "$.class")
-    if (resource == null) return defaultTestReportDirName
-    try {
-      val classPath = java.net.URLDecoder.decode(resource.getPath, "UTF-8")
-      // classPath: …/tmm-tests-zio-bdd/target/scala-3.3.5/test-classes/…
-      val targetIdx = classPath.lastIndexOf("/target/")
-      if (targetIdx < 0) defaultTestReportDirName
-      else classPath.substring(0, targetIdx) + "/target/test-reports"
-    } catch {
-      case _: Exception => defaultTestReportDirName
-    }
-  }
+  private def resolveTestReportDir(className: String): String =
+    Option(testClassLoader.getResource(className.replace('.', '/') + "$.class"))
+      .flatMap(ZIOBDDTask.testReportDirFor)
+      .map(_.toString)
+      .getOrElse(defaultTestReportDirName)
 
   override def taskDef(): TaskDef = taskDefinition
 
@@ -498,6 +490,45 @@ class ZIOBDDTask(
 }
 
 object ZIOBDDTask {
+
+  /**
+   * The `<module>/target/test-reports` directory for a suite class located at
+   * `classUrl`, or `None` when the location has no `target` ancestor or is not
+   * a local file.
+   *
+   * The location is converted through its URI (`Paths.get(uri)`), never through
+   * `URL#getPath`: on Windows `getPath` yields `/C:/…`, which
+   * `Paths.get(String)` rejects (#353), and `getPath` keeps percent-escapes
+   * such as `%20`. A class inside a jar (`jar:file:…!/…`) is resolved from the
+   * jar file's own location.
+   */
+  private[bdd] def testReportDirFor(classUrl: java.net.URL): Option[java.nio.file.Path] =
+    classFileLocation(classUrl).flatMap { location =>
+      Iterator
+        .iterate(location)(_.getParent)
+        .takeWhile(_ != null)
+        .find(p => Option(p.getFileName).exists(_.toString == "target"))
+        .map(_.resolve("test-reports"))
+    }
+
+  private def classFileLocation(url: java.net.URL): Option[java.nio.file.Path] =
+    url.getProtocol match
+      case "file" =>
+        // A URL built from an unescaped path (e.g. a raw space) has no valid
+        // URI form; the multi-argument constructor quotes the illegal characters.
+        val uri = scala.util
+          .Try(url.toURI)
+          .orElse(scala.util.Try(new java.net.URI("file", null, url.getPath, null)))
+        // A URI with no local-path form (e.g. a UNC authority on Unix) has no
+        // module root: the caller falls back to the relative default directory.
+        uri.flatMap(u => scala.util.Try(java.nio.file.Paths.get(u))).toOption
+      case "jar" =>
+        // jar:<inner-url>!/<entry> — the inner URL locates the jar itself.
+        val spec = url.getFile
+        val bang = spec.indexOf("!/")
+        if (bang < 0) None
+        else scala.util.Try(new java.net.URI(spec.substring(0, bang)).toURL).toOption.flatMap(classFileLocation)
+      case _ => None
 
   /**
    * A full, CI-legible diagnostic for a suite-level failure (#308). The sbt
