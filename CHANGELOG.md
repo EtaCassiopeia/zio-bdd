@@ -4,6 +4,18 @@ All notable changes to zio-bdd are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **Rift adapters on rift 0.18.1** (rift-scala 0.3.1 / rift-java 0.3.3; from rift 0.18.0 /
+  rift-scala 0.3.0 / rift-java 0.3.2). A fixes-only engine release; `Rift.DefaultImage` is now
+  `zainalpour/rift-proxy:v0.18.1`, and an embedded build must move its `rift-java-embedded` /
+  `rift-java-natives` dependencies to `0.3.3` to match. Engine fixes you may observe:
+  - A malformed `jsonpath`/`xpath` selector or an invalid `matches` regex in a mock definition is
+    now rejected by the engine (HTTP 400), so provisioning fails with a typed
+    `MockError.InvalidDefinition` instead of the stub silently mis-matching.
+  - `?replayable=true` works on a single imposter, and replayable views export the imposter's
+    current stubs.
+
 ## [1.5.1] — 2026-09-28
 
 ### Fixed
