@@ -218,11 +218,16 @@ private[rift] object RiftModelMapping:
    * explicitly opts out, and either honouring its own `port`
    * (`provisionNative`) or stripping it so the engine/pool assigns one
    * (portable `provision`, where every space must get a fresh port).
+   *
+   * `"port": 0` is read as an absent port, as the engine does (#350):
+   * rift-scala's decoder refines `port` to 1..65535 and would otherwise refuse
+   * the document before the port is stripped or pool-assigned. Any other
+   * out-of-range port is still refused.
    */
   def fromRaw(raw: String, honourDocPort: Boolean): Either[spi.MockError, ImposterDefinition] =
     (for
       json       <- Json.parse(raw).left.map(_.toString)
-      definition <- ImposterDefinition.fromJson(json).left.map(_.toString)
+      definition <- ImposterDefinition.fromJson(withoutZeroPort(json)).left.map(_.toString)
     yield
       val optedOut = json.get("recordRequests").contains(Json.Bool(false))
       definition.copy(
@@ -230,6 +235,14 @@ private[rift] object RiftModelMapping:
         recordRequests = definition.recordRequests || !optedOut
       )
     ).left.map(spi.MockError.InvalidDefinition(_))
+
+  private def withoutZeroPort(json: Json): Json = json match
+    case Json.Obj(fields) =>
+      Json.Obj(fields.filterNot {
+        case ("port", Json.Num(n)) => n == 0
+        case _                     => false
+      })
+    case other => other
 
   // ── readback + errors ────────────────────────────────────────────────────────────────────────
 
@@ -244,12 +257,20 @@ private[rift] object RiftModelMapping:
    */
   def message(t: Throwable): String = Option(t.getMessage).getOrElse(t.getClass.getSimpleName)
 
+  /**
+   * The engine (0.18.0+) records a non-JSON body as a JSON string with no
+   * `bodyText`, so a `Json.Str` body is the raw text and reads back unquoted
+   * (#349); only a structured JSON body is rendered.
+   */
   def toRecorded(r: RecordedRequest): spi.RecordedRequest =
     spi.RecordedRequest(
       method = methodOf(r.method),
       uri = r.path,
       headers = r.headers.entries.foldLeft(spi.Headers.empty) { case (h, (k, v)) => h.add(k, v) },
-      body = r.bodyText.orElse(r.body.map(_.render))
+      body = r.bodyText.orElse(r.body.map {
+        case Json.Str(s) => s
+        case other       => other.render
+      })
     )
 
   /**

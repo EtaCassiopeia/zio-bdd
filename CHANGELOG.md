@@ -4,6 +4,17 @@ All notable changes to zio-bdd are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Rift: a recorded text body no longer reads back JSON-quoted** (#349). rift 0.18.0 records a
+  non-JSON body as a JSON string with no `bodyText`, and `MockControl.received` rendered it with
+  its quotes (`"\"hello=world\""`). A string body now reads back as its raw text; only a
+  structured JSON body is rendered. A 1.5.0 regression on both `Rift.connect` and `EmbeddedRift`.
+- **Rift: raw imposter documents with `"port": 0` provision again** (#350). `provision(MockSource.Raw/Resource/File)`
+  and `provisionNative(NativeSpec.Rift)` refused them with `port out of range 1..65535: 0`.
+  `"port": 0` is now read as an absent port, as the engine does, and a pool port is assigned.
+  Any other out-of-range port is still refused. A 1.5.0 regression.
+
 ## [1.5.0] — 2026-09-27
 
 ### Breaking changes
