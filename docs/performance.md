@@ -170,20 +170,14 @@ measure your own suite if startup time matters to your feedback loop:
   (`core/src/main/scala/zio/bdd/ZIOBDDFramework.scala:105-114`) — proportional to
   the number of files in that directory, done once at suite startup before any
   scenario runs.
-- **`classpath:` feature directories** resolve via `ClassLoader.getResources(...)`
-  followed by treating each resolved URL as a `java.io.File` and listing it
-  (`ZIOBDDFramework.scala:98-103`). This assumes the classpath entry is an
-  unpacked directory (a normal `test:resources`/`test:managedResources` layout, or
-  an exploded classpath as sbt typically presents it). **If your `.feature` files
-  are packaged inside a fat/uber jar** rather than left as loose classpath
-  directories, a `classpath:` resource URL points *into* the jar
-  (`jar:file:...!/features`), and turning that into a `File` for `listFiles()` is
-  not guaranteed to enumerate the packed entries the way it does for a real
-  directory. If you rely on `classpath:` feature loading from a packaged
-  test-jar, verify feature discovery still finds all files in that packaging
-  — or keep feature resources unpacked on the classpath (the common sbt
-  multi-module case documented in [running.md's `@Suite` fields table](running.md#fields))
-  rather than shaded into a single fat jar.
+- **`classpath:` feature directories** resolve via `ClassLoader.getResources(...)`.
+  A resolved URL that is an unpacked directory (a normal
+  `test:resources`/`test:managedResources` layout) is listed like a filesystem
+  entry. A URL that points *into* a jar (`jar:file:...!/features`, e.g. a shared
+  test-jar) is read by opening the jar as a zip `FileSystem` for the duration of
+  the listing, and again for each feature read; the jar is closed after each use.
+  Either way the cost is proportional to the number of entries in the directory,
+  paid once at suite startup.
 
 ---
 

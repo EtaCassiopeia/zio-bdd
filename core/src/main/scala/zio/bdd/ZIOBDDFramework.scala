@@ -100,7 +100,10 @@ case class FeatureFiles(path: String, testClassLoader: ClassLoader):
       .getResources(path.stripPrefix(ClasspathPrefix))
       .asScala
       .toList
-      .flatMap(url => collectFeatures(new File(url.toURI())))
+      .flatMap { url =>
+        if (url.getProtocol == "jar") JarFeatures.unsafeRun(JarFeatures.list(url))
+        else collectFeatures(new File(url.toURI()))
+      }
 
   private def resolveFilesystem(file: File): List[String] =
     if (file.exists()) collectFeatures(file) else Nil
@@ -112,6 +115,79 @@ case class FeatureFiles(path: String, testClassLoader: ClassLoader):
       List(f.getAbsolutePath)
     else
       Nil
+
+/**
+ * `.feature` files inside a jar on the classpath (#354). A `classpath:` entry
+ * that resolves into a jar yields `jar:file:…!/…` URLs, which have no
+ * `java.io.File` form. Such a feature is located by its `jar:` URI string, and
+ * both listing and reading open the jar as a zip `FileSystem` scoped to the
+ * operation, so the jar is never left open.
+ */
+private[bdd] object JarFeatures:
+  import java.net.{JarURLConnection, URI, URL}
+  import java.nio.charset.StandardCharsets
+  import java.nio.file.{FileSystem, FileSystems, Files, Path, Paths}
+  import zio.{Scope, Task}
+
+  def isJarLocation(location: String): Boolean = location.startsWith("jar:")
+
+  /**
+   * The `jar:` URIs of the features at `url`: the entry itself when it is a
+   * `.feature` file, or the `.feature` files directly inside it when it is a
+   * directory (the same, non-recursive, rule as a filesystem directory).
+   */
+  def list(url: URL): Task[List[String]] =
+    ZIO.scoped {
+      entryPath(url).flatMap { entry =>
+        ZIO.attemptBlocking {
+          if (Files.isDirectory(entry))
+            Files
+              .list(entry)
+              .iterator()
+              .asScala
+              .filter(p => Files.isRegularFile(p) && isFeature(p))
+              .map(_.toUri.toString)
+              .toList
+              .sorted
+          else if (Files.isRegularFile(entry) && isFeature(entry)) List(entry.toUri.toString)
+          else Nil
+        }
+      }
+    }
+
+  /** The UTF-8 content of the feature at a `jar:` URI returned by [[list]]. */
+  def read(location: String): Task[String] =
+    ZIO.scoped {
+      ZIO
+        .attempt(URI.create(location).toURL)
+        .flatMap(entryPath)
+        .flatMap(entry => ZIO.attemptBlocking(new String(Files.readAllBytes(entry), StandardCharsets.UTF_8)))
+    }
+
+  def unsafeRun[A](task: Task[A]): A =
+    Unsafe.unsafe { implicit unsafe =>
+      Runtime.default.unsafe.run(task).getOrThrow()
+    }
+
+  private def isFeature(p: Path): Boolean = p.getFileName.toString.endsWith(".feature")
+
+  // The entry of a jar: URL as a Path in a zip FileSystem that closes with the scope.
+  private def entryPath(url: URL): ZIO[Scope, Throwable, Path] =
+    for
+      conn <- ZIO.attempt(url.openConnection()).flatMap {
+                case c: JarURLConnection => ZIO.succeed(c)
+                case _                   => ZIO.fail(new IllegalArgumentException(s"Not a jar URL: $url"))
+              }
+      jar <- ZIO.attempt(Paths.get(conn.getJarFileURL.toURI))
+      fs  <- openJar(jar)
+    yield fs.getPath("/" + Option(conn.getEntryName).getOrElse(""))
+
+  // Opened by Path (not by URI), so each call gets its own FileSystem instance and
+  // never collides with — or closes — one another component registered for the jar.
+  private def openJar(jar: Path): ZIO[Scope, Throwable, FileSystem] =
+    ZIO.acquireRelease(ZIO.attemptBlocking(FileSystems.newFileSystem(jar, null: ClassLoader)))(fs =>
+      ZIO.attemptBlocking(fs.close()).ignoreLogged
+    )
 
 class ZIOBDDTask(
   taskDefinition: TaskDef,
@@ -421,7 +497,9 @@ class ZIOBDDTask(
   private def discoverFeatures(steps: ZIOSteps[Any, Any], featureFiles: List[String]): List[Feature] =
     if (featureFiles.nonEmpty) {
       featureFiles.flatMap { path =>
-        val featureContent = scala.io.Source.fromFile(path).mkString
+        val featureContent =
+          if (JarFeatures.isJarLocation(path)) JarFeatures.unsafeRun(JarFeatures.read(path))
+          else scala.util.Using.resource(scala.io.Source.fromFile(path))(_.mkString)
         Unsafe.unsafe { implicit unsafe =>
           // Per-file resilience (issue #46): skip unparseable files rather than aborting the run.
           runtime.unsafe
