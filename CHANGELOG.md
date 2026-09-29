@@ -4,6 +4,8 @@ All notable changes to zio-bdd are documented here.
 
 ## [Unreleased]
 
+## [1.5.1] — 2026-09-28
+
 ### Fixed
 
 - **Rift: a recorded text body no longer reads back JSON-quoted** (#349). rift 0.18.0 records a
