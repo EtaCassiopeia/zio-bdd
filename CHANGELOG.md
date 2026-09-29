@@ -4,6 +4,8 @@ All notable changes to zio-bdd are documented here.
 
 ## [Unreleased]
 
+## [1.5.2] — 2026-09-29
+
 ### Changed
 
 - **Rift adapters on rift 0.18.1** (rift-scala 0.3.1 / rift-java 0.3.3; from rift 0.18.0 /

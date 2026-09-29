@@ -9,7 +9,7 @@ as a concrete example throughout.
 In `build.sbt`:
 
 ```scala
-libraryDependencies += "io.github.etacassiopeia" %% "zio-bdd" % "1.5.1" % Test
+libraryDependencies += "io.github.etacassiopeia" %% "zio-bdd" % "1.5.2" % Test
 
 Test / testFrameworks += new TestFramework("zio.bdd.ZIOBDDFramework")
 ```
