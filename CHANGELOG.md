@@ -12,6 +12,12 @@ All notable changes to zio-bdd are documented here.
   is now converted through its URI, so drive letters and percent-encoded characters (e.g. a
   space in the project path) resolve correctly. A suite class inside a jar now resolves its
   `target/test-reports` directory from the jar's location.
+- **`classpath:` featureDirs inside a jar** (#354). A `classpath:` entry that resolved into a jar
+  on the test classpath (a shared test-jar, as `docs/running.md` suggests) ended the suite with
+  `URI is not hierarchical` and 0 results. A `jar:` location is now read through a zip
+  `FileSystem` that is closed after each use: a single `.feature` entry and the `.feature` files
+  directly inside a directory entry are discovered and parsed, and the feature's reported file
+  is its `jar:file:…!/…` URI. Unpacked classpath directories behave as before.
 
 ## [1.5.2] — 2026-09-29
 
