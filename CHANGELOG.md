@@ -4,6 +4,15 @@ All notable changes to zio-bdd are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **junitxml reporter on Windows** (#353). A suite declaring `reporters = Array(…, "junitxml")`
+  in `@Suite` failed on Windows although every scenario passed: the report directory was built
+  from the suite class's `URL#getPath` (`/C:/…`), which `Paths.get` rejects. The class location
+  is now converted through its URI, so drive letters and percent-encoded characters (e.g. a
+  space in the project path) resolve correctly. A suite class inside a jar now resolves its
+  `target/test-reports` directory from the jar's location.
+
 ## [1.5.2] — 2026-09-29
 
 ### Changed
