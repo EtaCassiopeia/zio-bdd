@@ -4,12 +4,19 @@ All notable changes to zio-bdd are documented here.
 
 ## [Unreleased]
 
+## [1.5.2] — 2026-09-30
+
 ### Changed
 
-- **Rift adapters on rift 0.19.0** (rift-scala 0.3.2 / rift-java 0.3.4; from rift 0.18.1 /
-  rift-scala 0.3.1 / rift-java 0.3.3). `Rift.DefaultImage` is now
+- **Rift adapters on rift 0.19.0** (rift-scala 0.3.2 / rift-java 0.3.4; from rift 0.18.0 /
+  rift-scala 0.3.0 / rift-java 0.3.2). `Rift.DefaultImage` is now
   `zainalpour/rift-proxy:v0.19.0`, and an embedded build must move its `rift-java-embedded` /
   `rift-java-natives` dependencies to `0.3.4` to match. Engine changes you may observe:
+  - A malformed `jsonpath`/`xpath` selector or an invalid `matches` regex in a mock definition is
+    now rejected by the engine (HTTP 400), so provisioning fails with a typed
+    `MockError.InvalidDefinition` instead of the stub silently mis-matching.
+  - `?replayable=true` works on a single imposter, and replayable views export the imposter's
+    current stubs.
   - `DELETE /imposters/{port}/savedProxyResponses` now also removes the stubs a proxy recorded.
     zio-bdd never clears proxy responses (a `ProxyRecord` space keeps its recorded stubs until
     the space is torn down), so recording/replay through the adapter is unaffected.
@@ -33,20 +40,6 @@ All notable changes to zio-bdd are documented here.
   `FileSystem` that is closed after each use: a single `.feature` entry and the `.feature` files
   directly inside a directory entry are discovered and parsed, and the feature's reported file
   is its `jar:file:…!/…` URI. Unpacked classpath directories behave as before.
-
-## [1.5.2] — 2026-09-29
-
-### Changed
-
-- **Rift adapters on rift 0.18.1** (rift-scala 0.3.1 / rift-java 0.3.3; from rift 0.18.0 /
-  rift-scala 0.3.0 / rift-java 0.3.2). A fixes-only engine release; `Rift.DefaultImage` is now
-  `zainalpour/rift-proxy:v0.18.1`, and an embedded build must move its `rift-java-embedded` /
-  `rift-java-natives` dependencies to `0.3.3` to match. Engine fixes you may observe:
-  - A malformed `jsonpath`/`xpath` selector or an invalid `matches` regex in a mock definition is
-    now rejected by the engine (HTTP 400), so provisioning fails with a typed
-    `MockError.InvalidDefinition` instead of the stub silently mis-matching.
-  - `?replayable=true` works on a single imposter, and replayable views export the imposter's
-    current stubs.
 
 ## [1.5.1] — 2026-09-28
 
