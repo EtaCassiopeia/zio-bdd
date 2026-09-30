@@ -4,6 +4,21 @@ All notable changes to zio-bdd are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **Rift adapters on rift 0.19.0** (rift-scala 0.3.2 / rift-java 0.3.4; from rift 0.18.1 /
+  rift-scala 0.3.1 / rift-java 0.3.3). `Rift.DefaultImage` is now
+  `zainalpour/rift-proxy:v0.19.0`, and an embedded build must move its `rift-java-embedded` /
+  `rift-java-natives` dependencies to `0.3.4` to match. Engine changes you may observe:
+  - `DELETE /imposters/{port}/savedProxyResponses` now also removes the stubs a proxy recorded.
+    zio-bdd never clears proxy responses (a `ProxyRecord` space keeps its recorded stubs until
+    the space is torn down), so recording/replay through the adapter is unaffected.
+  - A TCP fault reached through the admin `/__rift/` gateway or the front door now aborts the
+    connection instead of answering `502`. The adapter talks to each imposter's own port, where
+    faults already aborted, so zio-bdd's fault rules behave as before.
+  - A `lookup` key's `index` is honoured; `GET /events` refuses in the `errors` envelope; and a
+    no-change `POST /admin/reload` reports port arrays.
+
 ### Fixed
 
 - **junitxml reporter on Windows** (#353). A suite declaring `reporters = Array(…, "junitxml")`

@@ -85,7 +85,7 @@ source break from the pre-#285 adapter):
   ): ZLayer[Provisioning, MockError, MockControl]
   ```
 
-  `DefaultImage` is the pinned Rift image, currently `zainalpour/rift-proxy:v0.18.1`
+  `DefaultImage` is the pinned Rift image, currently `zainalpour/rift-proxy:v0.19.0`
   — derived from the single `riftVersion` in `build.sbt`, so treat it as "the
   pinned Rift image" rather than a hardcoded tag. `adminPort` is effectively
   fixed at `DefaultAdminPort` (2525): the SDK's container transport
@@ -209,8 +209,8 @@ which only adds them at `Test` scope for its own specs):
 
 ```scala
 libraryDependencies ++= Seq(
-  "io.github.achird-labs" % "rift-java-embedded" % "0.3.3",
-  ("io.github.achird-labs" % "rift-java-natives" % "0.3.3").classifier("darwin-aarch64")
+  "io.github.achird-labs" % "rift-java-embedded" % "0.3.4",
+  ("io.github.achird-labs" % "rift-java-natives" % "0.3.4").classifier("darwin-aarch64")
 )
 ```
 
