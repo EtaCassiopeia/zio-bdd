@@ -4,6 +4,15 @@ All notable changes to zio-bdd are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Plane B conformance corpus in-repo** (#361). The MockControl SPI corpus (25 Gherkin features, the
+  `samples.mock.*` suites and their mock sources) moves here from rift-conformance as the unpublished
+  `planeB` module, built against this repo's modules rather than released artifacts. The
+  `mockConformance`, `mockEmbedded` and `mockRiftExternal` aliases keep their names; the new
+  `conformance` workflow runs them on every PR against WireMock, the embedded engine, and a released
+  rift binary (pinned in `scripts/fetch-rift.sh`, currently 0.21.0).
+
 ## [1.5.2] — 2026-09-30
 
 ### Changed

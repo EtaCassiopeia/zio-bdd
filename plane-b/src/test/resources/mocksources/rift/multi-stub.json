@@ -1,0 +1,14 @@
+{
+  "port": 0,
+  "protocol": "http",
+  "stubs": [
+    {
+      "predicates": [{ "equals": { "method": "GET", "path": "/alpha" } }],
+      "responses": [{ "is": { "statusCode": 200, "body": "alpha-body" } }]
+    },
+    {
+      "predicates": [{ "equals": { "method": "GET", "path": "/beta" } }],
+      "responses": [{ "is": { "statusCode": 200, "body": "beta-body" } }]
+    }
+  ]
+}
