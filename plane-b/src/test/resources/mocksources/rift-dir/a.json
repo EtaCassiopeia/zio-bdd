@@ -1,0 +1,10 @@
+{
+  "port": 0,
+  "protocol": "http",
+  "stubs": [
+    {
+      "predicates": [{ "equals": { "method": "GET", "path": "/a" } }],
+      "responses": [{ "is": { "statusCode": 200, "body": "space-a" } }]
+    }
+  ]
+}

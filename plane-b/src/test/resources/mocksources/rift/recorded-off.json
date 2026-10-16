@@ -1,0 +1,11 @@
+{
+  "port": 0,
+  "protocol": "http",
+  "recordRequests": false,
+  "stubs": [
+    {
+      "predicates": [{ "equals": { "method": "GET", "path": "/recorded-off" } }],
+      "responses": [{ "is": { "statusCode": 200, "body": "not-recorded" } }]
+    }
+  ]
+}

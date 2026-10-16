@@ -332,6 +332,59 @@ lazy val conformance = Project("conformance", file("conformance"))
     mimaPreviousArtifacts := Set.empty
   )
 
+// Plane B — the MockControl SPI conformance corpus (#361, moved from EtaCassiopeia/rift-conformance): 25 Gherkin
+// features under plane-b/src/test/resources/features/mock, run through `samples.mock.*` suites against one backend
+// per run, chosen by MOCK_BACKEND (wiremock | embedded | rift-external | rift | wiremock-pi). It depends on this
+// build's modules, not on published zio-bdd artifacts, so the corpus tests the SPI and adapters at the same commit.
+// NOT aggregated into the root: the suites are only meaningful through the per-backend aliases below (each excludes
+// the tags its backend cannot honor), so a bare `sbt test` must not pick them up. Not published.
+lazy val planeB = Project("planeB", file("plane-b"))
+  .dependsOn(core, mock, wiremock, rift)
+  .settings(
+    name := "zio-bdd-plane-b",
+    libraryDependencies ++= commonDependencies,
+    // The embedded backend's runtime engine: `rift`'s own Test-scoped copies are not exported (see `conformance`).
+    libraryDependencies ++= Seq(
+      "io.github.achird-labs" % "rift-java-embedded" % riftJavaVersion % Test
+    ) ++ RiftNatives.currentClassifier
+      .map(c => ("io.github.achird-labs" % "rift-java-natives" % riftJavaVersion % Test).classifier(c))
+      .toSeq,
+    // ZTestFramework runs EmbeddedInterceptConfigSpec; ZIOBDDFramework runs the Gherkin suites.
+    Test / testFrameworks := Seq(
+      new TestFramework("zio.test.sbt.ZTestFramework"),
+      new TestFramework("zio.bdd.ZIOBDDFramework")
+    ),
+    // Fork so --enable-native-access applies to a clean JVM, and so the suites' relative `featureDirs` resolve
+    // against plane-b/. Serial: a run shares one backend server (a Correlated WireMock, one rift engine).
+    Test / fork              := true,
+    Test / javaOptions       += "--enable-native-access=ALL-UNNAMED",
+    Test / parallelExecution := false,
+    javaFloor17Settings,
+    publish / skip        := true,
+    mimaPreviousArtifacts := Set.empty
+  )
+
+// Plane B aliases, one per backend; the invocations match rift-conformance's, so scripts and habits carry over.
+// wiremock excludes what WireMock cannot do by design: scripting/templating/proxyrecord (no engine), `rift` (raw-Rift
+// scenarios, samples 09/17/19), `intercept` (not advertised) and `fixedport` (WireMock does not honour a requested port).
+addCommandAlias(
+  "mockConformance",
+  "planeB/testOnly samples.mock.* -- --exclude-tags scripting,templating,proxyrecord,rift,intercept,fixedport"
+)
+// The in-process Rift engine (MOCK_BACKEND=embedded, JDK 22+): runs scripting/templating, but not the wiremock-native,
+// stateful or negotiation scenarios.
+addCommandAlias(
+  "mockEmbedded",
+  "planeB/testOnly samples.mock.* -- --exclude-tags stateful,stateinspection,rift,wiremock,negotiation,native"
+)
+// A released rift binary (MOCK_BACKEND=rift-external, RIFT_BUILD_DIR from scripts/fetch-rift.sh): the full capability
+// surface minus the raw-WireMock-only scenarios and `intercept` (Rift.connect has no intercept proxy).
+addCommandAlias(
+  "mockRiftExternal",
+  "planeB/testOnly samples.mock.* -- --exclude-tags wiremock,intercept"
+)
+addCommandAlias("mockSmoke", "planeB/testOnly samples.mock.* -- --include-tags smoke")
+
 lazy val example = (project in file("example"))
   .dependsOn(core)
   .settings(

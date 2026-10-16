@@ -1,0 +1,77 @@
+name: conformance
+
+# Plane B — the MockControl SPI conformance corpus (plane-b/, #361; moved from EtaCassiopeia/rift-conformance).
+# The same 25 features run once per backend, each through the alias that excludes the tags that backend cannot honour
+# (see build.sbt). The suites build against this commit's modules, so a change to the SPI or an adapter is held to the
+# corpus in the PR that makes it.
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  plane-b-wiremock:
+    name: Plane B — MockControl corpus (wiremock)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: sbt
+      - uses: sbt/setup-sbt@v1
+      # planeB is not aggregated into the root, so the `build` job's scalafmtCheckAll does not cover it.
+      - name: Format check + Plane B corpus (MOCK_BACKEND=wiremock, in-process, no Docker)
+        run: sbt -batch planeB/scalafmtCheckAll mockConformance
+        env:
+          MOCK_BACKEND: wiremock
+
+  # A released rift binary, spawned as a child process: the only engine coupling Plane B has, and it is a release pin
+  # (scripts/fetch-rift.sh's RIFT_VERSION), never a source build.
+  plane-b-rift-external:
+    name: Plane B — MockControl corpus (rift-external)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: sbt
+      - uses: sbt/setup-sbt@v1
+      # The released Linux rift binary dynamically links LuaJIT (the `lua` scripting engine).
+      - name: Install rift runtime deps (LuaJIT)
+        run: sudo apt-get update && sudo apt-get install -y libluajit-5.1-2
+      - name: Fetch released rift
+        run: |
+          out="$(scripts/fetch-rift.sh)" || { echo "fetch-rift.sh failed"; exit 1; }
+          eval "$out"
+          echo "RIFT_BUILD_DIR=$RIFT_BUILD_DIR" >> "$GITHUB_ENV"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Plane B corpus (MOCK_BACKEND=rift-external)
+        run: sbt -batch mockRiftExternal
+        env:
+          MOCK_BACKEND: rift-external
+
+  # The in-process engine over Panama FFM (rift-java-embedded is Java-22 bytecode), so this lane needs JDK 22+.
+  plane-b-embedded:
+    name: Plane B — MockControl corpus (embedded, FFM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: sbt
+      - uses: sbt/setup-sbt@v1
+      # The librift_ffi native links LuaJIT, like the binary.
+      - name: Install rift runtime deps (LuaJIT)
+        run: sudo apt-get update && sudo apt-get install -y libluajit-5.1-2
+      - name: Plane B corpus (MOCK_BACKEND=embedded)
+        run: sbt -batch mockEmbedded
+        env:
+          MOCK_BACKEND: embedded
